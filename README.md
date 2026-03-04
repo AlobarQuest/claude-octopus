@@ -22,7 +22,7 @@ A Claude Code plugin that turns one model into three. Orchestrates Codex, Gemini
 
 🐙 **Works with just Claude. Scales to three.** Zero external providers needed to start. You get every persona, every workflow, every skill on day one. Add Codex or Gemini and multi-AI orchestration lights up — parallel research, adversarial debate, cross-model review.
 
-💰 **Subscription Advantage.** uses Auth primarily so no API costs if you have a subscription to GPT and/or Gemini.
+💰 **Subscription Advantage.** Uses OAuth-first auth. If you're signed in with supported GPT/Gemini subscriptions, you typically avoid direct API-token charges; API-key mode is billed per token.
 
 ---
 
