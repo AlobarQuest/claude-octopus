@@ -958,13 +958,19 @@ get_agent_command() {
             # Prompt delivered via stdin by callers (avoids OS arg limits)
             # Callers add -p "" for headless mode trigger
             # -o text: clean output, --approval-mode yolo: auto-accept (replaces deprecated -y)
+            # v8.32.0: GEMINI_FORCE_FILE_STORAGE=true on macOS avoids Keychain prompts
+            # when calling Gemini CLI from bash subprocesses (OAuth still works)
+            local gemini_env="env NODE_NO_WARNINGS=1"
+            if [[ "$(uname)" == "Darwin" && -z "${GEMINI_API_KEY:-}" ]]; then
+                gemini_env="env NODE_NO_WARNINGS=1 GEMINI_FORCE_FILE_STORAGE=true"
+            fi
             case "${OCTOPUS_GEMINI_SANDBOX:-headless}" in
                 headless|auto-accept)
-                    echo "env NODE_NO_WARNINGS=1 gemini -o text --approval-mode yolo -m ${model}" ;;
+                    echo "${gemini_env} gemini -o text --approval-mode yolo -m ${model}" ;;
                 interactive|prompt-mode)
-                    echo "env NODE_NO_WARNINGS=1 gemini -m ${model}" ;;
+                    echo "${gemini_env} gemini -m ${model}" ;;
                 *)
-                    echo "env NODE_NO_WARNINGS=1 gemini -o text --approval-mode yolo -m ${model}" ;;
+                    echo "${gemini_env} gemini -o text --approval-mode yolo -m ${model}" ;;
             esac
             ;;
         codex-review) echo "codex exec review" ;; # Code review mode (no sandbox support)
@@ -6566,6 +6572,10 @@ OLD_init_interactive_impl() {
         local auth_type
         auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")
         echo -e "      Type: $auth_type"
+        # macOS keychain prompt warning for OAuth users
+        if [[ "$(uname)" == "Darwin" ]]; then
+            echo -e "  ${GREEN}✓${NC} macOS keychain bypass active (file-based token storage)"
+        fi
     elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
         local masked_gemini="${GEMINI_API_KEY:0:7}...${GEMINI_API_KEY: -4}"
         echo -e "  ${GREEN}✓${NC} Gemini: API Key found: $masked_gemini"
@@ -6575,7 +6585,6 @@ OLD_init_interactive_impl() {
         else
             echo -e "  ${YELLOW}⚠${NC} Format may be incorrect (expected AIza...)"
         fi
-        echo -e "  ${CYAN}Tip:${NC} OAuth is faster. Run 'gemini' and select 'Login with Google'"
     else
         echo -e "  ${RED}✗${NC} Gemini: Not authenticated"
         echo ""
@@ -12469,9 +12478,12 @@ setup_wizard() {
         local auth_type
         auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")
         echo -e "      Type: $auth_type"
+        # macOS keychain prompt warning for OAuth users
+        if [[ "$(uname)" == "Darwin" ]]; then
+            echo -e "  ${GREEN}✓${NC} macOS keychain bypass active (file-based token storage)"
+        fi
     elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
         echo -e "  ${GREEN}✓${NC} Gemini: API key set (${#GEMINI_API_KEY} chars)"
-        echo -e "  ${CYAN}Tip:${NC} OAuth is faster. Run 'gemini' and select 'Login with Google'"
     else
         echo -e "  ${YELLOW}✗${NC} Gemini: Not authenticated"
         if [[ "$NON_INTERACTIVE" == "true" ]]; then
