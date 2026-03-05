@@ -1,3 +1,11 @@
+## [8.34.0] - 2026-03-04
+
+### Changed
+
+- Recurrence detection, issue categorization, JSONL decision logging, CodeRabbit integration
+
+---
+
 ## [8.33.0] - 2026-03-04
 
 ### Changed
