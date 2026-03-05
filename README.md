@@ -278,6 +278,7 @@ The workflow continues with available providers. You'll see the status in the vi
 
 - **[wolverin0/claude-skills](https://github.com/wolverin0/claude-skills)** — AI Debate Hub. MIT License.
 - **[obra/superpowers](https://github.com/obra/superpowers)** — Discipline skills patterns. MIT License.
+- **[nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)** — BM25 design intelligence databases. MIT License.
 - **[UK Design Council](https://www.designcouncil.org.uk/our-resources/the-double-diamond/)** — Double Diamond methodology.
 
 ---

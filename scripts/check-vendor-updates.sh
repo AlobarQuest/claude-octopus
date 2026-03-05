@@ -247,11 +247,11 @@ else
 fi
 
 # Check that command file exists
-CMD_FILE="$PLUGIN_ROOT/.claude/commands/ui-ux-design.md"
+CMD_FILE="$PLUGIN_ROOT/.claude/commands/design-ui-ux.md"
 if [ -f "$CMD_FILE" ]; then
-    pass "ui-ux-design command file exists"
+    pass "design-ui-ux command file exists"
 else
-    warn "ui-ux-design command file not found"
+    warn "design-ui-ux command file not found"
 fi
 
 # Check routing.sh has ui-ux-designer pattern

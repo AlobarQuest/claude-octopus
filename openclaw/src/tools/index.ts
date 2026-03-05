@@ -73,6 +73,7 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "deck", description: "Generate slide deck presentations from briefs or research", type: "command", file: "deck.md" },
   { name: "define", description: "Definition phase - Clarify and scope problems with multi-AI consensus", type: "command", file: "define.md" },
   { name: "deliver", description: "Delivery phase - Review, validate, and test with multi-AI quality assurance", type: "command", file: "deliver.md" },
+  { name: "design-ui-ux", description: "Design UI/UX systems with style guides, palettes, typography, and component specs", type: "command", file: "design-ui-ux.md" },
   { name: "dev", description: "Switch to Dev Work mode - optimized for software development", type: "command", file: "dev.md" },
   { name: "develop", description: "Development phase - Build solutions with multi-AI implementation and quality gates", type: "command", file: "develop.md" },
   { name: "discover", description: "Discovery phase - Multi-AI research and exploration", type: "command", file: "discover.md" },
@@ -113,7 +114,6 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "sys-setup", description: "Check Claude Octopus setup status and get configuration instructions", type: "command", file: "sys-setup.md" },
   { name: "tangle", description: "Development phase - Multi-AI implementation with quality gates", type: "command", file: "tangle.md" },
   { name: "tdd", description: "Test-driven development with red-green-refactor discipline", type: "command", file: "tdd.md" },
-  { name: "ui-ux-design", description: "Design UI/UX systems with style guides, palettes, typography, and component specs", type: "command", file: "ui-ux-design.md" },
   { name: "validate", description: "Run comprehensive multi-AI validation on code or project targets", type: "command", file: "validate.md" },
 ];
 

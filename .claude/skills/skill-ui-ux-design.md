@@ -1,6 +1,7 @@
 ---
 name: octopus-ui-ux-design
 aliases:
+  - design-ui-ux
   - ui-ux-design
   - design
   - ui-design

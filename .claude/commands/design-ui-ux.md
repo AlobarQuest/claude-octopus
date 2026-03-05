@@ -1,5 +1,5 @@
 ---
-command: ui-ux-design
+command: design-ui-ux
 description: "Design UI/UX systems with style guides, palettes, typography, and component specs"
 aliases:
   - design
@@ -7,11 +7,11 @@ aliases:
   - ux-design
 ---
 
-# /octo:ui-ux-design - UI/UX Design Workflow
+# /octo:design-ui-ux - UI/UX Design Workflow
 
 ## INSTRUCTIONS FOR CLAUDE
 
-When the user invokes this command (e.g., `/octo:ui-ux-design <arguments>`):
+When the user invokes this command (e.g., `/octo:design-ui-ux <arguments>`):
 
 ### Step 1: Detect Mode
 
@@ -79,7 +79,7 @@ Format output as a structured design spec:
 ## Usage Examples
 
 ```
-/octo:ui-ux-design SaaS analytics dashboard
+/octo:design-ui-ux SaaS analytics dashboard
 /octo:design health tech mobile app
 /octo:ui-design e-commerce checkout flow
 /octo:ux-design landing page for developer API
