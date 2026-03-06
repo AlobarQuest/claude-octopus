@@ -1,3 +1,11 @@
+## [8.38.3] - 2026-03-05
+
+### Fixed
+
+- Factory AI command discoverability: all commands now prefixed with `octo-` (e.g., `/octo-embrace`, `/octo-discover`) to mirror Claude Code's `/octo:*` namespace — Factory has no automatic plugin namespacing so commands were invisible when typing `/octo`
+
+---
+
 ## [8.38.2] - 2026-03-05
 
 ### Fixed

@@ -119,6 +119,16 @@ if [[ -d "$COMMANDS_SRC" ]]; then
   for src in "$COMMANDS_SRC"/*.md; do
     [[ -f "$src" ]] || continue
     filename="$(basename "$src")"
+    basename_no_ext="$(basename "$src" .md)"
+
+    # Factory has no plugin namespacing — prefix with "octo-" so all commands
+    # appear under /octo-* (mirrors Claude Code's /octo:* namespace).
+    # Skip prefixing "octo.md" itself (already named correctly).
+    if [[ "$basename_no_ext" == "octo" ]]; then
+      out_filename="$filename"
+    else
+      out_filename="octo-${filename}"
+    fi
 
     # Extract frontmatter (only first block between --- delimiters)
     frontmatter="$(awk 'BEGIN{c=0} /^---$/{c++; if(c==2) exit; next} c==1{print}' "$src")"
@@ -148,9 +158,9 @@ if [[ -d "$COMMANDS_SRC" ]]; then
       [[ -n "$allowed_tools" ]] && echo "allowed-tools: $allowed_tools"
       echo "---"
       echo "$cmd_body"
-    } > "$COMMANDS_OUT/$filename"
+    } > "$COMMANDS_OUT/$out_filename"
 
-    echo "  GEN: $filename"
+    echo "  GEN: $out_filename"
     cmd_count=$((cmd_count + 1))
   done
 fi
