@@ -1,3 +1,12 @@
+## [8.39.1] - 2026-03-07
+
+### Fixed
+
+- Codex agent 401 auth failure: `build_provider_env()` output contained escaped quotes that became literal characters after `read -ra`, corrupting `HOME` path and preventing Codex CLI from finding `~/.codex/auth.json` (Issue #117)
+- Added regression tests for literal quote detection in credential isolation
+
+---
+
 ## [8.39.0] - 2026-03-05
 
 ### Added

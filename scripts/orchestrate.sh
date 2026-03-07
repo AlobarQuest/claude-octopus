@@ -1148,13 +1148,13 @@ build_provider_env() {
 
     case "$provider" in
         codex*)
-            echo "env -i PATH=\"$PATH\" HOME=\"$HOME\" OPENAI_API_KEY=\"${OPENAI_API_KEY:-}\" TMPDIR=\"${TMPDIR:-/tmp}\""
+            echo "env -i PATH=$PATH HOME=$HOME OPENAI_API_KEY=${OPENAI_API_KEY:-} TMPDIR=${TMPDIR:-/tmp}"
             ;;
         gemini*)
-            echo "env -i PATH=\"$PATH\" HOME=\"$HOME\" GEMINI_API_KEY=\"${GEMINI_API_KEY:-}\" GOOGLE_API_KEY=\"${GOOGLE_API_KEY:-}\" NODE_NO_WARNINGS=1 TMPDIR=\"${TMPDIR:-/tmp}\""
+            echo "env -i PATH=$PATH HOME=$HOME GEMINI_API_KEY=${GEMINI_API_KEY:-} GOOGLE_API_KEY=${GOOGLE_API_KEY:-} NODE_NO_WARNINGS=1 TMPDIR=${TMPDIR:-/tmp}"
             ;;
         perplexity*)
-            echo "env -i PATH=\"$PATH\" HOME=\"$HOME\" PERPLEXITY_API_KEY=\"${PERPLEXITY_API_KEY:-}\" TMPDIR=\"${TMPDIR:-/tmp}\""
+            echo "env -i PATH=$PATH HOME=$HOME PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY:-} TMPDIR=${TMPDIR:-/tmp}"
             ;;
         *)
             # Claude and other providers: no isolation needed

@@ -170,6 +170,34 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────
+# Suite 6: No literal quotes in env values (Issue #117)
+# read -ra treats escaped quotes as literal characters, corrupting
+# HOME/PATH and causing 401 auth failures in Codex CLI.
+# ─────────────────────────────────────────────────────────────────────
+suite "6. No Literal Quotes in build_provider_env() (Issue #117)"
+
+# 6.1 Codex env line must not contain escaped quotes around values
+if echo "$CODEX_ENV" | grep -q '\\\"'; then
+  fail "Codex env contains escaped quotes — causes literal quote chars after read -ra (Issue #117)"
+else
+  pass "Codex env free of escaped quotes"
+fi
+
+# 6.2 Gemini env line must not contain escaped quotes around values
+if echo "$GEMINI_ENV" | grep -q '\\\"'; then
+  fail "Gemini env contains escaped quotes — causes literal quote chars after read -ra (Issue #117)"
+else
+  pass "Gemini env free of escaped quotes"
+fi
+
+# 6.3 Perplexity env line must not contain escaped quotes around values
+if echo "$PERP_ENV" | grep -q '\\\"'; then
+  fail "Perplexity env contains escaped quotes — causes literal quote chars after read -ra (Issue #117)"
+else
+  pass "Perplexity env free of escaped quotes"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────
 echo ""
