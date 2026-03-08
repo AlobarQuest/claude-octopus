@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "8.39.1",
-  "description": "Multi-tentacled orchestrator using Double Diamond methodology. (v8.39.1) Fix Codex 401 auth failure from literal quotes in env isolation (Issue #117). 32 expert personas, 49 commands, 50 skills. Commands '/octo:*'. Run /octo:setup for guided setup.",
+  "version": "8.40.0",
+  "description": "Multi-tentacled orchestrator using Double Diamond methodology. (v8.40.0) CC v2.1.70-71 feature sync: 6 new detection flags, effort callout, agent-type cost tracking, memory-safe longer timeouts. 32 expert personas, 49 commands, 50 skills. Commands '/octo:*'. Run /octo:setup for guided setup.",
   "author": {
     "name": "nyldn"
   },

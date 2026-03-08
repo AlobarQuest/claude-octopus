@@ -490,6 +490,12 @@ SUPPORTS_STATUSLINE_WORKTREE=false    # v8.34: Claude Code v2.1.69+ (worktree fi
 SUPPORTS_RELOAD_PLUGINS=false         # v8.34: Claude Code v2.1.69+ (/reload-plugins command)
 SUPPORTS_DISABLE_GIT_INSTRUCTIONS=false # v8.34: Claude Code v2.1.69+ (includeGitInstructions setting)
 SUPPORTS_GIT_SUBDIR_PLUGINS=false     # v8.34: Claude Code v2.1.69+ (git-subdir plugin source type)
+SUPPORTS_VSCODE_PLAN_VIEW=false       # v8.40: Claude Code v2.1.70+ (VSCode full markdown plan view with comments)
+SUPPORTS_IMAGE_CACHE_COMPACTION=false  # v8.40: Claude Code v2.1.70+ (compaction preserves images for prompt cache)
+SUPPORTS_RENAME_WHILE_PROCESSING=false # v8.40: Claude Code v2.1.70+ (/rename works during processing)
+SUPPORTS_NATIVE_LOOP=false            # v8.40: Claude Code v2.1.71+ (/loop command + cron scheduling tools)
+SUPPORTS_RUNTIME_DEBUG=false          # v8.40: Claude Code v2.1.71+ (/debug toggle mid-session)
+SUPPORTS_FAST_BRIDGE_RECONNECT=false  # v8.40: Claude Code v2.1.71+ (bridge reconnects in seconds, not 10min)
 SUPPORTS_CONTINUATION=false           # v8.30: Agent resume/continuation for iterative retries
 OCTOPUS_BACKEND="api"              # v8.16: Detected backend (api|bedrock|vertex|foundry)
 AGENT_TEAMS_ENABLED="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}"
@@ -716,6 +722,20 @@ detect_claude_code_version() {
         SUPPORTS_GIT_SUBDIR_PLUGINS=true
     fi
 
+    # Check for v2.1.70+ features (VSCode plan view, image compaction, rename while processing)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.70" ">="; then
+        SUPPORTS_VSCODE_PLAN_VIEW=true
+        SUPPORTS_IMAGE_CACHE_COMPACTION=true
+        SUPPORTS_RENAME_WHILE_PROCESSING=true
+    fi
+
+    # Check for v2.1.71+ features (native /loop + cron, runtime debug toggle, fast bridge reconnect)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.71" ">="; then
+        SUPPORTS_NATIVE_LOOP=true
+        SUPPORTS_RUNTIME_DEBUG=true
+        SUPPORTS_FAST_BRIDGE_RECONNECT=true
+    fi
+
     log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
     log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
     log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
@@ -734,6 +754,8 @@ detect_claude_code_version() {
     log "INFO" "Opus Medium Effort: $SUPPORTS_OPUS_MEDIUM_EFFORT | Ultrathink: $SUPPORTS_ULTRATHINK | Opus 4.0 Removed: $SUPPORTS_OPUS_40_REMOVED"
     log "INFO" "Skill Dir Var: $SUPPORTS_SKILL_DIR_VAR | Instructions Hook: $SUPPORTS_INSTRUCTIONS_LOADED_HOOK | Hook Agent Fields: $SUPPORTS_HOOK_AGENT_FIELDS"
     log "INFO" "Statusline Worktree: $SUPPORTS_STATUSLINE_WORKTREE | Reload Plugins: $SUPPORTS_RELOAD_PLUGINS | Disable Git Instructions: $SUPPORTS_DISABLE_GIT_INSTRUCTIONS"
+    log "INFO" "VSCode Plan: $SUPPORTS_VSCODE_PLAN_VIEW | Image Compaction: $SUPPORTS_IMAGE_CACHE_COMPACTION | Rename While Processing: $SUPPORTS_RENAME_WHILE_PROCESSING"
+    log "INFO" "Native Loop: $SUPPORTS_NATIVE_LOOP | Runtime Debug: $SUPPORTS_RUNTIME_DEBUG | Fast Bridge: $SUPPORTS_FAST_BRIDGE_RECONNECT"
 
     # v8.29.0: Context window control
     OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
@@ -4213,22 +4235,29 @@ compute_dynamic_timeout() {
             ;;
     esac
 
+    # v8.40.0: When CC has memory leak fixes (v2.1.63+), long sessions are stable —
+    # allow longer timeouts for complex tasks since agent sessions won't degrade
+    local leak_safe_boost=0
+    if [[ "$SUPPORTS_MEMORY_LEAK_FIXES" == "true" ]]; then
+        leak_safe_boost=60
+    fi
+
     # Task type mapping
     case "$task_type" in
         direct|lightweight|trivial)
             echo "60"
             ;;
         full|premium|complex)
-            echo "300"
+            echo "$((300 + leak_safe_boost))"
             ;;
         crossfire|debate)
-            echo "180"
+            echo "$((180 + leak_safe_boost))"
             ;;
         security|audit)
-            echo "240"
+            echo "$((240 + leak_safe_boost))"
             ;;
         *)
-            echo "120"
+            echo "$((120 + leak_safe_boost))"
             ;;
     esac
 }
@@ -10940,6 +10969,10 @@ ${earned_skills_ctx}"
         if [[ -n "$effort_level" ]]; then
             export OCTOPUS_EFFORT_LEVEL="$effort_level"
             log "DEBUG" "Effort level: $effort_level (phase=${phase:-unknown})"
+            # v8.40.0: Display effort level in agent spawn output when supported
+            if [[ "$SUPPORTS_EFFORT_CALLOUT" == "true" ]]; then
+                log "USER" "  Effort: $effort_level"
+            fi
         fi
     fi
 

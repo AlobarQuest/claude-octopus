@@ -409,7 +409,7 @@ else
 fi
 
 # 5.6: spawn_agent calls should_use_agent_teams
-if grep -A 300 '^spawn_agent()' "$ORCHESTRATE_SH" | grep -q 'should_use_agent_teams'; then
+if grep -A 400 '^spawn_agent()' "$ORCHESTRATE_SH" | grep -c 'should_use_agent_teams' >/dev/null 2>&1; then
     assert_pass "5.6 spawn_agent calls should_use_agent_teams"
 else
     assert_fail "5.6 spawn_agent calls should_use_agent_teams"

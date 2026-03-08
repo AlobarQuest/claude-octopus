@@ -1,3 +1,25 @@
+## [8.40.0] - 2026-03-07
+
+### Added
+
+- 6 new Claude Code feature detection flags for v2.1.70-71:
+  - `SUPPORTS_VSCODE_PLAN_VIEW` — VSCode full markdown plan view with comments (v2.1.70+)
+  - `SUPPORTS_IMAGE_CACHE_COMPACTION` — compaction preserves images for prompt cache reuse (v2.1.70+)
+  - `SUPPORTS_RENAME_WHILE_PROCESSING` — `/rename` works during processing (v2.1.70+)
+  - `SUPPORTS_NATIVE_LOOP` — native `/loop` command + cron scheduling tools (v2.1.71+)
+  - `SUPPORTS_RUNTIME_DEBUG` — `/debug` toggle mid-session (v2.1.71+)
+  - `SUPPORTS_FAST_BRIDGE_RECONNECT` — bridge reconnects in seconds instead of 10 minutes (v2.1.71+)
+- Effort level callout in agent spawn output when `SUPPORTS_EFFORT_CALLOUT` is true (wires previously dead flag)
+- Agent-type capture in SubagentStop hook for per-agent cost attribution (`SUPPORTS_HOOK_AGENT_FIELDS`)
+- Memory-safe timeout boost: complex/debate/audit tasks get +60s timeout when CC has memory leak fixes (v2.1.63+)
+
+### Changed
+
+- Total feature detection flags: 66 → 72 (covering CC v2.1.12 through v2.1.71)
+- Detection thresholds: 22 → 24 version checkpoints
+
+---
+
 ## [8.39.1] - 2026-03-07
 
 ### Fixed

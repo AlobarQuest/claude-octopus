@@ -60,10 +60,10 @@ test_timeout_full_mode() {
     local func_body
     func_body=$(sed -n '/^compute_dynamic_timeout()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
 
-    if echo "$func_body" | grep -q 'full\|premium' && echo "$func_body" | grep -q '"300"'; then
+    if echo "$func_body" | grep -q 'full\|premium' && echo "$func_body" | grep -q '300'; then
         test_pass
     else
-        test_fail "Full mode timeout not 300s"
+        test_fail "Full mode timeout not based on 300s"
     fi
 }
 
@@ -73,10 +73,10 @@ test_timeout_crossfire_mode() {
     local func_body
     func_body=$(sed -n '/^compute_dynamic_timeout()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
 
-    if echo "$func_body" | grep -q 'crossfire\|debate' && echo "$func_body" | grep -q '"180"'; then
+    if echo "$func_body" | grep -q 'crossfire\|debate' && echo "$func_body" | grep -q '180'; then
         test_pass
     else
-        test_fail "Crossfire mode timeout not 180s"
+        test_fail "Crossfire mode timeout not based on 180s"
     fi
 }
 
@@ -86,10 +86,10 @@ test_timeout_security_mode() {
     local func_body
     func_body=$(sed -n '/^compute_dynamic_timeout()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
 
-    if echo "$func_body" | grep -q 'security\|audit' && echo "$func_body" | grep -q '"240"'; then
+    if echo "$func_body" | grep -q 'security\|audit' && echo "$func_body" | grep -q '240'; then
         test_pass
     else
-        test_fail "Security mode timeout not 240s"
+        test_fail "Security mode timeout not based on 240s"
     fi
 }
 

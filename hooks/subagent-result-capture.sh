@@ -32,6 +32,10 @@ print(d.get('last_assistant_message', ''))" 2>/dev/null) || true
 AGENT_ID=$(printf '%s' "$INPUT" | python3 -c "
 import sys, json; print(json.load(sys.stdin).get('agent_id', ''))" 2>/dev/null) || true
 
+# v8.40.0: Capture agent_type from hook event for cost attribution (CC v2.1.69+)
+AGENT_TYPE=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json; print(json.load(sys.stdin).get('agent_type', ''))" 2>/dev/null) || true
+
 # Find the matching instruction JSON to get result_file path.
 # Match by: agent_id (if populated), else oldest unfinished instruction.
 RESULT_FILE=""
@@ -84,6 +88,10 @@ fi
     echo ""
     echo "## Status: SUCCESS"
     echo "## Capture: SubagentStop hook (last_assistant_message)"
+    # v8.40.0: Include agent_type for per-agent cost attribution (CC v2.1.69+)
+    if [[ -n "$AGENT_TYPE" ]]; then
+        echo "## Agent-Type: $AGENT_TYPE"
+    fi
 } >> "$RESULT_FILE"
 
 # Back-fill agent_id into the instruction JSON for correlation/continuation
