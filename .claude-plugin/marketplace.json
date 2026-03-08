@@ -11,7 +11,7 @@
     {
       "name": "claude-octopus",
       "source": "./",
-      "description": "v8.41.0 - Feature adoption: 3 new hooks, 10 native agents, command consolidation (49→36), auto-memory, data-driven flags, spec plan mode, mixed models. 32 personas, 36 commands, 50 skills. Run /octo:setup.",
+      "description": "v8.41.0 - Feature adoption: hooks, agents, Multi-LLM debate integration, command consolidation. 32 personas, 36 commands, 50 skills. Run /octo:setup.",
       "version": "8.41.0",
       "author": {
         "name": "nyldn"
