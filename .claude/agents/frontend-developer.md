@@ -9,7 +9,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(code-reviewer)
+  - Agent
 ---
 
 You are a frontend developer specializing in React, Next.js, and modern web development.

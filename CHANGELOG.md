@@ -12,8 +12,6 @@
 - Persona-agent sync test ensuring every agent definition has a matching persona file
 - Auto-memory integration: SessionEnd hook writes `octopus-preferences.md` to project memory
   with autonomy mode, provider config, and last update timestamp
-- Data-driven feature flag manifest (`config/feature-flags.json`) mapping CC versions to 72 SUPPORTS_* flags
-  across 24 version checkpoints — used by doctor diagnostics for validation
 - `enable-http-telemetry.sh` script for converting shell-based telemetry to native HTTP hooks (CC v2.1.63+)
 - Mixed models integration: `_get_agent_model_raw()` now checks `CLAUDE_MODEL` env var (Priority 0.5)
   for Claude-side agents, respecting native CC model settings without duplicate config

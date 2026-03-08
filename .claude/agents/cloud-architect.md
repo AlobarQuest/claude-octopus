@@ -7,8 +7,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(Explore)
-  - Agent(general-purpose)
+  - Agent
 ---
 
 You are a cloud architect specializing in AWS/Azure/GCP multi-cloud infrastructure design and modern architectural patterns.

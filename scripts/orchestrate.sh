@@ -537,8 +537,6 @@ version_compare() {
 }
 
 detect_claude_code_version() {
-    # v8.41.0: Data-driven flag manifest at config/feature-flags.json
-    # Used by doctor diagnostics for validation. Runtime detection remains inline for speed.
     # v8.36.0: Support Factory AI Droid runtime alongside Claude Code
     if [[ "$OCTOPUS_HOST" == "factory" ]]; then
         if command -v droid &>/dev/null; then

@@ -34,23 +34,37 @@ if [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
     AUTONOMY=$(jq -r '.autonomy // empty' "$SESSION_FILE" 2>/dev/null)
     PROVIDERS=$(jq -r '.providers // empty' "$SESSION_FILE" 2>/dev/null)
 
-    # Find the project memory directory (if it exists)
-    # Auto-memory integration: preferences survive across sessions
-    for mem_dir in "$MEMORY_DIR"/*/memory; do
-        if [[ -d "$mem_dir" ]]; then
-            OCTOPUS_MEM="${mem_dir}/octopus-preferences.md"
-            if [[ -n "$AUTONOMY" && "$AUTONOMY" != "null" ]]; then
-                {
-                    echo "# Octopus User Preferences"
-                    echo ""
-                    echo "- Preferred autonomy: ${AUTONOMY}"
-                    [[ -n "$PROVIDERS" && "$PROVIDERS" != "null" ]] && echo "- Provider config: ${PROVIDERS}"
-                    echo "- Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-                } > "$OCTOPUS_MEM"
+    # Find the correct project memory directory
+    # Priority: CLAUDE_PROJECT_DIR (set by CC) > CWD-based lookup > fallback scan
+    TARGET_MEM_DIR=""
+
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        # CC sets this to the project-specific config dir (e.g., ~/.claude/projects/-Users-foo-myproject/)
+        TARGET_MEM_DIR="${CLAUDE_PROJECT_DIR}/memory"
+    else
+        # Derive from CWD: CC encodes paths as -Users-foo-myproject
+        CWD_ENCODED=$(pwd | tr '/' '-' | sed 's/^-//')
+        for candidate in "$MEMORY_DIR"/*"${CWD_ENCODED}"*/memory "$MEMORY_DIR"/*; do
+            if [[ -d "$candidate" ]]; then
+                TARGET_MEM_DIR="$candidate"
+                # If candidate ends in /memory, use it directly; otherwise append
+                [[ "$candidate" != */memory ]] && TARGET_MEM_DIR="${candidate}/memory"
+                break
             fi
-            break  # Only write to the first matching project memory
-        fi
-    done
+        done
+    fi
+
+    if [[ -n "$TARGET_MEM_DIR" && -n "$AUTONOMY" && "$AUTONOMY" != "null" ]]; then
+        mkdir -p "$TARGET_MEM_DIR"
+        OCTOPUS_MEM="${TARGET_MEM_DIR}/octopus-preferences.md"
+        {
+            echo "# Octopus User Preferences"
+            echo ""
+            echo "- Preferred autonomy: ${AUTONOMY}"
+            [[ -n "$PROVIDERS" && "$PROVIDERS" != "null" ]] && echo "- Provider config: ${PROVIDERS}"
+            echo "- Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        } > "$OCTOPUS_MEM"
+    fi
 fi
 
 # --- 3. Clean up session artifacts ---

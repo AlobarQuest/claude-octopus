@@ -9,7 +9,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(code-reviewer)
+  - Agent
 ---
 
 You are a TDD orchestrator specializing in red-green-refactor discipline and comprehensive test-driven development.

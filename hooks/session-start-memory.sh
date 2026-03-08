@@ -13,13 +13,21 @@ SESSION_FILE="${HOME}/.claude-octopus/session.json"
 MEMORY_DIR="${HOME}/.claude/projects"
 
 # --- 1. Find and read persisted preferences from auto-memory ---
+# Priority: CLAUDE_PROJECT_DIR (set by CC) > CWD-based lookup > fallback scan
 PREFS_FILE=""
-for mem_dir in "$MEMORY_DIR"/*/memory; do
-    if [[ -f "${mem_dir}/octopus-preferences.md" ]]; then
-        PREFS_FILE="${mem_dir}/octopus-preferences.md"
-        break
-    fi
-done
+
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -f "${CLAUDE_PROJECT_DIR}/memory/octopus-preferences.md" ]]; then
+    PREFS_FILE="${CLAUDE_PROJECT_DIR}/memory/octopus-preferences.md"
+else
+    # CWD-based lookup then fallback scan
+    CWD_ENCODED=$(pwd | tr '/' '-' | sed 's/^-//')
+    for mem_dir in "$MEMORY_DIR"/*"${CWD_ENCODED}"*/memory "$MEMORY_DIR"/*/memory; do
+        if [[ -f "${mem_dir}/octopus-preferences.md" ]]; then
+            PREFS_FILE="${mem_dir}/octopus-preferences.md"
+            break
+        fi
+    done
+fi
 
 if [[ -z "$PREFS_FILE" || ! -f "$PREFS_FILE" ]]; then
     # No persisted preferences — first session or memory cleared

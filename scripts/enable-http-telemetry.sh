@@ -32,6 +32,25 @@ if ! command -v jq &>/dev/null; then
     exit 1
 fi
 
+# Version guard: HTTP hooks require Claude Code v2.1.63+
+CC_VERSION=""
+if command -v claude &>/dev/null; then
+    CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+fi
+
+if [[ -n "$CC_VERSION" ]]; then
+    CC_MINOR=$(echo "$CC_VERSION" | cut -d. -f2)
+    CC_PATCH=$(echo "$CC_VERSION" | cut -d. -f3)
+    if [[ "$CC_MINOR" -lt 1 ]] || { [[ "$CC_MINOR" -eq 1 ]] && [[ "$CC_PATCH" -lt 63 ]]; }; then
+        echo "ERROR: HTTP hooks require Claude Code v2.1.63+. Detected: v${CC_VERSION}" >&2
+        echo "Please update Claude Code first: claude update" >&2
+        exit 1
+    fi
+else
+    echo "WARNING: Could not detect Claude Code version. HTTP hooks require v2.1.63+." >&2
+    echo "Proceeding anyway — verify your version supports HTTP hooks." >&2
+fi
+
 echo "Enabling HTTP telemetry hook..."
 echo "  URL: $WEBHOOK_URL"
 [[ -n "$BEARER_TOKEN" ]] && echo "  Auth: Bearer token configured"

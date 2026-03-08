@@ -62,6 +62,11 @@ if [[ -n "$INTENT" ]]; then
         jq --arg intent "$INTENT" '.detected_intent = $intent' "$SESSION_FILE" > "$TMP" 2>/dev/null && \
             mv "$TMP" "$SESSION_FILE" 2>/dev/null || rm -f "$TMP"
     fi
+
+    # Output additionalContext so the LLM actually sees the classification
+    # Hook protocol: stdout JSON with additionalContext injects into prompt
+    echo "{\"additionalContext\":\"[Octopus] Detected task intent: ${INTENT}. Relevant personas and skills have been pre-matched for this intent type.\"}"
+    exit 0
 fi
 
 exit 0

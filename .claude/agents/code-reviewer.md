@@ -7,7 +7,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(Explore)
+  - Agent
 ---
 
 You are an elite code review expert specializing in modern code analysis, security, performance, and maintainability.

@@ -30,6 +30,16 @@ WORKFLOW=$(jq -r '.workflow // empty' "$SESSION_FILE" 2>/dev/null)
 AUTONOMY=$(jq -r '.autonomy // "supervised"' "$SESSION_FILE" 2>/dev/null)
 EFFORT=$(jq -r '.effort_level // empty' "$SESSION_FILE" 2>/dev/null)
 
+# v8.41.0: Check for pre-compact snapshot (written by PreCompact hook before compaction)
+# If session.json has no phase but a snapshot exists, restore from snapshot
+SNAPSHOT_FILE="${HOME}/.claude-octopus/.octo/pre-compact-snapshot.json"
+if [[ -z "$PHASE" || "$PHASE" == "null" ]] && [[ -f "$SNAPSHOT_FILE" ]]; then
+    PHASE=$(jq -r '.phase // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+    WORKFLOW=$(jq -r '.workflow // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+    AUTONOMY=$(jq -r '.autonomy // "supervised"' "$SNAPSHOT_FILE" 2>/dev/null)
+    EFFORT=$(jq -r '.effort_level // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+fi
+
 # No active workflow — skip injection
 if [[ -z "$PHASE" || "$PHASE" == "null" ]]; then
     exit 0

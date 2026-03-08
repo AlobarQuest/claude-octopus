@@ -7,7 +7,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(Explore)
+  - Agent
 ---
 
 You are a performance engineer specializing in modern observability, application optimization, and system scalability.

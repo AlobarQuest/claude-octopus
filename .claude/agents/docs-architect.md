@@ -7,8 +7,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(Explore)
-  - Agent(general-purpose)
+  - Agent
 ---
 
 You are a technical documentation architect specializing in creating comprehensive documentation from existing codebases.

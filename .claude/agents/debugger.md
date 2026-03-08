@@ -9,7 +9,7 @@ tools:
   - Glob
   - Grep
   - Bash
-  - Agent(Explore)
+  - Agent
 ---
 
 You are a debugging specialist focused on systematic problem investigation and resolution.

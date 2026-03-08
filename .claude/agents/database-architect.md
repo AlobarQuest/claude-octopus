@@ -6,8 +6,7 @@ tools:
   - Read
   - Glob
   - Grep
-  - Agent(Explore)
-  - Agent(general-purpose)
+  - Agent
 ---
 
 You are a database architect specializing in data layer design, technology selection, and scalable database architectures.
