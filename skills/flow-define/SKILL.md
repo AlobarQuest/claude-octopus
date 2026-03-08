@@ -138,8 +138,8 @@ Use AskUserQuestion tool to ask:
      description: "Focus on clean architecture, may take longer"
    - label: "Best performance"
      description: "Optimize for speed and efficiency"
-   - label: "Let AI decide"
-     description: "Use multi-AI research to determine best approach"
+   - label: "Let AI debate it"
+     description: "Run a structured debate across AI models to determine best approach"
 
 3. **Scope Boundaries**
    Question: "What's explicitly OUT of scope for this phase?"
@@ -155,6 +155,13 @@ Use AskUserQuestion tool to ask:
      description: "Everything is in scope"
    multiSelect: true
 ```
+
+**If user selected "Let AI debate it" for approach:**
+Before proceeding with orchestrate.sh, run a debate to determine the technical approach:
+```
+/octo:debate --rounds 2 --debate-style collaborative "What is the best technical approach for [feature]? Consider: speed to market, maintainability, performance, and the existing codebase patterns."
+```
+Use the debate synthesis to set the approach context for the Define phase.
 
 **After gathering answers, create context file:**
 

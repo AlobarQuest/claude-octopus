@@ -53,6 +53,17 @@ AskUserQuestion({
         {label: "Autonomous", description: "Run all 4 phases automatically"},
         {label: "Manual", description: "I'll guide each step explicitly"}
       ]
+    },
+    {
+      question: "Should critical decisions be stress-tested with a multi-AI debate?",
+      header: "Debate Gates",
+      multiSelect: false,
+      options: [
+        {label: "Yes — at Define→Develop gate", description: "Debate the chosen approach before implementing (recommended for Large/Full scope)"},
+        {label: "Yes — at both gates", description: "Debate after Define AND before final Deliver (maximum rigor)"},
+        {label: "No — skip debates", description: "Standard workflow without debate checkpoints"},
+        {label: "Only if disagreement detected", description: "Auto-trigger debate when providers disagree significantly"}
+      ]
     }
   ]
 })
@@ -61,6 +72,7 @@ AskUserQuestion({
 **After receiving answers:**
 - Store the context for use across all 4 phases
 - Set autonomy mode based on user preference
+- Store debate gate preference for phase transitions
 - Proceed with the embrace workflow incorporating this context
 
 ### Step 2: Check Provider Availability & Display Banner
@@ -113,8 +125,10 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh embrace "<user's prompt>"
 **What happens:**
 1. **Probe Phase** - Multi-provider research via spawn_agent() calls to Codex/Gemini
 2. **Grasp Phase** - Consensus building with run_agent_sync()
-3. **Tangle Phase** - Implementation with quality gates
-4. **Ink Phase** - Final validation and delivery
+3. **🐙 Define→Develop Debate Gate** (if enabled) — see Step 3b
+4. **Tangle Phase** - Implementation with quality gates
+5. **🐙 Develop→Deliver Debate Gate** (if "both gates" selected) — see Step 3c
+6. **Ink Phase** - Final validation and delivery
 
 **Autonomy handling:**
 - Supervised mode: Pauses after each phase for approval
@@ -126,6 +140,65 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh embrace "<user's prompt>"
 - `~/.claude-octopus/results/grasp-consensus-<timestamp>.md`
 - `~/.claude-octopus/results/tangle-validation-<timestamp>.md`
 - `~/.claude-octopus/results/delivery-<timestamp>.md`
+
+### Step 3b: Define→Develop Debate Gate
+
+**When the user selected debate gates ("at Define→Develop gate", "at both gates", or "only if disagreement detected"):**
+
+After the Grasp (Define) phase completes and before Tangle (Develop) begins:
+
+1. **Read the grasp consensus** from `~/.claude-octopus/results/grasp-consensus-*.md`
+2. **Run a 1-round quick debate** challenging the chosen approach:
+
+```
+🐙 **DEBATE GATE** — Stress-testing the Define→Develop transition
+🐙 Question: "Given this consensus, what are the biggest risks if we proceed? What alternatives were dismissed too quickly?"
+```
+
+Use the debate skill with these parameters:
+- `--rounds 1 --debate-style adversarial --max-words 200`
+- Pass the grasp consensus as `--context-file`
+- Each provider argues against the consensus to surface blind spots
+
+3. **Evaluate debate outcome:**
+   - If all providers agree the approach is sound → proceed to Develop
+   - If significant risks surface → present findings to user with AskUserQuestion:
+
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "The debate gate surfaced concerns about the chosen approach. How should we proceed?",
+    header: "Debate Gate Result",
+    multiSelect: false,
+    options: [
+      {label: "Proceed anyway", description: "Accept the risks and continue to Develop"},
+      {label: "Revise approach", description: "Adjust the plan based on debate findings, then continue"},
+      {label: "Run deeper debate", description: "Run a thorough 3-round debate before deciding"},
+      {label: "Stop and review", description: "Pause the workflow for manual review"}
+    ]
+  }]
+})
+```
+
+4. **"Only if disagreement detected" mode:** Skip the debate if the grasp consensus score was ≥85%. Only trigger when providers showed significant divergence during Define.
+
+### Step 3c: Develop→Deliver Debate Gate
+
+**Only runs when user selected "at both gates".**
+
+After Tangle (Develop) completes, before Ink (Deliver):
+
+1. **Read the tangle validation** from `~/.claude-octopus/results/tangle-validation-*.md`
+2. **Run a 1-round collaborative debate** on implementation quality:
+
+```
+🐙 **DEBATE GATE** — Validating implementation before delivery
+🐙 Question: "Review this implementation. What would you change before shipping? What edge cases are missing?"
+```
+
+Use: `--rounds 1 --debate-style collaborative --max-words 200`
+
+3. **Present any non-trivial findings** to user before proceeding to Deliver.
 
 ### Step 4: Present Results
 

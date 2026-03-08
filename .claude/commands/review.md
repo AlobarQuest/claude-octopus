@@ -50,6 +50,17 @@ AskUserQuestion({
         {label: "Production release", description: "Pre-deployment quality gate"},
         {label: "External audit", description: "Client or compliance review"}
       ]
+    },
+    {
+      question: "Should contentious findings be debated across AI models?",
+      header: "Debate Mode",
+      multiSelect: false,
+      options: [
+        {label: "No — standard review", description: "Claude-only review (fastest)"},
+        {label: "Yes — debate architecture decisions", description: "Run a debate on design trade-offs found during review"},
+        {label: "Yes — debate all high-severity findings", description: "Multi-AI deliberation on any critical/high findings"},
+        {label: "Auto — debate if disagreement detected", description: "Only trigger debate when providers would likely disagree"}
+      ]
     }
   ]
 })
@@ -70,6 +81,30 @@ Task(subagent_type: "octo:review", ...)  ❌ Wrong! This is a skill, not an agen
 ```
 
 **Why:** This command loads the `skill-code-review` skill. Skills use the `Skill` tool, not `Task`.
+
+---
+
+### Step 3: Post-Review Debate (if enabled)
+
+**If the user selected a debate mode in Step 1:**
+
+After the code review skill completes and produces findings:
+
+1. **"Debate architecture decisions"**: Extract architecture-related findings and invoke:
+   ```
+   /octo:debate --rounds 1 --debate-style collaborative "Review these architecture concerns: [findings]. Are they valid? What alternatives exist?"
+   ```
+
+2. **"Debate all high-severity findings"**: Extract critical/high findings and invoke:
+   ```
+   /octo:debate --rounds 2 --debate-style adversarial "Challenge these review findings: [findings]. Which are real risks vs false positives?"
+   ```
+
+3. **"Auto — debate if disagreement detected"**: After review, check if findings conflict
+   with the code's apparent intent. If tension exists, trigger a 1-round quick debate.
+
+4. **Present combined results**: Show the original review findings alongside debate synthesis,
+   highlighting where the debate confirmed, overturned, or nuanced the original findings.
 
 ---
 

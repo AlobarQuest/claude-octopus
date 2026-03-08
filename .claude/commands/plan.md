@@ -187,7 +187,7 @@ IF goal == "Research a topic":
   requires_multi_ai = true
 
 IF goal == "Make a decision":
-  ROUTE_TO: debate OR (discover + define)
+  ROUTE_TO: debate (always — decisions benefit from structured disagreement)
   requires_multi_ai = true
 
 IF goal == "Build something":
@@ -195,9 +195,13 @@ IF goal == "Build something":
     SUGGEST: native plan mode
   ELSE:
     ROUTE_TO: embrace (all 4 phases, weighted)
+    IF "High stakes" in constraints OR scope == "Large feature" OR scope == "Full system":
+      SUGGEST: embrace with debate gates enabled
 
 IF goal == "Review/improve existing":
   ROUTE_TO: review OR deliver
+  IF "High stakes" in constraints:
+    SUGGEST: review with debate validation
 ```
 
 #### Default Phase Weights
@@ -207,6 +211,24 @@ Start with 25% each, adjust based on signals:
 - Define: 25% ± 15% (scope & boundaries)
 - Develop: 25% ± 15% (implementation)
 - Deliver: 25% ± 15% (validation & review)
+
+#### Debate Integration in Plans
+
+When the plan includes debate-worthy decision points, surface them explicitly:
+
+```
+🐙 DEBATE CHECKPOINTS IN THIS PLAN:
+
+🔸 After Define phase: "Is [chosen approach] the right design?"
+   Triggers: 1-round adversarial debate on approach risks
+
+🔸 After Develop phase: "Is this implementation ready to ship?"
+   Triggers: 1-round collaborative debate on edge cases
+```
+
+Plans with `"High stakes"` constraints or `"Make a decision"` goals should always
+recommend debate gates. Include the debate checkpoint markers in the saved plan
+(`.claude/session-plan.md`) so `/octo:embrace` knows to activate them.
 
 ### Step 4: Present the Plan
 
@@ -324,6 +346,7 @@ AskUserQuestion({
         {label: "Review and execute later", description: "Plan saved, I'll run /octo:embrace when ready (Recommended)"},
         {label: "Adjust plan weights", description: "Change phase emphasis before saving"},
         {label: "Execute now", description: "Run /octo:embrace immediately with this plan"},
+        {label: "Debate the plan first", description: "Run a structured multi-AI debate to stress-test assumptions before executing"},
         {label: "Different approach", description: "Suggest an alternative strategy"}
       ]
     }
@@ -346,6 +369,14 @@ AskUserQuestion({
 - Invoke `/octo:embrace` skill with the user's goal
 - Pass the intent contract and phase weights
 - Let embrace workflow handle execution
+
+**If "Debate the plan first":**
+- Invoke `/octo:debate` with the plan as context:
+  - Topic: "Should we proceed with this plan? What are the risks and blind spots?"
+  - `--rounds 2 --debate-style adversarial --context-file .claude/session-plan.md`
+- After debate completes, present the synthesis and return to Step 6
+- If the debate confirms the plan, user can then select "Execute now"
+- If the debate reveals issues, user can select "Adjust plan weights" or "Different approach"
 
 **If "Different approach":**
 - Ask what they'd prefer

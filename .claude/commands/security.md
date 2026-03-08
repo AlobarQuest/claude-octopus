@@ -50,6 +50,17 @@ AskUserQuestion({
         {label: "Pragmatic", description: "Focus on high/critical issues only"},
         {label: "Development-only", description: "Non-production environment"}
       ]
+    },
+    {
+      question: "How should findings be validated?",
+      header: "Validation Mode",
+      multiSelect: false,
+      options: [
+        {label: "Standard audit", description: "Single-pass security analysis"},
+        {label: "Red team debate", description: "Adversarial red vs blue team debate on each finding (recommended for high-value targets)"},
+        {label: "Full adversarial cycle", description: "4-phase blue→red→remediate→validate with debate at each transition"},
+        {label: "Debate critical findings only", description: "Standard audit, then debate any critical/high severity findings"}
+      ]
     }
   ]
 })
@@ -70,6 +81,37 @@ Task(subagent_type: "octo:security", ...)  ❌ Wrong! This is a skill, not an ag
 ```
 
 **Why:** This command loads the `skill-security-audit` skill. Skills use the `Skill` tool, not `Task`.
+
+---
+
+### Step 3: Debate-Enhanced Validation (if enabled)
+
+**Based on the user's validation mode selection:**
+
+1. **"Red team debate"**: After the initial audit produces findings, invoke:
+   ```
+   /octo:debate --rounds 2 --debate-style adversarial "Red team challenge: Can you exploit these defenses? Blue team: defend the implementation. Findings: [audit results]"
+   ```
+   One provider plays attacker, the other plays defender. Claude synthesizes.
+
+2. **"Full adversarial cycle"**: Run the `octopus-security` (squeeze) workflow which already
+   implements Blue→Red→Remediate→Validate, but add debate transitions between each phase:
+   - After Blue Team: debate whether defense is sufficient
+   - After Red Team: debate severity and exploitability of findings
+   - After Remediation: debate whether fixes are complete
+   - After Validation: final consensus on security posture
+
+3. **"Debate critical findings only"**: After standard audit, filter findings by severity.
+   For any Critical or High finding, invoke:
+   ```
+   /octo:debate --rounds 1 --debate-style adversarial "Is this finding exploitable in practice? [finding details + code context]"
+   ```
+   This eliminates false positives and confirms real risks through multi-model deliberation.
+
+4. **Present results**: Show original audit findings annotated with debate verdicts:
+   - ✅ **Confirmed** — debate agreed this is a real vulnerability
+   - ⚠️ **Disputed** — models disagreed on severity or exploitability
+   - ❌ **Overturned** — debate concluded this is a false positive
 
 ---
 
