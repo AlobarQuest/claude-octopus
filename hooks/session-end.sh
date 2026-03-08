@@ -67,7 +67,48 @@ if [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
     fi
 fi
 
-# --- 3. Clean up session artifacts ---
+# --- 3. Learnings layer — meta-reflection across sessions (v8.41.0) ---
+# Appends session-level learnings (errors hit, patterns discovered, tools used)
+# to octopus-learnings.md for cross-session meta-reflection.
+if [[ -n "${TARGET_MEM_DIR:-}" ]] && [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
+    LEARNINGS_FILE="${TARGET_MEM_DIR}/octopus-learnings.md"
+    # Extract session signals for learnings
+    PHASE=$(jq -r '.current_phase // .phase // "none"' "$SESSION_FILE" 2>/dev/null)
+    WORKFLOW=$(jq -r '.workflow // "none"' "$SESSION_FILE" 2>/dev/null)
+    AGENT_CALLS=$(jq -r '.total_agent_calls // 0' "$SESSION_FILE" 2>/dev/null)
+    ERRORS=$(jq -r '.errors // [] | length' "$SESSION_FILE" 2>/dev/null) || ERRORS=0
+    DEBATE_USED=$(jq -r 'if .debate_rounds then "yes" else "no" end' "$SESSION_FILE" 2>/dev/null) || DEBATE_USED="no"
+
+    # Only write if there's something meaningful to record
+    if [[ "$AGENT_CALLS" -gt 0 || "$ERRORS" -gt 0 ]]; then
+        # Create header if file doesn't exist
+        if [[ ! -f "$LEARNINGS_FILE" ]]; then
+            {
+                echo "# Octopus Session Learnings"
+                echo ""
+                echo "Auto-captured meta-reflection across sessions. Most recent first."
+                echo "Prune entries older than 30 days to keep this file lean."
+                echo ""
+            } > "$LEARNINGS_FILE"
+        fi
+
+        # Prepend new entry (most recent first, cap at 50 entries / ~200 lines)
+        TEMP_LEARNINGS=$(mktemp)
+        {
+            head -5 "$LEARNINGS_FILE"  # Keep header
+            echo "## $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Workflow: ${WORKFLOW}, Phase reached: ${PHASE}"
+            echo "- Agent calls: ${AGENT_CALLS}, Errors: ${ERRORS}, Debate: ${DEBATE_USED}"
+            [[ "$ERRORS" -gt 0 ]] && echo "- Note: Session had errors — review metrics for details"
+            echo ""
+            # Keep existing entries (skip header)
+            tail -n +6 "$LEARNINGS_FILE" | head -195
+        } > "$TEMP_LEARNINGS"
+        mv "$TEMP_LEARNINGS" "$LEARNINGS_FILE"
+    fi
+fi
+
+# --- 4. Clean up session artifacts ---
 # Remove transient files but keep session.json for resume capability
 rm -f "${HOME}/.claude-octopus/.octo/pre-compact-snapshot.json" 2>/dev/null || true
 rm -f "${HOME}/.claude-octopus/.reload-signal" 2>/dev/null || true

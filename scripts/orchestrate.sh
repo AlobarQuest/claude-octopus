@@ -6440,6 +6440,28 @@ validate_agent_command() {
     esac
 }
 
+# v8.41.0: Anti-injection nonce wrapper for untrusted content
+# Wraps external/file-sourced content in random boundary tokens to prevent
+# prompt injection from memory files, earned skills, or provider history.
+# The nonce is a random hex string that cannot be predicted or forged.
+# This is purely internal — users never see the nonces.
+# Args: $1=content, $2=label (e.g. "memory", "earned-skills")
+# Returns: content wrapped in nonce boundaries
+sanitize_external_content() {
+    local content="$1"
+    local label="${2:-external}"
+
+    [[ -z "$content" ]] && return
+
+    # Generate random 16-char hex nonce
+    local nonce
+    nonce=$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' 2>/dev/null) || nonce="$(date +%s%N)"
+
+    echo "<!-- BEGIN-UNTRUSTED:${label}:${nonce} -->
+${content}
+<!-- END-UNTRUSTED:${label}:${nonce} -->"
+}
+
 # Properly escape string for JSON
 # Handles all special characters per JSON spec
 json_escape() {
@@ -10907,6 +10929,8 @@ ${skill_context}"
                 local memory_context
                 memory_context=$(build_memory_context "$agent_mem")
                 if [[ -n "$memory_context" ]]; then
+                    # v8.41.0: Wrap file-sourced memory in anti-injection nonce
+                    memory_context=$(sanitize_external_content "$memory_context" "memory")
                     # v8.16: Append (not prepend) memory context for prompt cache optimization
                     # Stable persona prefix stays at top for better cache hits
                     enhanced_prompt="${enhanced_prompt}
@@ -10925,6 +10949,8 @@ ${memory_context}"
     local provider_ctx
     provider_ctx=$(build_provider_context "$agent_type")
     if [[ -n "$provider_ctx" ]]; then
+        # v8.41.0: Wrap file-sourced provider history in anti-injection nonce
+        provider_ctx=$(sanitize_external_content "$provider_ctx" "provider-history")
         enhanced_prompt="${enhanced_prompt}
 
 ---
@@ -10941,6 +10967,8 @@ ${provider_ctx}"
         if [[ ${#earned_skills_ctx} -gt 1500 ]]; then
             earned_skills_ctx="${earned_skills_ctx:0:1500}..."
         fi
+        # v8.41.0: Wrap file-sourced earned skills in anti-injection nonce
+        earned_skills_ctx=$(sanitize_external_content "$earned_skills_ctx" "earned-skills")
         enhanced_prompt="${enhanced_prompt}
 
 ---
@@ -14622,6 +14650,8 @@ ${enhanced_prompt}"
     local provider_ctx
     provider_ctx=$(build_provider_context "$agent_type")
     if [[ -n "$provider_ctx" ]]; then
+        # v8.41.0: Wrap file-sourced provider history in anti-injection nonce
+        provider_ctx=$(sanitize_external_content "$provider_ctx" "provider-history")
         enhanced_prompt="${enhanced_prompt}
 
 ---
