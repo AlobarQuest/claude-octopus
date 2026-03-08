@@ -63,9 +63,8 @@ if [[ -n "$INTENT" ]]; then
             mv "$TMP" "$SESSION_FILE" 2>/dev/null || rm -f "$TMP"
     fi
 
-    # Output additionalContext so the LLM actually sees the classification
-    # Hook protocol: stdout JSON with additionalContext injects into prompt
-    echo "{\"additionalContext\":\"[Octopus] Detected task intent: ${INTENT}. Relevant personas and skills have been pre-matched for this intent type.\"}"
+    # Output context per hook spec: additionalContext must be under hookSpecificOutput
+    echo "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"[Octopus] Detected task intent: ${INTENT}. Relevant personas and skills have been pre-matched for this intent type.\"}}"
     exit 0
 fi
 
