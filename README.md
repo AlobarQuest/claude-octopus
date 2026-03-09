@@ -31,16 +31,16 @@ A Claude Code plugin that turns one model into three. Orchestrates Codex, Gemini
 
 | Version | What shipped |
 |---------|-------------|
-| **8.42** | **Workflow compliance & security** — mandatory execution enforcement, interactive next-steps, anti-injection nonces, session learnings layer, reinstated debate/research commands |
+| **8.42** | **Workflow compliance & security** — mandatory execution enforcement, interactive next-steps, anti-injection nonces, Multi-LLM debate gates |
+| **8.41** | **Feature adoption** — 3 new hooks, 10 native agents, auto-memory persistence, Factory droid generation, command consolidation |
+| **8.40** | **CC v2.1.70-71 sync** — 6 new detection flags, 3 dead flags wired, 72 total feature flags across 24 thresholds |
+| **8.39** | **GPT-5.4 models** — new OpenAI model support, Bash 3.2 macOS compatibility fix |
+| **8.38** | **Factory AI discovery fix** — root symlinks for Droid auto-discovery of commands/skills |
+| **8.37** | **Perplexity Sonar** — web search provider integration with API-based citation support |
 | **8.36** | **Factory AI support** — dual-platform compatibility, auto-detection of Claude Code vs Factory Droid runtime |
+| **8.35** | **Feature flag activation** — effort callout, worktree branch in statusline, InstructionsLoaded hook |
+| **8.34** | **Recurrence detection** — issue categorization, JSONL decision logging, CodeRabbit integration |
 | **8.33** | **UI/UX design workflow** — BM25 design intelligence with 320+ searchable styles, palettes, fonts, and UX rules |
-| **8.32** | **Knowledge worker personas** — marketing strategist, finance analyst, legal compliance advisor |
-| **8.31** | **Debate integrity** — anti-sycophancy gate, blinded consensus mode, model restriction service |
-| **8.30** | **Agent continuation** — iterative retries resume where they left off instead of starting over |
-| **8.27** | **Context compaction survival** — enforcement rules persist through conversation compression |
-| **8.26** | **Worktree isolation** — agents work in isolated git worktrees; 8 new configurable settings |
-| **8.25** | **Dark Factory mode** — autonomous spec-to-software pipeline with holdout testing and satisfaction scoring |
-| **8.23** | **OpenClaw admin + Doctor diagnostics** — `/octo:claw` for host management, `/octo:doctor` for 9-category health checks |
 
 [Full changelog](CHANGELOG.md)
 
