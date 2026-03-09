@@ -1,6 +1,6 @@
 ---
 command: schedule
-description: "Manage scheduled workflow jobs (add/list/remove/enable/disable/logs)"
+description: "Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)"
 aliases:
   - jobs
   - cron
@@ -13,140 +13,261 @@ Manage scheduled workflow jobs for the Claude Octopus scheduler.
 ## Usage
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh add <file.json>
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh list
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh remove <job-id>
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh enable <job-id>
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh disable <job-id>
-${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh logs [job-id]
+${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh [subcommand]
 ```
 
 ## Instructions for Claude
 
-This command supports **natural language**. Users can describe jobs conversationally and you MUST translate their intent into the correct CLI actions, generating JSON job files as needed.
+This command supports **natural language** and provides two primary experiences:
+- **No args / "show jobs" / "what's scheduled"** → Dashboard table
+- **"add a job" / "schedule X" / `add` with no file** → Guided wizard
 
-### Step 1: Parse Intent
+---
 
-Map the user's input to an action:
+### Step 0: Parse Intent First
 
-| Intent patterns | Action |
-|----------------|--------|
-| Describes a new job, mentions a schedule/time/frequency, "add", "create", "set up", "schedule a..." | **Create job** (generate JSON + `add`) |
-| "list", "show", "what jobs", "what's scheduled" | `list` |
-| "remove", "delete", "get rid of", mentions a job by name/id | `remove <id>` |
-| "enable", "turn on", "activate", "resume" + job reference | `enable <id>` |
-| "disable", "pause", "turn off", "skip" + job reference | `disable <id>` |
-| "logs", "what happened", "show output", "last run" | `logs [id]` |
-| Wants to change schedule, budget, prompt, or timeout of existing job | **Modify job** (read, edit, rewrite JSON) |
+| User says | Action |
+|-----------|--------|
+| No args, "show jobs", "status", "what's scheduled", "list" | **Dashboard** (Step 1A) |
+| Describes a new job, "add", "create", "schedule a...", any time/frequency reference | **Wizard** (Step 1B) |
+| "remove", "delete" + job name/id | Run `remove <id>` directly |
+| "enable", "turn on" + job reference | Run `enable <id>` |
+| "disable", "pause", "turn off" + job reference | Run `disable <id>` |
+| "logs", "what happened", "last run" | Run `logs [id]` + summarize |
+| Wants to change schedule/budget/prompt on existing job | **Modify** (Step 1C) |
 
-If the intent is ambiguous, use AskUserQuestion to clarify.
+If intent is ambiguous, show the dashboard first, then ask what they'd like to do.
 
-### Step 2: Display Banner
+---
 
+### Step 1A: Dashboard (No-args / List)
+
+Display the banner, then run:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh dashboard
 ```
-🐙 **CLAUDE OCTOPUS ACTIVATED** - Job Management
-⏰ Schedule: [action description]
+
+Present the output as-is. After showing it, offer quick actions:
+```
+What would you like to do?
+• Add a new job
+• Enable/disable a job
+• View logs for a job
+• Remove a job
+```
+
+---
+
+### Step 1B: Wizard — Guided Job Creation (MANDATORY for new jobs without a file arg)
+
+Display banner:
+```
+🐙 CLAUDE OCTOPUS ACTIVATED — Job Wizard
+⏰ Schedule: Creating a new scheduled job
 
 Providers:
-🔵 Claude - Job configuration
+🔵 Claude — Job configuration
 ```
 
-### Step 3: For Natural Language Job Creation
+**Ask these questions via AskUserQuestion:**
 
-When the user describes a job in natural language (e.g., "run a security scan every night at 2am on my-project"):
+```yaml
+Question 1:
+  question: "What should this job do?"
+  header: "Task"
+  multiSelect: false
+  options:
+    - label: "Security scan"
+      description: "Nightly vulnerability and code quality audit (squeeze workflow)"
+    - label: "Research digest"
+      description: "Research a topic and summarize findings (probe workflow)"
+    - label: "Full review"
+      description: "Complete 4-phase Double Diamond analysis (embrace workflow)"
+    - label: "Custom task"
+      description: "Describe what you want in your own words"
 
-1. **Extract these fields from their description:**
+Question 2:
+  question: "How often should it run?"
+  header: "Schedule"
+  multiSelect: false
+  options:
+    - label: "Every night at 2am"
+      description: "cron: 0 2 * * *"
+    - label: "Every weekday morning"
+      description: "cron: 0 9 * * 1-5"
+    - label: "Weekly (Sunday night)"
+      description: "cron: 0 22 * * 0"
+    - label: "Custom schedule"
+      description: "Describe the timing in natural language"
 
-   | Field | How to infer |
-   |-------|-------------|
-   | `id` | Slug from name: "Nightly Security Scan" → `nightly-security` |
-   | `name` | From their description or ask |
-   | `schedule.cron` | Parse time references (see Cron Translation below) |
-   | `task.workflow` | Map task type to workflow (see Workflow Mapping below) |
-   | `task.prompt` | Use their description, expand if too terse |
-   | `execution.workspace` | Current working directory if not specified, or ask |
-   | `execution.timeout_seconds` | Default 3600; use 1800 for research, 7200 for embrace |
-   | `budget.max_cost_usd_per_run` | Default 5.0; ask if the user seems cost-conscious |
-   | `budget.max_cost_usd_per_day` | Default 15.0 |
+Question 3:
+  question: "Which project/directory should it run in?"
+  header: "Workspace"
+  multiSelect: false
+  options:
+    - label: "Current directory"
+      description: "Use the current working directory"
+    - label: "Specify a path"
+      description: "I'll enter the full path"
+```
 
-2. **Show the user the generated job definition** before saving. Confirm they're happy with it.
+**After answers, generate the JSON job definition:**
 
-3. **Write the JSON to a temp file** and run `octopus-scheduler.sh add <file>`.
+Map user answers:
+| User says | workflow | cron |
+|-----------|----------|------|
+| Security scan | `squeeze` | `0 2 * * *` |
+| Research digest | `probe` | user's choice |
+| Full review | `embrace` | user's choice |
+| Custom | infer from description | parse time expression |
 
-### Cron Translation
+**Cron translation (natural language → cron):**
+| Phrase | Cron |
+|--------|------|
+| every night / nightly | `0 2 * * *` |
+| every morning / daily | `0 9 * * *` |
+| weekday mornings | `0 9 * * 1-5` |
+| weekly / every week | `0 22 * * 0` |
+| hourly | `@hourly` |
+| every N minutes | `*/N * * * *` |
+| every Monday at Xam | `0 X * * 1` |
 
-Map natural language time expressions to cron:
+**Generate job slug:** "Nightly Security Scan" → `nightly-security`
 
-| User says | Cron expression |
-|-----------|----------------|
-| "every night at 2am" | `0 2 * * *` |
-| "every morning at 9" | `0 9 * * *` |
-| "weekdays at 8:30am" | `30 8 * * 1-5` |
-| "every hour" | `@hourly` |
-| "daily", "every day" | `@daily` |
-| "weekly", "every week" | `@weekly` |
-| "every Monday at 10am" | `0 10 * * 1` |
-| "every 15 minutes" | `*/15 * * * *` |
-| "twice a day at 9am and 5pm" | `0 9,17 * * *` |
-| "first of the month" | `0 0 1 * *` |
-| "every 6 hours" | `0 */6 * * *` |
-| "Sunday nights" | `0 22 * * 0` |
-| "end of business weekdays" | `0 17 * * 1-5` |
+**Show the generated definition for user confirmation:**
+```json
+{
+  "id": "<slug>",
+  "name": "<Full Name>",
+  "enabled": true,
+  "backend": "<detected — see Step 2>",
+  "schedule": { "cron": "<expression>" },
+  "task": {
+    "workflow": "<workflow>",
+    "prompt": "<expanded description>"
+  },
+  "execution": {
+    "workspace": "<path>",
+    "timeout_seconds": 3600
+  },
+  "budget": {
+    "max_cost_usd_per_run": 5.0,
+    "max_cost_usd_per_day": 15.0
+  },
+  "security": {
+    "sandbox": "workspace-write"
+  }
+}
+```
 
-If the time is ambiguous (e.g., "every morning"), pick a sensible default and confirm with the user.
+Ask: "Does this look right? (yes to save / no to adjust)"
 
-### Workflow Mapping
+---
 
-Map task descriptions to orchestrate.sh workflows:
+### Step 2: Backend Detection (MANDATORY — run before saving any job)
 
-| User describes | Workflow | Rationale |
-|---------------|----------|-----------|
-| security scan, vulnerability check, audit | `squeeze` | Security-focused review |
-| research, explore, investigate, what's new | `probe` | Discovery/research phase |
-| code review, quality check | `squeeze` | Quality audit |
-| full review, complete analysis | `embrace` | All 4 Diamond phases |
-| define requirements, scope, plan | `grasp` | Definition phase |
-| build, implement, develop | `tangle` | Development phase |
-| test, validate, verify | `ink` | Delivery/validation phase |
-| compare, debate, evaluate options | `grapple` | Multi-AI deliberation |
+This step determines which execution backend to use and sets `"backend"` in the job JSON.
 
-If the task doesn't clearly map, ask the user which workflow they want.
+**Check 1 — User override wins:**
+```bash
+backend_pref="${OCTOPUS_SCHEDULER_BACKEND:-auto}"
+```
+- If `daemon` → set `backend: daemon`, skip further checks
+- If `coworkd` → attempt detection; error loudly if unavailable (do NOT fall back)
 
-### Step 4: For Modifying Existing Jobs
+**Check 2 — Detect CronCreate availability (inside CC session):**
 
-When the user wants to change an existing job:
+Use ToolSearch to check if CronCreate is available:
+```
+ToolSearch("select:CronCreate")
+```
+- If CronCreate loads successfully → set `backend: coworkd`
+- If ToolSearch returns nothing / errors → proceed to Check 3
 
-1. Read the job file from `~/.claude-octopus/scheduler/jobs/<id>.json`
-2. Apply the requested changes (new schedule, budget, prompt, etc.)
-3. Show the user the diff
-4. Write the updated JSON using `store_atomic_write` pattern (write to temp, validate, move)
+**Check 3 — CC version threshold (bash fallback):**
+```bash
+if command -v claude &>/dev/null; then
+    cc_version=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    # CronCreate available in CC v2.1.70+
+    # Use version comparison from detect_claude_code_version() in orchestrate.sh
+fi
+```
+- CC ≥ 2.1.70 → set `backend: coworkd`
+- CC < 2.1.70 or not installed → set `backend: daemon`
 
-### Step 5: Present Results
+**Display detection result:**
+```
+Backend detected: coworkd (CronCreate available)
+  — Job will run in isolated coworkd VM with CC task visibility
+```
+or:
+```
+Backend detected: daemon (Claude Code not available / older version)
+  — Job will run via bash daemon with file-based logging
+```
 
-After any action, present human-readable output:
-- After **add**: Show job summary with next run time
-- After **list**: Format as a clean table, highlight disabled jobs, show next run times
-- After **remove**: Confirm which job was removed
-- After **modify**: Show what changed
-- After **logs**: Summarize the log (last run status, duration, cost, any errors)
+---
 
-### Natural Language Examples
+### Step 3: Save and Register
 
-**Creating jobs:**
-- "schedule a security scan every night at 2am" → generate JSON, `add`
-- "run research on our tech stack every Monday morning" → generate JSON with `probe` workflow, `0 9 * * 1`
-- "set up a weekly code review on Fridays at 5pm" → generate JSON with `squeeze` workflow, `0 17 * * 5`
-- "add a daily research digest at 8am on weekdays" → generate JSON with `probe`, `0 8 * * 1-5`
+**Write JSON to temp file:**
+```bash
+TMPFILE=$(mktemp /tmp/octo-job-XXXXXX.json)
+# Write confirmed JSON with backend field set
+```
 
-**Managing jobs:**
-- "what's scheduled?" → `list`
-- "show me the nightly security logs" → `logs nightly-security`
-- "pause the morning research" → `disable morning-research`
-- "turn the morning research back on" → `enable morning-research`
-- "delete the weekly review" → `remove weekly-review`
-- "change the security scan to run at 3am instead" → read JSON, update cron, rewrite
-- "increase the budget on nightly-security to $10 per run" → read JSON, update budget, rewrite
-- "what happened on the last security scan?" → `logs nightly-security` + summarize
+**Register via detected backend:**
+
+**If `backend: coworkd`:**
+```
+Use CronCreate tool with:
+  - prompt: job's task.prompt
+  - schedule: job's schedule.cron
+  - workspace: job's execution.workspace
+```
+Then store the job JSON (with `backend: coworkd`) to `~/.claude-octopus/scheduler/jobs/<id>.json` for dashboard display and audit.
+
+**If `backend: daemon`:**
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh add "$TMPFILE"
+```
+Ensure the daemon is running:
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh status | grep -q "RUNNING" || \
+  ${CLAUDE_PLUGIN_ROOT}/scripts/scheduler/octopus-scheduler.sh start
+```
+
+**Cleanup:**
+```bash
+rm -f "$TMPFILE"
+```
+
+---
+
+### Step 1C: Modify Existing Job
+
+When user wants to change schedule, budget, prompt, or timeout:
+
+1. Read job file: `~/.claude-octopus/scheduler/jobs/<id>.json`
+2. Apply requested changes
+3. Show diff inline
+4. Write via `store_atomic_write` pattern (temp → validate → mv)
+5. If `backend: coworkd`, update CronCreate registration (remove old + create new)
+
+---
+
+### Step 4: Present Results
+
+After any action:
+
+- **add/wizard**: Show job summary with backend, next run, budget. Offer: "View dashboard" or "Add another job"
+- **dashboard**: Show table output + quick actions
+- **remove**: Confirm which job was removed, show updated count
+- **logs**: Summarize last run (status, duration, cost, errors)
+- **enable/disable**: Confirm state change
+
+---
 
 ## Job File Format
 
@@ -155,10 +276,11 @@ After any action, present human-readable output:
   "id": "nightly-security",
   "name": "Nightly Security Scan",
   "enabled": true,
+  "backend": "daemon",
   "schedule": { "cron": "0 2 * * *" },
   "task": {
     "workflow": "squeeze",
-    "prompt": "Run security review on current repo."
+    "prompt": "Run security review on current repo. Focus on OWASP top 10 and auth flows."
   },
   "execution": {
     "workspace": "/path/to/project",
@@ -174,6 +296,10 @@ After any action, present human-readable output:
   }
 }
 ```
+
+**`backend` field values:**
+- `"daemon"` — executed by octopus-scheduler bash daemon via setsid + orchestrate.sh
+- `"coworkd"` — registered with CronCreate; executed in coworkd VM (daemon ignores these jobs)
 
 ### Allowed Workflows
 

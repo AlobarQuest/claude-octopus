@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Claude Octopus Scheduler - CLI Entry Point (v8.15.0)
-# Subcommands: start, stop, status, add, list, remove, enable, disable, logs, emergency-stop
+# Claude Octopus Scheduler - CLI Entry Point (v8.16.0)
+# Subcommands: dashboard, start, stop, status, add, list, remove, enable, disable, logs, emergency-stop
+#
+# Backend selection (set OCTOPUS_SCHEDULER_BACKEND=auto|daemon|coworkd):
+#   auto    — detected at job registration time inside Claude session (default)
+#   daemon  — always use bash daemon regardless of CC availability
+#   coworkd — require CronCreate/coworkd; error loudly if unavailable
 
 set -euo pipefail
 
@@ -10,8 +15,6 @@ source "${SCRIPT_DIR}/store.sh"
 source "${SCRIPT_DIR}/cron.sh"
 source "${SCRIPT_DIR}/daemon.sh"
 
-VERSION="8.15.0"
-
 # --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,9 +23,14 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+VERSION="8.16.0"
+
 usage() {
     cat <<EOF
 ${BOLD}Claude Octopus Scheduler v${VERSION}${NC}
+
+${BOLD}Dashboard:${NC}
+  dashboard          Rich status table for all jobs (default when no args)
 
 ${BOLD}Daemon management:${NC}
   start              Start the scheduler daemon
@@ -38,12 +46,96 @@ ${BOLD}Job management:${NC}
   disable <id>       Disable a job
   logs [id]          Tail daemon log or job-specific logs
 
+${BOLD}Environment:${NC}
+  OCTOPUS_SCHEDULER_BACKEND=auto|daemon|coworkd   Backend selection (default: auto)
+
 ${BOLD}Examples:${NC}
-  octopus-scheduler.sh start
-  octopus-scheduler.sh add nightly-security.json
-  octopus-scheduler.sh list
+  octopus-scheduler.sh                   # show dashboard
+  octopus-scheduler.sh add job.json
+  octopus-scheduler.sh dashboard
   octopus-scheduler.sh logs nightly-security
 EOF
+}
+
+# --- Dashboard ---
+
+cmd_dashboard() {
+    store_init
+
+    # Daemon status header
+    local daemon_status_line
+    if daemon_is_running; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null || echo "?")
+        daemon_status_line="${GREEN}● daemon running${NC} (PID $pid)"
+    else
+        daemon_status_line="${YELLOW}○ daemon stopped${NC}  — run 'start' to activate"
+    fi
+
+    local daily_spend
+    daily_spend=$(get_daily_spend)
+
+    echo ""
+    echo -e "🐙 ${BOLD}Claude Octopus Scheduler${NC} v${VERSION}"
+    echo -e "   ${daemon_status_line}   Daily spend: \$${daily_spend}"
+    echo ""
+
+    # Check for jobs
+    local job_count=0
+    for f in "$JOBS_DIR"/*.json; do [[ -f "$f" ]] && job_count=$((job_count+1)); done
+
+    if (( job_count == 0 )); then
+        echo "  No scheduled jobs. Use 'octo:schedule add' to create one."
+        echo ""
+        return
+    fi
+
+    # Header row
+    printf "${BOLD}%-22s %-8s %-8s %-18s %-12s %-10s %s${NC}\n" \
+        "JOB" "STATUS" "BACKEND" "SCHEDULE" "LAST RUN" "COST" "NAME"
+    printf "%-22s %-8s %-8s %-18s %-12s %-10s %s\n" \
+        "---" "------" "-------" "--------" "--------" "----" "----"
+
+    while IFS='|' read -r id name enabled backend cron last_status last_run_age last_cost; do
+        # Status indicator
+        local status_display enabled_prefix
+        if [[ "$enabled" != "true" ]]; then
+            status_display="${YELLOW}disabled${NC}"
+            enabled_prefix="  "
+        elif [[ "$last_status" == "ok" ]]; then
+            status_display="${GREEN}ok${NC}      "
+            enabled_prefix="  "
+        elif [[ "$last_status" == "running" ]]; then
+            status_display="${CYAN}running${NC} "
+            enabled_prefix="  "
+        elif [[ "$last_status" == "never" ]]; then
+            status_display="never   "
+            enabled_prefix="  "
+        else
+            status_display="${RED}${last_status}${NC}"
+            enabled_prefix="  "
+        fi
+
+        # Backend badge
+        local backend_display
+        if [[ "$backend" == "coworkd" ]]; then
+            backend_display="${CYAN}coworkd${NC} "
+        else
+            backend_display="daemon  "
+        fi
+
+        local cost_display="-"
+        [[ "$last_cost" != "-" ]] && cost_display="\$${last_cost}"
+
+        printf "${enabled_prefix}%-20s " "$id"
+        echo -en "$status_display "
+        echo -en "$backend_display "
+        printf "%-18s %-12s %-10s %s\n" "$cron" "$last_run_age" "$cost_display" "$name"
+    done < <(list_jobs_rich)
+
+    echo ""
+    echo -e "  ${CYAN}Quick actions:${NC} enable <id> | disable <id> | remove <id> | logs <id>"
+    echo ""
 }
 
 # --- Job Management ---
@@ -245,6 +337,7 @@ main() {
     shift || true
 
     case "$cmd" in
+        dashboard|"")   cmd_dashboard ;;
         start)          daemon_start ;;
         stop)           daemon_stop ;;
         status)         daemon_status ;;
@@ -256,7 +349,6 @@ main() {
         disable)        cmd_disable "$@" ;;
         logs)           cmd_logs "$@" ;;
         -h|--help|help) usage ;;
-        "")             usage ;;
         *)
             echo -e "${RED}Unknown command:${NC} $cmd" >&2
             usage

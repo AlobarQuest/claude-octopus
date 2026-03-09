@@ -157,6 +157,11 @@ daemon_tick() {
         enabled=$(jq -r '.enabled // false' "$job_file")
         [[ "$enabled" == "true" ]] || continue
 
+        # Skip jobs registered for coworkd — those are managed by CronCreate, not this daemon
+        local job_backend
+        job_backend=$(jq -r '.backend // "daemon"' "$job_file")
+        [[ "$job_backend" == "daemon" ]] || continue
+
         local cron_expr
         cron_expr=$(jq -r '.schedule.cron // ""' "$job_file")
         [[ -n "$cron_expr" ]] || continue

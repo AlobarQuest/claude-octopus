@@ -61,7 +61,7 @@ load_job() {
     cat "$job_file"
 }
 
-# List all job files
+# List all job files (raw pipe-delimited)
 list_jobs() {
     local job_file
     for job_file in "$JOBS_DIR"/*.json; do
@@ -72,6 +72,60 @@ list_jobs() {
         enabled=$(jq -r '.enabled // false' "$job_file")
         cron=$(jq -r '.schedule.cron // "* * * * *"' "$job_file")
         echo "${id}|${name}|${enabled}|${cron}|${job_file}"
+    done
+}
+
+# List jobs with last-run status for dashboard display
+# Output: id|name|enabled|backend|cron|last_status|last_run_age|last_cost
+list_jobs_rich() {
+    local job_file
+    for job_file in "$JOBS_DIR"/*.json; do
+        [[ -f "$job_file" ]] || continue
+        local id name enabled backend cron
+        id=$(jq -r '.id // "unknown"' "$job_file")
+        name=$(jq -r '.name // "Untitled"' "$job_file")
+        enabled=$(jq -r '.enabled // false' "$job_file")
+        backend=$(jq -r '.backend // "daemon"' "$job_file")
+        cron=$(jq -r '.schedule.cron // "* * * * *"' "$job_file")
+
+        # Find most recent run for this job
+        local last_status="never" last_run_age="-" last_cost="-"
+        local latest_run
+        latest_run=$(ls -t "$RUNS_DIR"/run-*-"${id}".json 2>/dev/null | head -1)
+        if [[ -n "$latest_run" && -f "$latest_run" ]]; then
+            local exit_code started_at cost
+            exit_code=$(jq -r '.exit_code // null' "$latest_run")
+            started_at=$(jq -r '.started_at // ""' "$latest_run")
+            cost=$(jq -r '.cost_usd // 0' "$latest_run")
+
+            if [[ "$exit_code" == "0" ]]; then
+                last_status="ok"
+            elif [[ "$exit_code" == "null" ]]; then
+                last_status="running"
+            else
+                last_status="fail(${exit_code})"
+            fi
+
+            if [[ -n "$started_at" ]]; then
+                local started_epoch now_epoch age_secs
+                started_epoch=$(date -d "$started_at" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || echo "0")
+                now_epoch=$(date +%s)
+                age_secs=$(( now_epoch - started_epoch ))
+                if (( age_secs < 60 )); then
+                    last_run_age="${age_secs}s ago"
+                elif (( age_secs < 3600 )); then
+                    last_run_age="$((age_secs / 60))m ago"
+                elif (( age_secs < 86400 )); then
+                    last_run_age="$((age_secs / 3600))h ago"
+                else
+                    last_run_age="$((age_secs / 86400))d ago"
+                fi
+            fi
+
+            last_cost=$(awk -v c="$cost" 'BEGIN { printf "%.3f", c+0 }')
+        fi
+
+        echo "${id}|${name}|${enabled}|${backend}|${cron}|${last_status}|${last_run_age}|${last_cost}"
     done
 }
 

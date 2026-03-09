@@ -95,7 +95,7 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "quick", description: "Quick execution mode for ad-hoc tasks without full workflow overhead", type: "command", file: "quick.md" },
   { name: "research", description: "Deep research with multi-source synthesis and comprehensive analysis", type: "command", file: "research.md" },
   { name: "review", description: "Expert code review with comprehensive quality assessment and security analysis", type: "command", file: "review.md" },
-  { name: "schedule", description: "Manage scheduled workflow jobs (add/list/remove/enable/disable/logs)", type: "command", file: "schedule.md" },
+  { name: "schedule", description: "Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)", type: "command", file: "schedule.md" },
   { name: "scheduler", description: "Manage the scheduled workflow runner daemon (start/stop/status)", type: "command", file: "scheduler.md" },
   { name: "security", description: "Security audit with OWASP compliance and vulnerability detection", type: "command", file: "security.md" },
   { name: "sentinel", description: "GitHub-aware work monitor - triages issues, PRs, and CI failures", type: "command", file: "sentinel.md" },
