@@ -16448,6 +16448,9 @@ embrace_full_workflow() {
 
     log INFO "Starting complete Double Diamond workflow"
 
+    # v8.5: Show compact cost estimate in banner
+    show_cost_estimate "embrace" "${#prompt}"
+
     # v8.48.0: Disable cron during long multi-phase workflows to prevent interference
     if [[ "$SUPPORTS_DISABLE_CRON_ENV" == "true" ]]; then
         export CLAUDE_CODE_DISABLE_CRON=1
@@ -16515,9 +16518,6 @@ ${obs_ctx}"
 
     _write_embrace_session_state "init" "starting"
     echo ""
-
-    # v8.5: Show compact cost estimate in banner
-    show_cost_estimate "embrace" "${#prompt}"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log INFO "[DRY-RUN] Would embrace: $prompt"
