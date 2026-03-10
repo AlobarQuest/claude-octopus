@@ -287,6 +287,163 @@ fi
 
 echo ""
 
+# ─── Test Group 8: Model Catalog (P2) ────────────────────────────────────
+
+echo "Test Group 8: Model Catalog"
+echo "----------------------------"
+
+# Verify get_model_catalog function exists
+if grep -q '^get_model_catalog()' "$ORCHESTRATE"; then
+    pass "get_model_catalog() function defined"
+else
+    fail "get_model_catalog() function missing"
+fi
+
+# Verify catalog covers key models
+for model in gpt-5.4 gpt-5.3-codex-spark gemini-3-pro-preview claude-sonnet-4.6 sonar-pro o3; do
+    if grep -A 60 'get_model_catalog()' "$ORCHESTRATE" | grep -q "$model"; then
+        pass "Catalog includes $model"
+    else
+        fail "Catalog missing $model"
+    fi
+done
+
+# Verify is_known_model function exists
+if grep -q '^is_known_model()' "$ORCHESTRATE"; then
+    pass "is_known_model() function defined"
+else
+    fail "is_known_model() function missing"
+fi
+
+# Verify get_model_capability function exists
+if grep -q '^get_model_capability()' "$ORCHESTRATE"; then
+    pass "get_model_capability() function defined"
+else
+    fail "get_model_capability() function missing"
+fi
+
+# Verify list_models function exists with filters
+if grep -q '^list_models()' "$ORCHESTRATE"; then
+    pass "list_models() function defined"
+else
+    fail "list_models() function missing"
+fi
+
+if grep -A 20 'list_models()' "$ORCHESTRATE" | grep -q '\-\-tools\|\-\-images\|\-\-reasoning'; then
+    pass "list_models() supports capability filters"
+else
+    fail "list_models() missing capability filters"
+fi
+
+echo ""
+
+# ─── Test Group 9: Health Checks (P2) ────────────────────────────────────
+
+echo "Test Group 9: Pre-dispatch Health Checks"
+echo "------------------------------------------"
+
+# Verify check_provider_health function exists
+if grep -q '^check_provider_health()' "$ORCHESTRATE"; then
+    pass "check_provider_health() function defined"
+else
+    fail "check_provider_health() function missing"
+fi
+
+# Verify health checks cover all 5 providers
+for provider in codex gemini claude perplexity openrouter; do
+    if grep -A 60 'check_provider_health()' "$ORCHESTRATE" | grep -q "$provider)"; then
+        pass "Health check covers $provider"
+    else
+        fail "Health check missing $provider"
+    fi
+done
+
+# Verify check_all_providers function exists
+if grep -q '^check_all_providers()' "$ORCHESTRATE"; then
+    pass "check_all_providers() function defined"
+else
+    fail "check_all_providers() function missing"
+fi
+
+# Verify health check is wired into run_agent_sync
+if grep -A 100 'run_agent_sync()' "$ORCHESTRATE" | grep -q 'check_provider_health'; then
+    pass "run_agent_sync() calls check_provider_health() before dispatch"
+else
+    fail "run_agent_sync() not wired to health check"
+fi
+
+echo ""
+
+# ─── Test Group 10: Capability-Aware Fallbacks (P2) ──────────────────────
+
+echo "Test Group 10: Capability-Aware Fallbacks"
+echo "-------------------------------------------"
+
+# Verify find_capable_fallback function exists
+if grep -q '^find_capable_fallback()' "$ORCHESTRATE"; then
+    pass "find_capable_fallback() function defined"
+else
+    fail "find_capable_fallback() function missing"
+fi
+
+# Verify it checks tool/image/reasoning capabilities
+if grep -A 50 'find_capable_fallback()' "$ORCHESTRATE" | grep -q 'req_tools.*yes.*c_tools.*yes'; then
+    pass "find_capable_fallback() checks tool support compatibility"
+else
+    fail "find_capable_fallback() missing tool support check"
+fi
+
+if grep -A 50 'find_capable_fallback()' "$ORCHESTRATE" | grep -q 'req_images.*yes.*c_images.*yes'; then
+    pass "find_capable_fallback() checks image input compatibility"
+else
+    fail "find_capable_fallback() missing image support check"
+fi
+
+if grep -A 50 'find_capable_fallback()' "$ORCHESTRATE" | grep -q 'req_reasoning.*yes.*c_reasoning.*yes'; then
+    pass "find_capable_fallback() checks reasoning capability"
+else
+    fail "find_capable_fallback() missing reasoning check"
+fi
+
+# Verify validate_model_allowed uses find_capable_fallback
+if grep -A 35 'validate_model_allowed()' "$ORCHESTRATE" | grep -q 'find_capable_fallback'; then
+    pass "validate_model_allowed() uses capability-aware fallback"
+else
+    fail "validate_model_allowed() not wired to capability-aware fallback"
+fi
+
+echo ""
+
+# ─── Test Group 11: Interactive Model Listing (P2) ───────────────────────
+
+echo "Test Group 11: Interactive Model Listing"
+echo "------------------------------------------"
+
+HELPER="${SCRIPT_DIR}/../scripts/helpers/octo-model-config.sh"
+
+# Verify models subcommand exists in helper
+if grep -q 'cmd_models()' "$HELPER"; then
+    pass "octo-model-config.sh has cmd_models() function"
+else
+    fail "octo-model-config.sh missing cmd_models()"
+fi
+
+# Verify filter support
+if grep -A 5 'cmd_models()' "$HELPER" | grep -q 'filter'; then
+    pass "cmd_models() supports filtering"
+else
+    fail "cmd_models() missing filter support"
+fi
+
+# Verify models case in main dispatch
+if grep -q 'models) cmd_models' "$HELPER"; then
+    pass "models subcommand wired in main dispatch"
+else
+    fail "models subcommand not wired in dispatch"
+fi
+
+echo ""
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 
 echo "==========================================="

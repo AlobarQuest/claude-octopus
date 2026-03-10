@@ -27,6 +27,7 @@ usage() {
     echo "  set <provider> <model>      Set default model for a provider"
     echo "  route <phase> <target>      Route a phase to a specific model/capability"
     echo "  reset [provider|all]        Reset configuration to defaults"
+    echo "  models [filter]             List all known models with capabilities"
     echo "  verify                      Verify model accessibility"
     echo ""
     echo "Options:"
@@ -280,6 +281,60 @@ cmd_route() {
     clear_cache
 }
 
+cmd_models() {
+    local filter="${1:-}"
+    echo -e "${CYAN}Model Catalog${NC}"
+    echo "───────────────────────────────────────────────────────────────────────────"
+    printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" "Model" "Ctx(K)" "Tools" "Image" "Reas" "Provider" "Tier" "Status"
+    echo "  ───────────────────────────────────────────────────────────────────────────"
+
+    # Inline catalog (matches orchestrate.sh get_model_catalog)
+    local -a models=(
+        "gpt-5.4|400|yes|yes|no|codex|premium|active"
+        "gpt-5.3-codex-spark|128|yes|no|no|codex|standard|active"
+        "gpt-5.3-codex|400|yes|yes|no|codex|standard|active"
+        "gpt-5.2-codex|400|yes|yes|no|codex|standard|active"
+        "gpt-5-codex-mini|400|yes|no|no|codex|budget|active"
+        "gpt-5.1-codex-max|400|yes|yes|no|codex|premium|active"
+        "o3|200|yes|no|yes|codex|premium|active"
+        "o4-mini|200|yes|no|yes|codex|standard|active"
+        "gpt-4.1|1000|yes|yes|no|codex|standard|active"
+        "gpt-4.1-mini|1000|yes|no|no|codex|budget|active"
+        "gemini-3-pro-preview|1000|yes|yes|no|gemini|premium|active"
+        "gemini-3-flash-preview|1000|yes|yes|no|gemini|budget|active"
+        "gemini-3-pro-image-preview|1000|yes|yes|no|gemini|premium|active"
+        "claude-sonnet-4.6|200|yes|yes|no|claude|standard|active"
+        "claude-opus-4.6|200|yes|yes|no|claude|premium|active"
+        "sonar-pro|128|no|no|no|perplexity|standard|active"
+        "sonar|128|no|no|no|perplexity|budget|active"
+        "z-ai/glm-5|203|yes|no|no|openrouter|standard|active"
+        "moonshotai/kimi-k2.5|262|yes|yes|no|openrouter|standard|active"
+        "deepseek/deepseek-r1|164|yes|no|yes|openrouter|standard|active"
+    )
+
+    for entry in "${models[@]}"; do
+        local name ctx tools images reasoning provider tier status
+        IFS='|' read -r name ctx tools images reasoning provider tier status <<< "$entry"
+
+        # Apply filter
+        if [[ -n "$filter" ]]; then
+            case "$filter" in
+                --tools)     [[ "$tools" != "yes" ]] && continue ;;
+                --images)    [[ "$images" != "yes" ]] && continue ;;
+                --reasoning) [[ "$reasoning" != "yes" ]] && continue ;;
+                --budget)    [[ "$tier" != "budget" ]] && continue ;;
+                --premium)   [[ "$tier" != "premium" ]] && continue ;;
+                *)           echo "$name" | grep -qi "$filter" || continue ;;
+            esac
+        fi
+
+        printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" \
+            "$name" "${ctx}K" "$tools" "$images" "$reasoning" "$provider" "$tier" "$status"
+    done
+    echo ""
+    echo "  Filters: --tools, --images, --reasoning, --budget, --premium, or text search"
+}
+
 cmd_reset() {
     local provider="${1:-all}"
     if [[ "$provider" == "all" ]]; then
@@ -309,6 +364,7 @@ case "$COMMAND" in
     set) cmd_set "$@" ;;
     route) cmd_route "$@" ;;
     reset) cmd_reset "$@" ;;
+    models) cmd_models "$@" ;;
     verify) cmd_verify ;;
     help|--help|-h) usage ;;
     *) usage; exit 1 ;;

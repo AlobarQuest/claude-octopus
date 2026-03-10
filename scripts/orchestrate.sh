@@ -1269,6 +1269,270 @@ get_model_pricing() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MODEL CATALOG (v8.49.0)
+# Centralized metadata: context window, capabilities, provider, tier, status.
+# Used by capability-aware fallbacks and health checks.
+# Format: context_k|tools|images|reasoning|provider|tier|status
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Get model capabilities metadata
+# Returns: context_k|tools|images|reasoning|provider|tier|status
+get_model_catalog() {
+    local model="$1"
+    case "$model" in
+        # OpenAI GPT-5.x
+        gpt-5.4)                echo "400|yes|yes|no|codex|premium|active" ;;
+        gpt-5.4-pro)            echo "400|yes|yes|no|codex|premium|active" ;;
+        gpt-5.3-codex)          echo "400|yes|yes|no|codex|standard|active" ;;
+        gpt-5.3-codex-spark)    echo "128|yes|no|no|codex|standard|active" ;;
+        gpt-5.2-codex)          echo "400|yes|yes|no|codex|standard|active" ;;
+        gpt-5-codex-mini)       echo "400|yes|no|no|codex|budget|active" ;;
+        gpt-5.1-codex-mini)     echo "400|yes|no|no|codex|budget|active" ;;
+        gpt-5.1-codex-max)      echo "400|yes|yes|no|codex|standard|active" ;;
+        # Reasoning models
+        o3)                     echo "200|yes|no|yes|codex|premium|active" ;;
+        o3-pro)                 echo "200|yes|no|yes|codex|premium|active" ;;
+        o4-mini)                echo "200|yes|no|yes|codex|budget|active" ;;
+        o3-mini)                echo "200|yes|no|yes|codex|budget|active" ;;
+        # Large context
+        gpt-4.1)                echo "1000|yes|yes|no|codex|standard|active" ;;
+        gpt-4.1-mini)           echo "1000|yes|no|no|codex|budget|active" ;;
+        # Gemini
+        gemini-3-pro-preview)   echo "1000|yes|yes|no|gemini|premium|active" ;;
+        gemini-3-flash-preview) echo "1000|yes|no|no|gemini|budget|active" ;;
+        gemini-3-pro-image-preview) echo "1000|yes|yes|no|gemini|premium|active" ;;
+        # Claude
+        claude-sonnet-4.6)      echo "200|yes|yes|no|claude|standard|active" ;;
+        claude-opus-4.6)        echo "200|yes|yes|yes|claude|premium|active" ;;
+        claude-opus-4.6-fast)   echo "200|yes|yes|yes|claude|premium|active" ;;
+        # OpenRouter
+        z-ai/glm-5)             echo "203|yes|no|no|openrouter|standard|active" ;;
+        moonshotai/kimi-k2.5)   echo "262|yes|yes|no|openrouter|standard|active" ;;
+        deepseek/deepseek-r1)   echo "164|yes|no|yes|openrouter|standard|active" ;;
+        # Perplexity
+        sonar-pro)              echo "128|no|no|no|perplexity|standard|active" ;;
+        sonar)                  echo "128|no|no|no|perplexity|budget|active" ;;
+        # Unknown
+        *)                      echo "128|yes|no|no|unknown|standard|unknown" ;;
+    esac
+}
+
+# Check if a model is known in the catalog
+is_known_model() {
+    local model="$1"
+    local catalog
+    catalog=$(get_model_catalog "$model")
+    local status="${catalog##*|}"
+    [[ "$status" != "unknown" ]]
+}
+
+# Get a specific capability from the catalog
+# Usage: get_model_capability <model> <field>
+# Fields: context_k, tools, images, reasoning, provider, tier, status
+get_model_capability() {
+    local model="$1"
+    local field="$2"
+    local catalog
+    catalog=$(get_model_catalog "$model")
+
+    case "$field" in
+        context_k) echo "$catalog" | cut -d'|' -f1 ;;
+        tools)     echo "$catalog" | cut -d'|' -f2 ;;
+        images)    echo "$catalog" | cut -d'|' -f3 ;;
+        reasoning) echo "$catalog" | cut -d'|' -f4 ;;
+        provider)  echo "$catalog" | cut -d'|' -f5 ;;
+        tier)      echo "$catalog" | cut -d'|' -f6 ;;
+        status)    echo "$catalog" | cut -d'|' -f7 ;;
+    esac
+}
+
+# List all known models for a provider, optionally filtered by capability
+# Usage: list_models [provider] [--tools] [--images] [--reasoning] [--tier budget|standard|premium]
+list_models() {
+    local filter_provider="${1:-}"
+    shift || true
+    local require_tools="" require_images="" require_reasoning="" require_tier=""
+    for arg in "$@"; do
+        case "$arg" in
+            --tools) require_tools="yes" ;;
+            --images) require_images="yes" ;;
+            --reasoning) require_reasoning="yes" ;;
+            --tier) require_tier="$2"; shift ;;
+        esac
+    done
+
+    local -a all_models=(
+        gpt-5.4 gpt-5.4-pro gpt-5.3-codex gpt-5.3-codex-spark gpt-5.2-codex
+        gpt-5-codex-mini gpt-5.1-codex-max
+        o3 o3-pro o4-mini o3-mini
+        gpt-4.1 gpt-4.1-mini
+        gemini-3-pro-preview gemini-3-flash-preview gemini-3-pro-image-preview
+        claude-sonnet-4.6 claude-opus-4.6 claude-opus-4.6-fast
+        z-ai/glm-5 moonshotai/kimi-k2.5 deepseek/deepseek-r1
+        sonar-pro sonar
+    )
+
+    for model in "${all_models[@]}"; do
+        local catalog
+        catalog=$(get_model_catalog "$model")
+        local ctx tools images reasoning provider tier status
+        IFS='|' read -r ctx tools images reasoning provider tier status <<< "$catalog"
+
+        # Apply filters
+        [[ -n "$filter_provider" && "$provider" != "$filter_provider" ]] && continue
+        [[ -n "$require_tools" && "$tools" != "yes" ]] && continue
+        [[ -n "$require_images" && "$images" != "yes" ]] && continue
+        [[ -n "$require_reasoning" && "$reasoning" != "yes" ]] && continue
+        [[ -n "$require_tier" && "$tier" != "$require_tier" ]] && continue
+
+        local pricing
+        pricing=$(get_model_pricing "$model")
+        local in_price="${pricing%%:*}"
+        local out_price="${pricing##*:}"
+        printf "%-25s %5sK  tools=%-3s img=%-3s rsn=%-3s  \$%s/\$%s MTok  [%s]\n" \
+            "$model" "$ctx" "$tools" "$images" "$reasoning" "$in_price" "$out_price" "$tier"
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRE-DISPATCH HEALTH CHECKS (v8.49.0)
+# Verify provider CLI availability and credentials before running agents.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Check if a provider is healthy (CLI available + credentials present)
+# Returns 0 if healthy, 1 if unhealthy. Prints diagnostic to stderr.
+check_provider_health() {
+    local provider="$1"
+    local errors=0
+
+    case "$provider" in
+        codex)
+            if ! command -v codex &>/dev/null; then
+                echo "codex CLI not found in PATH" >&2
+                return 1
+            fi
+            # Check for either OAuth or API key
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+                # Check if OAuth is configured (codex auth status)
+                if ! codex auth status &>/dev/null 2>&1; then
+                    echo "codex: no OPENAI_API_KEY and OAuth not configured" >&2
+                    return 1
+                fi
+            fi
+            ;;
+        gemini)
+            if ! command -v gemini &>/dev/null; then
+                echo "gemini CLI not found in PATH" >&2
+                return 1
+            fi
+            if [[ -z "${GEMINI_API_KEY:-}" ]] && [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+                # Gemini CLI may use gcloud auth
+                if ! command -v gcloud &>/dev/null; then
+                    echo "gemini: no API key and gcloud not available" >&2
+                    return 1
+                fi
+            fi
+            ;;
+        claude)
+            if ! command -v claude &>/dev/null; then
+                echo "claude CLI not found in PATH" >&2
+                return 1
+            fi
+            ;;
+        perplexity)
+            if [[ -z "${PERPLEXITY_API_KEY:-}" ]]; then
+                echo "perplexity: PERPLEXITY_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+        openrouter)
+            if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+                echo "openrouter: OPENROUTER_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# Run health checks for all configured providers, return summary
+# Usage: check_all_providers
+check_all_providers() {
+    local healthy=0 unhealthy=0
+    local -a results=()
+
+    for provider in codex gemini claude perplexity openrouter; do
+        local diag
+        if diag=$(check_provider_health "$provider" 2>&1); then
+            results+=("  ✓ $provider")
+            ((healthy++))
+        else
+            results+=("  ✗ $provider: $diag")
+            ((unhealthy++))
+        fi
+    done
+
+    echo "Provider Health Check:"
+    printf '%s\n' "${results[@]}"
+    echo "  ($healthy healthy, $unhealthy unavailable)"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CAPABILITY-AWARE FALLBACKS (v8.49.0)
+# When a model is unavailable or blocked, fall back to one with matching
+# capabilities (tool support, image input, reasoning, context window).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Find a fallback model that matches the required capabilities
+# Usage: find_capable_fallback <blocked_model> <provider>
+# Returns: fallback model name or empty if none found
+find_capable_fallback() {
+    local blocked_model="$1"
+    local provider="$2"
+
+    # Get capabilities of the blocked model
+    local catalog
+    catalog=$(get_model_catalog "$blocked_model")
+    local req_ctx req_tools req_images req_reasoning _prov _tier _status
+    IFS='|' read -r req_ctx req_tools req_images req_reasoning _prov _tier _status <<< "$catalog"
+
+    # Get all models for this provider, sorted by cost (cheapest first)
+    local -a candidates=()
+    case "$provider" in
+        codex)
+            candidates=(gpt-5-codex-mini gpt-5.2-codex gpt-5.3-codex gpt-5.4 o4-mini o3 gpt-4.1-mini gpt-4.1) ;;
+        gemini)
+            candidates=(gemini-3-flash-preview gemini-3-pro-preview) ;;
+        claude)
+            candidates=(claude-sonnet-4.6 claude-opus-4.6) ;;
+        openrouter)
+            candidates=(z-ai/glm-5 moonshotai/kimi-k2.5 deepseek/deepseek-r1) ;;
+        perplexity)
+            candidates=(sonar sonar-pro) ;;
+    esac
+
+    for candidate in "${candidates[@]}"; do
+        [[ "$candidate" == "$blocked_model" ]] && continue
+
+        local c_catalog
+        c_catalog=$(get_model_catalog "$candidate")
+        local c_ctx c_tools c_images c_reasoning
+        IFS='|' read -r c_ctx c_tools c_images c_reasoning _ _ _ <<< "$c_catalog"
+
+        # Check capability match
+        [[ "$req_tools" == "yes" && "$c_tools" != "yes" ]] && continue
+        [[ "$req_images" == "yes" && "$c_images" != "yes" ]] && continue
+        [[ "$req_reasoning" == "yes" && "$c_reasoning" != "yes" ]] && continue
+
+        echo "$candidate"
+        return 0
+    done
+
+    # No capable fallback found
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE: Phase-optimized model tier selection (v8.7.0)
 # Selects budget/standard/premium model tier based on phase, role, and agent type
 # Config: OCTOPUS_COST_MODE=premium|standard|budget (default: standard)
@@ -1923,10 +2187,22 @@ validate_model_allowed() {
     fi
 
     log WARN "Model '$model' blocked by $allowlist_var (allowed: $allowlist)"
-    # Return the first allowed model as fallback
-    local fallback
-    fallback=$(echo "$allowlist" | cut -d',' -f1)
-    log WARN "Falling back to: $fallback"
+    # v8.49.0: Use capability-aware fallback instead of naive first-in-list
+    local fallback=""
+    if command -v find_capable_fallback &>/dev/null 2>&1; then
+        # Try to find a model with matching capabilities that IS in the allowlist
+        local capable
+        capable=$(find_capable_fallback "$model" "$provider" 2>/dev/null) || true
+        if [[ -n "$capable" ]] && echo ",$allowlist," | grep -Fc ",$capable," >/dev/null 2>&1; then
+            fallback="$capable"
+            log WARN "Capability-aware fallback: $fallback (matches blocked model's capabilities)"
+        fi
+    fi
+    # Final fallback: first allowed model if capability match not found
+    if [[ -z "$fallback" ]]; then
+        fallback=$(echo "$allowlist" | cut -d',' -f1)
+        log WARN "Falling back to first allowed: $fallback"
+    fi
     echo "$fallback"
     return 1
 }
@@ -14962,6 +15238,26 @@ ${earned_skills_ctx}"
     # Record usage (get model from agent type)
     local model
     model=$(get_agent_model "$agent_type" "$phase" "$role")
+
+    # v8.49.0: Pre-dispatch health check — verify provider is reachable
+    local _provider_for_health=""
+    case "$agent_type" in
+        codex*)      _provider_for_health="codex" ;;
+        gemini*)     _provider_for_health="gemini" ;;
+        claude*)     _provider_for_health="claude" ;;
+        openrouter*) _provider_for_health="openrouter" ;;
+        perplexity*) _provider_for_health="perplexity" ;;
+    esac
+    if [[ -n "$_provider_for_health" ]]; then
+        local _health_diag
+        if ! _health_diag=$(check_provider_health "$_provider_for_health" 2>&1); then
+            log WARN "Provider '$_provider_for_health' health check failed: $_health_diag"
+            log WARN "Skipping agent dispatch for $agent_type (provider unavailable)"
+            echo "[Provider $_provider_for_health unavailable: $_health_diag]"
+            return 1
+        fi
+    fi
+
     record_agent_call "$agent_type" "$model" "$enhanced_prompt" "${phase:-unknown}" "${role:-none}" "0"
 
     # v7.25.0: Record metrics start
