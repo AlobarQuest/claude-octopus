@@ -67,11 +67,11 @@ echo "Test 3: No debug output without flag"
 output=$("$ORCHESTRATE" probe "test no debug" --dry-run 2>&1 | head -50)
 assert_not_contains "$output" "DEBUG" "No debug output without --debug"
 
-# Test 4: Debug shows model selection tier
+# Test 4: Debug shows model resolution details
 echo ""
-echo "Test 4: Debug shows model selection tier"
+echo "Test 4: Debug shows model resolution details"
 output=$("$ORCHESTRATE" --debug probe "test" --dry-run 2>&1 | head -50)
-assert_contains "$output" "tier" "Shows model selection tier"
+assert_contains "$output" "Command:" "Shows agent command in debug output"
 
 # Test 5: Debug shows spawn_agent details
 echo ""

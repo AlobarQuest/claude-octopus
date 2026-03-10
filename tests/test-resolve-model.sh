@@ -52,16 +52,31 @@ assert_eq() {
     fi
 }
 
+# Clear model resolution caches (in-memory + persistent file)
+# Must be called between tests that change env vars or config files
+clear_model_cache() {
+    # Clear all in-memory cache variables
+    for var in $(compgen -v | grep '^_OCTO_MODEL_CACHE_'); do
+        unset "$var" 2>/dev/null || true
+    done
+    # Clear persistent file cache
+    rm -f /tmp/octo-model-cache-*.json 2>/dev/null || true
+}
+
 # Test 1: Hard-coded defaults
+clear_model_cache
 assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.4" "Default codex"
+clear_model_cache
 assert_eq "$(resolve_octopus_model "gemini" "gemini")" "gemini-3-pro-preview" "Default gemini"
 
 # Test 2: Env var overrides
+clear_model_cache
 export OCTOPUS_CODEX_MODEL="env-model"
 assert_eq "$(resolve_octopus_model "codex" "codex")" "env-model" "Env var override"
 unset OCTOPUS_CODEX_MODEL
 
 # Test 3: Config file defaults (v3.0)
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",
@@ -73,6 +88,7 @@ EOF
 assert_eq "$(resolve_octopus_model "codex" "codex")" "config-default" "Config file default"
 
 # Test 4: Capability mapping
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",
@@ -84,6 +100,7 @@ EOF
 assert_eq "$(resolve_octopus_model "codex" "codex-spark")" "config-spark" "Capability mapping"
 
 # Test 5: Phase routing
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",
@@ -98,6 +115,7 @@ EOF
 assert_eq "$(resolve_octopus_model "codex" "codex" "deliver")" "deliver-model" "Phase routing"
 
 # Test 6: Recursive reference (codex:spark)
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",
@@ -112,6 +130,7 @@ EOF
 assert_eq "$(resolve_octopus_model "codex" "codex" "deliver")" "config-spark" "Recursive reference"
 
 # Test 7: Tier mapping
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",
@@ -128,6 +147,7 @@ assert_eq "$(resolve_octopus_model "codex" "codex")" "config-mini" "Tier mapping
 unset OCTOPUS_COST_MODE
 
 # Test 8: Session override
+clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
   "version": "3.0",

@@ -65,24 +65,26 @@ else
     fail "get_agent_command() missing perplexity case"
 fi
 
-# Test 1.4: get_agent_model has perplexity defaults
-if grep -q 'perplexity).*echo "sonar-pro"' "$ORCHESTRATE_SH"; then
-    pass "get_agent_model() default: sonar-pro"
+# Test 1.4: perplexity defaults to sonar-pro (via model catalog or resolve fallback)
+# Refactored: models resolved via resolve_octopus_model + model catalog, not get_agent_model case
+if grep -q 'sonar-pro' "$ORCHESTRATE_SH" && grep -q 'perplexity.*sonar-pro\|sonar-pro.*perplexity' "$ORCHESTRATE_SH"; then
+    pass "perplexity default: sonar-pro (in model catalog/resolution)"
 else
-    fail "get_agent_model() missing sonar-pro default"
+    fail "perplexity missing sonar-pro default"
 fi
 
-if grep -q 'perplexity-fast).*echo "sonar"' "$ORCHESTRATE_SH"; then
-    pass "get_agent_model() default: sonar (fast)"
+if grep -q 'sonar' "$ORCHESTRATE_SH" && grep -q 'candidates=.*sonar' "$ORCHESTRATE_SH"; then
+    pass "perplexity sonar model registered in catalog"
 else
-    fail "get_agent_model() missing sonar default"
+    fail "perplexity missing sonar model"
 fi
 
-# Test 1.5: perplexity provider in get_agent_model case
-if grep -q 'perplexity|perplexity-fast)' "$ORCHESTRATE_SH" && grep -A1 'perplexity|perplexity-fast)' "$ORCHESTRATE_SH" | grep -q 'provider="perplexity"'; then
-    pass "get_agent_model() maps perplexity to provider"
+# Test 1.5: perplexity provider handled in get_agent_command
+# Refactored: provider mapping now via get_agent_command case + perplexity_execute
+if grep -q 'perplexity|perplexity-fast)' "$ORCHESTRATE_SH" && grep -A 3 'perplexity|perplexity-fast)' "$ORCHESTRATE_SH" | grep -q 'perplexity_execute\|provider.*perplexity'; then
+    pass "get_agent_command() handles perplexity provider"
 else
-    fail "get_agent_model() provider mapping missing"
+    fail "get_agent_command() perplexity handling missing"
 fi
 
 echo ""
@@ -173,11 +175,11 @@ else
     fail "build_provider_env() missing perplexity isolation"
 fi
 
-# Test 3.6: OCTOPUS_PERPLEXITY_MODEL env var support
-if grep -q 'OCTOPUS_PERPLEXITY_MODEL' "$ORCHESTRATE_SH"; then
-    pass "OCTOPUS_PERPLEXITY_MODEL env var supported"
+# Test 3.6: OCTOPUS_<PROVIDER>_MODEL env var support (dynamic pattern covers all providers)
+if grep -q 'OCTOPUS_.*_MODEL' "$ORCHESTRATE_SH" && grep -q 'tr.*lower.*upper.*_MODEL' "$ORCHESTRATE_SH"; then
+    pass "OCTOPUS_<PROVIDER>_MODEL dynamic env var pattern (covers perplexity)"
 else
-    fail "OCTOPUS_PERPLEXITY_MODEL env var missing"
+    fail "OCTOPUS_<PROVIDER>_MODEL env var pattern missing"
 fi
 
 echo ""

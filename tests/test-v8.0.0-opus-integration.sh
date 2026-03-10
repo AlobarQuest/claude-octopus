@@ -110,11 +110,12 @@ else
     assert_fail "1.4 get_model_pricing has claude-opus-4.6 → 5.00:25.00"
 fi
 
-# 1.5: get_agent_model default for claude-opus
-if grep -q 'claude-opus).*echo "claude-opus-4\.6"' "$ORCHESTRATE_SH"; then
-    assert_pass "1.5 get_agent_model defaults claude-opus to claude-opus-4.6"
+# 1.5: get_agent_command maps claude-opus to opus model
+# Refactored: get_agent_command returns command string (not model ID)
+if grep -q 'claude-opus).*echo "claude --print -m opus"' "$ORCHESTRATE_SH"; then
+    assert_pass "1.5 get_agent_command maps claude-opus to 'claude --print -m opus'"
 else
-    assert_fail "1.5 get_agent_model defaults claude-opus to claude-opus-4.6"
+    assert_fail "1.5 get_agent_command maps claude-opus to 'claude --print -m opus'"
 fi
 
 # 1.6: claude-opus maps to claude provider for config precedence

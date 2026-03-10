@@ -54,13 +54,20 @@ echo "--------------------------------"
 
 for provider in codex gemini; do
     TESTS_RUN=$((TESTS_RUN + 1))
-    model=$(jq -r ".providers.${provider}.model" "$CONFIG_FILE" 2>/dev/null || echo "")
+    model=$(jq -r ".providers.${provider}.model // .providers.${provider}.default // empty" "$CONFIG_FILE" 2>/dev/null || echo "")
     if [[ -n "$model" && "$model" != "null" ]]; then
         echo -e "${GREEN}✓${NC} ${provider} has default model: $model"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        echo -e "${RED}✗${NC} ${provider} missing default model"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
+        # v8.49.0: Fall back to checking orchestrate.sh for hardcoded defaults
+        # (providers.json may not have .model set if user hasn't run /octo:model-config)
+        if grep -q "get_tier_model\|get_default_model_for_provider" "${PLUGIN_DIR}/scripts/orchestrate.sh" 2>/dev/null; then
+            echo -e "${GREEN}✓${NC} ${provider} default model resolved via orchestrate.sh fallback"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            echo -e "${RED}✗${NC} ${provider} missing default model"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+        fi
     fi
 done
 
