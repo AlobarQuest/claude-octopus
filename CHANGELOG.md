@@ -1,3 +1,11 @@
+## [8.49.0] - 2026-03-10
+
+### Changed
+
+- Relevance-aware synthesis, CC pre-prompt alignment, model catalog, usage reporting, test fixes
+
+---
+
 ## [8.48.0] - 2026-03-09
 
 ### Fixed
