@@ -229,6 +229,64 @@ fi
 
 echo ""
 
+# ─── Test Group 7: Post-Run Usage Reporting ────────────────────────────────
+
+echo "Test Group 7: Post-Run Usage Reporting"
+echo "---------------------------------------"
+
+# Verify display_session_metrics exists
+if grep -q '^display_session_metrics()' "$ORCHESTRATE"; then
+    pass "display_session_metrics() function defined"
+else
+    fail "display_session_metrics() function missing"
+fi
+
+# Verify display_provider_breakdown exists
+if grep -q '^display_provider_breakdown()' "$ORCHESTRATE"; then
+    pass "display_provider_breakdown() function defined"
+else
+    fail "display_provider_breakdown() function missing"
+fi
+
+# Verify display_per_phase_cost_table exists
+if grep -q '^display_per_phase_cost_table()' "$ORCHESTRATE"; then
+    pass "display_per_phase_cost_table() function defined"
+else
+    fail "display_per_phase_cost_table() function missing"
+fi
+
+# Verify record_agent_start exists (returns metrics ID)
+if grep -q '^record_agent_start()' "$ORCHESTRATE"; then
+    pass "record_agent_start() function defined"
+else
+    fail "record_agent_start() function missing"
+fi
+
+# Verify record_agent_complete exists (records actual metrics)
+if grep -q '^record_agent_complete()' "$ORCHESTRATE"; then
+    pass "record_agent_complete() function defined"
+else
+    fail "record_agent_complete() function missing"
+fi
+
+# Verify record_agent_complete uses actual token data
+if grep -A 10 'record_agent_complete()' "$ORCHESTRATE" | grep -q 'actual_tokens'; then
+    pass "record_agent_complete() captures actual token counts"
+else
+    fail "record_agent_complete() does not capture actual tokens"
+fi
+
+# Verify embrace workflow calls display functions
+if grep -q 'display_session_metrics' "$ORCHESTRATE" && \
+   grep -q 'display_provider_breakdown' "$ORCHESTRATE" && \
+   grep -q 'display_per_phase_cost_table' "$ORCHESTRATE"; then
+    pass "embrace_full_workflow calls all 3 display functions"
+else
+    fail "embrace_full_workflow missing display function calls"
+fi
+
+echo ""
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 
 echo "==========================================="

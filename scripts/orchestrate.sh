@@ -2639,6 +2639,126 @@ generate_usage_table() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# POST-RUN USAGE DISPLAY (v8.49.0)
+# Functions called by embrace_full_workflow after all phases complete.
+# Wires the existing generate_usage_table() into the embrace end-of-run output.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# v8.49.0: Display session-level metrics (totals + per-model + per-phase)
+display_session_metrics() {
+    if [[ ! -f "${USAGE_FILE}.log" ]]; then
+        log DEBUG "No usage data for session metrics"
+        return 0
+    fi
+    generate_usage_table
+}
+
+# v8.49.0: Display per-provider breakdown (codex/gemini/claude)
+display_provider_breakdown() {
+    local log_file="${USAGE_FILE}.log"
+    [[ -f "$log_file" ]] || return 0
+
+    echo -e "${CYAN}Provider Breakdown:${NC}"
+    awk -F'|' '
+        {
+            # Extract provider from agent type (e.g., codex-spark -> codex)
+            provider = $2
+            gsub(/-.*/, "", provider)
+            tokens[provider] += $8
+            cost[provider] += $9
+            calls[provider]++
+        }
+        END {
+            for (p in calls) {
+                printf "  %-12s  %6d calls  %8d tokens  $%.4f est.\n", p, calls[p], tokens[p], cost[p]
+            }
+        }
+    ' "$log_file"
+    echo ""
+}
+
+# v8.49.0: Display per-phase cost table with model used
+display_per_phase_cost_table() {
+    local log_file="${USAGE_FILE}.log"
+    [[ -f "$log_file" ]] || return 0
+
+    echo -e "${CYAN}Per-Phase Cost Breakdown:${NC}"
+    printf "  %-12s  %-25s  %8s  %s\n" "Phase" "Model" "Tokens" "Est. Cost"
+    echo "  ──────────────────────────────────────────────────────────────"
+    awk -F'|' '
+        {
+            phase = $4
+            model = $3
+            key = phase "|" model
+            tokens[key] += $8
+            cost[key] += $9
+            calls[key]++
+            # Track which model was used per phase (last one wins for display)
+            phase_model[phase] = model
+            phase_tokens[phase] += $8
+            phase_cost[phase] += $9
+        }
+        END {
+            # Sort by phase name
+            n = asorti(phase_tokens, sorted)
+            for (i = 1; i <= n; i++) {
+                p = sorted[i]
+                printf "  %-12s  %-25s  %8d  $%.4f\n", p, phase_model[p], phase_tokens[p], phase_cost[p]
+            }
+        }
+    ' "$log_file"
+    echo ""
+}
+
+# v8.49.0: Record agent start (returns metrics ID for correlation)
+record_agent_start() {
+    local agent_type="$1"
+    local model="$2"
+    local prompt="$3"
+    local phase="${4:-unknown}"
+    local metrics_id="m-$(date +%s)-$$-${RANDOM}"
+    echo "$metrics_id"
+}
+
+# v8.49.0: Record agent completion with actual parsed metrics
+# Updates the usage log with actual token counts when available
+record_agent_complete() {
+    local metrics_id="$1"
+    local agent_type="$2"
+    local model="$3"
+    local output="$4"
+    local phase="${5:-unknown}"
+    local actual_tokens="${6:-}"
+    local tool_uses="${7:-}"
+    local duration_ms="${8:-0}"
+
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    # If we have actual token data from <usage> block, record a completion entry
+    if [[ -n "$actual_tokens" && "$actual_tokens" =~ ^[0-9]+$ ]]; then
+        local timestamp
+        timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        # Calculate cost with actual tokens
+        local pricing
+        pricing=$(get_model_pricing "$model")
+        local input_price="${pricing%%:*}"
+        local output_price="${pricing##*:}"
+        # Assume 40% input, 60% output split for actual tokens
+        local input_tokens=$(( actual_tokens * 40 / 100 ))
+        local output_tokens=$(( actual_tokens * 60 / 100 ))
+        local cost
+        cost=$(awk "BEGIN {printf \"%.6f\", ($input_tokens * $input_price + $output_tokens * $output_price) / 1000000}")
+
+        # Append actual metrics (suffixed with :actual to distinguish from estimates)
+        if [[ -f "${USAGE_FILE}.log" ]]; then
+            echo "${timestamp}|${agent_type}|${model}|${phase}|actual|${input_tokens}|${output_tokens}|${actual_tokens}|${cost}|${duration_ms}|${metrics_id}" >> "${USAGE_FILE}.log"
+            log DEBUG "Recorded actual metrics: agent=$agent_type tokens=$actual_tokens cost=\$$cost duration=${duration_ms}ms"
+        fi
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # UX ENHANCEMENTS: Feature 1 - Enhanced Spinner Verbs (v7.16.0)
 # Dynamic task progress updates with context-aware verbs
 # ═══════════════════════════════════════════════════════════════════════════════
