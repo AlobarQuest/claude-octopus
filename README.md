@@ -47,6 +47,10 @@ A Claude Code plugin that turns one model into three. Orchestrates Codex, Gemini
 
 [Full changelog](CHANGELOG.md)
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=nyldn/claude-octopus&type=date&legend=top-left)](https://www.star-history.com/?repos=nyldn%2Fclaude-octopus&type=date&legend=top-left)
+
 ---
 
 ## Quickstart
