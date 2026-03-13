@@ -86,7 +86,12 @@ export class TailwindExtractor {
     ];
 
     for (const configFile of possiblePaths) {
-      const fullPath = path.join(projectRoot, configFile);
+      const base = path.resolve(projectRoot);
+      const fullPath = path.resolve(base, configFile);
+      const relative = path.relative(base, fullPath);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        continue;
+      }
       if (fs.existsSync(fullPath)) {
         return fullPath;
       }
@@ -98,6 +103,15 @@ export class TailwindExtractor {
   private async loadConfig(configPath: string): Promise<TailwindConfig | null> {
     try {
       const ext = path.extname(configPath);
+      if (configPath.includes('..') || path.isAbsolute(configPath)) {
+        this.errors.push({
+          source: TokenSource.TAILWIND_CONFIG,
+          message: `Failed to load config: ${configPath}`,
+          error: new Error('Invalid config path'),
+          filePath: configPath,
+        });
+        return null;
+      }
       const content = fs.readFileSync(configPath, 'utf-8');
 
       // Handle TypeScript config
