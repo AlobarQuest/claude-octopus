@@ -548,7 +548,13 @@ export class TokenExtractionPipeline {
 
     // Generate Markdown output
     if (outputFormats.includes('markdown')) {
-      const outputPath = path.join(this.options.outputDir!, 'tokens.md');
+      const base = path.resolve(this.options.outputDir!);
+      const target = path.resolve(base, 'tokens.md');
+      const relative = path.relative(base, target);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('Invalid output path');
+      }
+      const outputPath = target;
       await generateMarkdownOutput(
         tokens,
         {
