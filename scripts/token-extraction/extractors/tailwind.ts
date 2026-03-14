@@ -106,33 +106,38 @@ export class TailwindExtractor {
 
   private async loadConfig(configPath: string): Promise<TailwindConfig | null> {
     try {
+      const normalizedPath = path.normalize(configPath);
+      const isAbsolute = path.isAbsolute(configPath);
+      const hasTraversal = normalizedPath.split(path.sep).includes('..');
+
       // Reject paths containing path traversal sequences or absolute paths
       // when the caller provides an explicit configPath via options
-      if (configPath.includes('..') || (this.options.configPath && path.isAbsolute(this.options.configPath))) {
+      if (hasTraversal || (this.options.configPath && isAbsolute)) {
         this.errors.push({
           source: TokenSource.TAILWIND_CONFIG,
-          message: `Rejected config path with path traversal: ${configPath}`,
-          filePath: configPath,
+          message: `Rejected config path with path traversal: ${normalizedPath}`,
+          filePath: normalizedPath,
         });
         return null;
       }
 
-      const ext = path.extname(configPath);
-      const content = fs.readFileSync(configPath, 'utf-8');
+      const ext = path.extname(normalizedPath);
+      const content = fs.readFileSync(normalizedPath, 'utf-8');
 
       // Handle TypeScript config
       if (ext === '.ts') {
-        return this.parseTSConfig(content, configPath);
+        return this.parseTSConfig(content, normalizedPath);
       }
 
       // Handle JavaScript config
-      return this.parseJSConfig(content, configPath);
+      return this.parseJSConfig(content, normalizedPath);
     } catch (error) {
+      const normalizedPath = path.normalize(configPath);
       this.errors.push({
         source: TokenSource.TAILWIND_CONFIG,
-        message: `Failed to load config: ${configPath}`,
+        message: `Failed to load config: ${normalizedPath}`,
         error: error as Error,
-        filePath: configPath,
+        filePath: normalizedPath,
       });
       return null;
     }
