@@ -85,8 +85,17 @@ export class TailwindExtractor {
       'tailwind.config.mjs',
     ];
 
+    const resolvedRoot = path.resolve(projectRoot);
+
     for (const configFile of possiblePaths) {
-      const fullPath = path.join(projectRoot, configFile);
+      const fullPath = path.resolve(projectRoot, configFile);
+
+      // Validate the resolved path stays within the project root
+      const rel = path.relative(resolvedRoot, fullPath);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        continue;
+      }
+
       if (fs.existsSync(fullPath)) {
         return fullPath;
       }
@@ -97,6 +106,17 @@ export class TailwindExtractor {
 
   private async loadConfig(configPath: string): Promise<TailwindConfig | null> {
     try {
+      // Reject paths containing path traversal sequences or absolute paths
+      // when the caller provides an explicit configPath via options
+      if (configPath.includes('..') || (this.options.configPath && path.isAbsolute(this.options.configPath))) {
+        this.errors.push({
+          source: TokenSource.TAILWIND_CONFIG,
+          message: `Rejected config path with path traversal: ${configPath}`,
+          filePath: configPath,
+        });
+        return null;
+      }
+
       const ext = path.extname(configPath);
       const content = fs.readFileSync(configPath, 'utf-8');
 
