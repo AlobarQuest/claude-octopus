@@ -56,16 +56,27 @@ export class TokenExtractionPipeline {
   private currentScope?: FeatureScope;
 
   constructor(projectRoot: string, options: ExtractionOptions = {}) {
-    this.projectRoot = projectRoot;
+    this.projectRoot = path.resolve(projectRoot);
     this.options = {
       conflictResolution: 'priority',
       outputFormats: ['json', 'css', 'markdown'],
-      outputDir: path.join(projectRoot, 'design-tokens'),
+      outputDir: path.join(this.projectRoot, 'design-tokens'),
       preserveOriginalKeys: true,
       validateTokens: true,
       sourcePriorities: DEFAULT_SOURCE_PRIORITIES,
       ...options,
     };
+
+    // Validate that outputDir does not traverse outside the project root
+    const resolvedOutputDir = path.resolve(this.options.outputDir!);
+    const rel = path.relative(this.projectRoot, resolvedOutputDir);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new Error(
+        `Output directory "${this.options.outputDir}" resolves outside the project root. ` +
+        `This may indicate a path traversal attack.`
+      );
+    }
+    this.options.outputDir = resolvedOutputDir;
   }
 
   /**
