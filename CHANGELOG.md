@@ -1,3 +1,53 @@
+## [8.56.0] - 2026-03-13
+
+### Added
+
+- **8 new `SUPPORTS_*` detection flags** (94 total, 30 `version_compare` blocks) from CC v2.1.72 (2 untracked) and v2.1.74 (6 new).
+- **v2.1.72**: `SUPPORTS_PARALLEL_TOOL_RESILIENCE` (failed Read/WebFetch/Glob no longer cancels sibling tool calls), `SUPPORTS_PLAN_WITH_ARGS` (`/plan` accepts description argument).
+- **v2.1.74**: `SUPPORTS_AUTO_MEMORY_DIR` (`autoMemoryDirectory` setting), `SUPPORTS_FULL_MODEL_IDS` (full model IDs e.g. `claude-opus-4-6` in agent frontmatter), `SUPPORTS_SESSION_END_TIMEOUT` (`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` env var), `SUPPORTS_CONTEXT_SUGGESTIONS` (`/context` with actionable optimization tips), `SUPPORTS_PLUGIN_DIR_OVERRIDE` (`--plugin-dir` overrides marketplace), `SUPPORTS_MANAGED_POLICY_FIX` (managed policy `ask` rules fix).
+- `test-cc-v2174-sync.sh` — 36 tests covering declarations, detection blocks, logging, wiring, and version comments.
+
+### Wired
+
+- `spawn_agent()`: Positive debug log when `SUPPORTS_FULL_MODEL_IDS` confirms full model ID support in agent frontmatter (CC v2.1.74+).
+- `/octo:doctor`: Surfaces `/context` command as diagnostic tool for context-heavy sessions (CC v2.1.74+).
+- `/octo:doctor`: Checks `autoMemoryDirectory` setting in `~/.claude/settings.json` (CC v2.1.74+).
+
+### Fixed
+
+- `test-version-check.sh` Test 5: `head -30` → `head -40` — fragile against growing log line count from new flags.
+
+---
+
+## [8.55.0] - 2026-03-12
+
+### Changed
+
+- **Smart router v2.0** (`/octo:octo`) — Complete rewrite of the natural language workflow router. Routing coverage expanded from 8 → 17 workflows with 9 new intents: debug, security, tdd, docs, quick, design-ui-ux, prd, brainstorm, deck.
+- **Decision tree confidence** — Replaced ambiguous percentage-based scoring (`matching/total * 100 + adjustments`) with explicit HIGH/MEDIUM/LOW decision tree. Single matched intent + specific target = auto-route. Same-priority conflicts = ask user.
+- **3-tier priority ordering** — Specialized workflows (P1) > Core workflows (P2) > Build workflows (P3). "Analyze the security of our API" now correctly routes to `/octo:security` (P1) over `/octo:discover` (P2).
+- **Context efficiency** — 382 → 204 lines (47% reduction). Deduplicated 3x-repeated routing table (docs, execution contract, examples) to single authoritative source in execution contract.
+
+### Added
+
+- **Meta command handler** — `/octo:octo help` displays all 17 workflows in 4 categories (Core, Engineering, Creative & Documentation, Quick).
+- **Input length guard** — Queries >500 chars truncated for intent analysis; full query passed to target workflow.
+- **Routing analytics** — Decisions appended to `~/.claude-octopus/routing.log` with timestamp, intent, confidence, and target.
+- **Routing memory** — Auto-memory corrections on rejected suggestions enable preference learning across sessions.
+- `test-smart-router.sh` — 65 static analysis tests: routing table integrity, backing file existence for all 17 targets, P0 fix validation, decision tree verification, priority ordering, meta commands, category groupings, removed features, file size.
+
+### Fixed
+
+- **P0: Broken validation routing** — `Skill: "validate"` invoked non-existent skill. Changed to `Skill: "review"`. Any query with validation intent was silently failing.
+- **Flaky `test-debug-mode-simple.sh`** — Tests 4 & 5 checked for "Command:" and "spawn_agent:" in `--debug --dry-run` output, but probe caching short-circuited before `spawn_agent()` runs. Replaced with static analysis of orchestrate.sh source.
+
+### Removed
+
+- Unimplemented "chain workflows" documentation (set false user expectations).
+- Model override example from command docs (`OCTOPUS_CODEX_MODEL` in examples — minor prompt injection surface).
+
+---
+
 ## [8.54.0] - 2026-03-12
 
 ### Changed
