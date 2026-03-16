@@ -563,6 +563,32 @@ Quality gates ensure minimum standards before delivery:
 - Recent activity
 - Cost tracking (if enabled)
 
+### Cost Mode — Reduce API Costs
+
+`OCTOPUS_COST_MODE` controls which provider tier is used for dispatch:
+
+| Value | Behavior | Requires |
+|-------|----------|----------|
+| `standard` | Default — Codex + Gemini as configured | Existing setup |
+| `budget` | Routes to OpenRouter DeepSeek-R1 (coding) + Llama 3.3-70B (research) — ~10x cheaper | `OPENROUTER_API_KEY` |
+| `free` | Routes to local Ollama models — zero API cost | `ollama` CLI + model pulled |
+
+```bash
+# Budget mode (~10x cost reduction)
+export OPENROUTER_API_KEY="sk-or-..."
+export OCTOPUS_COST_MODE=budget
+
+# Free mode (local Ollama — zero API cost after hardware)
+ollama pull llama3.3:70b
+export OCTOPUS_COST_MODE=free
+export OCTOPUS_OLLAMA_MODEL=llama3.3:70b  # optional, this is the default
+
+# Make permanent
+echo 'export OCTOPUS_COST_MODE=budget' >> ~/.zshrc
+```
+
+> **Note:** Factory, Security, and TDD workflows display a warning when budget/free mode is active, as these workflows benefit most from frontier model quality.
+
 ---
 
 ## Output and Results

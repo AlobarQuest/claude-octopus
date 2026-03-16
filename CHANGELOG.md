@@ -1,3 +1,22 @@
+## [9.3.0] - 2026-03-16
+
+### Added
+
+- **Ollama provider** — local models (llama3.3:70b, qwen2.5-coder:32b, etc.) now a first-class provider. Detected via `command -v ollama`, dispatched through `get_cmd_for_agent()` / `get_agent_command_array()`, registered in `AVAILABLE_AGENTS` and `is_agent_available_v2()`.
+- **`OCTOPUS_COST_MODE=budget`** — routes dispatch to `openrouter-deepseek` (DeepSeek-R1 for coding) and `meta-llama/llama-3.3-70b-instruct` (for research) via existing OpenRouter infrastructure. Requires `OPENROUTER_API_KEY`. ~10x cheaper per workflow than standard Codex+Gemini.
+- **`OCTOPUS_COST_MODE=free`** — routes dispatch to Ollama local models. Zero API cost after hardware. Requires `ollama` CLI installed.
+- **`OCTOPUS_OLLAMA_MODEL`** env var to select local model (default: `llama3.3:70b`).
+- **Quality gate warning** for factory, security, and TDD workflows when budget/free mode is active — raises awareness and logs to audit trail.
+- **Cost mode docs** in `/octo:setup` and `docs/CLI-REFERENCE.md` with pricing table and configuration examples.
+
+### Changed
+
+- `get_openrouter_model()` returns DeepSeek-R1 / Llama 3.3-70B / Qwen-2.5-72B in budget mode instead of routing to Claude via OpenRouter.
+- `OCTOPUS_DISPATCH_STRATEGY=full|minimal` now logs a warning when it overrides `OCTOPUS_COST_MODE`.
+- `detect_providers()` "no providers" message now includes Ollama install hint.
+
+---
+
 ## [9.2.0] - 2026-03-15
 
 ### Changed
