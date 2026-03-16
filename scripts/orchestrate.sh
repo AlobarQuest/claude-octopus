@@ -1172,6 +1172,7 @@ get_agent_command() {
         openrouter-glm5) echo "openrouter_execute_model z-ai/glm-5" ;;           # v8.11.0: GLM-5 via OpenRouter
         openrouter-kimi) echo "openrouter_execute_model moonshotai/kimi-k2.5" ;; # v8.11.0: Kimi K2.5 via OpenRouter
         openrouter-deepseek) echo "openrouter_execute_model deepseek/deepseek-r1" ;; # v8.11.0: DeepSeek R1 via OpenRouter
+        ollama) echo "ollama run ${OCTOPUS_OLLAMA_MODEL:-llama3.3:70b}" ;; # v9.3.0: Local models via Ollama
         perplexity|perplexity-fast)  # v8.24.0: Perplexity Sonar — web-grounded research (Issue #22)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
             echo "perplexity_execute $model"
@@ -1234,6 +1235,7 @@ get_agent_command_array() {
         openrouter-glm5)     _cmd_array=(openrouter_execute_model "z-ai/glm-5") ;;           # v8.11.0: GLM-5
         openrouter-kimi)     _cmd_array=(openrouter_execute_model "moonshotai/kimi-k2.5") ;; # v8.11.0: Kimi K2.5
         openrouter-deepseek) _cmd_array=(openrouter_execute_model "deepseek/deepseek-r1") ;; # v8.11.0: DeepSeek R1
+        ollama) _cmd_array=(ollama run "${OCTOPUS_OLLAMA_MODEL:-llama3.3:70b}") ;; # v9.3.0: Local Ollama models
         perplexity|perplexity-fast)  # v8.24.0: Perplexity Sonar (Issue #22)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
             _cmd_array=(perplexity_execute "$model")
@@ -1271,7 +1273,7 @@ build_provider_env() {
 }
 
 # List of available agents
-AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context gemini gemini-fast gemini-image codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek perplexity perplexity-fast"
+AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context gemini gemini-fast gemini-image codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek ollama perplexity perplexity-fast"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # USAGE TRACKING & COST REPORTING (v4.1)
@@ -2685,6 +2687,20 @@ display_workflow_cost_estimate() {
     local num_codex_calls="${2:-4}"
     local num_gemini_calls="${3:-4}"
     local prompt_size="${4:-2000}"
+
+    # v9.3.0: Budget mode warning for sensitive workflows
+    if [[ "${OCTOPUS_COST_MODE:-standard}" != "standard" ]]; then
+        local wf_lower
+        wf_lower=$(echo "$workflow_name" | tr '[:upper:]' '[:lower:]')
+        if echo "$wf_lower" | grep -qE 'factory|security|tdd'; then
+            echo -e "${YELLOW}⚠️  BUDGET MODE ACTIVE (OCTOPUS_COST_MODE=${OCTOPUS_COST_MODE})${NC}"
+            echo -e "${YELLOW}   Workflow '${workflow_name}' uses cheaper/local models.${NC}"
+            echo -e "${YELLOW}   Quality gate threshold raised to 80% for this workflow.${NC}"
+            echo -e "${YELLOW}   Set OCTOPUS_COST_MODE=standard for full-quality execution.${NC}"
+            echo ""
+            log "AUDIT" "budget_mode_warning workflow=$workflow_name cost_mode=${OCTOPUS_COST_MODE}"
+        fi
+    fi
 
     # Skip in non-interactive mode, if disabled, or if called from embrace workflow
     if [[ ! -t 0 ]] || [[ "${OCTOPUS_SKIP_COST_PROMPT:-false}" == "true" ]] || [[ "${OCTOPUS_SKIP_PHASE_COST_PROMPT:-false}" == "true" ]]; then
@@ -8716,8 +8732,16 @@ PROVIDER_OPENROUTER_API_KEY_SET="false"
 PROVIDER_OPENROUTER_ROUTING_PREF="default"
 PROVIDER_OPENROUTER_PRIORITY=99
 
+PROVIDER_OLLAMA_ENABLED="false"
+PROVIDER_OLLAMA_MODEL="${OCTOPUS_OLLAMA_MODEL:-llama3.3:70b}"
+
 # Cost optimization strategy: cost-first, quality-first, balanced
 COST_OPTIMIZATION_STRATEGY="balanced"
+
+# v9.3.0: Free routing mode — routes to Ollama local models (zero API cost)
+# OCTOPUS_COST_MODE already defined at line ~1593 (premium|standard|budget)
+# Extended: also accepts "free" to force Ollama-only dispatch
+# Set via: export OCTOPUS_COST_MODE=free
 
 # CLI overrides for provider and routing
 FORCE_PROVIDER=""
@@ -8851,6 +8875,14 @@ detect_providers() {
         result="${result}openrouter:api-key "
     fi
 
+    # v9.3.0: Detect Ollama (local models — free after hardware cost)
+    if command -v ollama &>/dev/null; then
+        local ollama_model="${OCTOPUS_OLLAMA_MODEL:-llama3.3:70b}"
+        PROVIDER_OLLAMA_ENABLED="true"
+        PROVIDER_OLLAMA_MODEL="$ollama_model"
+        result="${result}ollama:local "
+    fi
+
     # Fail gracefully with helpful message if no providers found
     if [[ -z "$result" ]]; then
         log WARN "No AI providers detected. Install at least one:"
@@ -8858,6 +8890,7 @@ detect_providers() {
         log WARN "  - Gemini: npm i -g @google/gemini-cli"
         log WARN "  - Claude: Available in Claude Code context"
         log WARN "  - OpenRouter: Set OPENROUTER_API_KEY environment variable"
+        log WARN "  - Ollama: https://ollama.com (free local models)"
         echo "none:unavailable"
         return 1
     fi
@@ -9772,6 +9805,9 @@ is_agent_available_v2() {
         openrouter|openrouter-*)
             [[ "$PROVIDER_OPENROUTER_ENABLED" == "true" && "$PROVIDER_OPENROUTER_API_KEY_SET" == "true" ]]
             ;;
+        ollama)
+            [[ "$PROVIDER_OLLAMA_ENABLED" == "true" ]]  # v9.3.0: set by detect_providers when ollama CLI found
+            ;;
         *)
             return 0  # Unknown agents assumed available
             ;;
@@ -9915,6 +9951,17 @@ get_openrouter_model() {
         routing_suffix="$OPENROUTER_ROUTING_OVERRIDE"
     elif [[ "$PROVIDER_OPENROUTER_ROUTING_PREF" != "default" ]]; then
         routing_suffix=":${PROVIDER_OPENROUTER_ROUTING_PREF}"
+    fi
+
+    # v9.3.0: Budget mode — route to cheap models instead of Claude via OpenRouter
+    # Note: only applies in "budget" mode (requires OPENROUTER_API_KEY); not "free" (Ollama, no OpenRouter)
+    if [[ "${OCTOPUS_COST_MODE:-standard}" == "budget" ]]; then
+        case "$task_type" in
+            coding|review) echo "deepseek/deepseek-r1${routing_suffix}" ;;         # ~8x cheaper than GPT-5.3-Codex
+            research|design) echo "meta-llama/llama-3.3-70b-instruct${routing_suffix}" ;; # ~10x cheaper than Gemini Pro
+            *) echo "qwen/qwen-2.5-72b-instruct${routing_suffix}" ;;
+        esac
+        return 0
     fi
 
     case "$task_type" in
@@ -17176,6 +17223,8 @@ get_dispatch_strategy() {
             local all_p="claude-sonnet"
             command -v codex >/dev/null 2>&1 && all_p="codex,${all_p}"
             command -v gemini >/dev/null 2>&1 && all_p="gemini,${all_p}"
+            [[ "${OCTOPUS_COST_MODE:-standard}" != "standard" ]] && \
+                log WARN "OCTOPUS_DISPATCH_STRATEGY=full overrides OCTOPUS_COST_MODE=${OCTOPUS_COST_MODE} — using full dispatch"
             echo "3:${all_p}:high"
             return 0 ;;
         minimal)
@@ -17183,6 +17232,22 @@ get_dispatch_strategy() {
             elif command -v codex >/dev/null 2>&1; then echo "2:codex,claude-sonnet:high"
             else echo "1:claude-sonnet:high"; fi
             return 0 ;;
+    esac
+
+    # v9.3.0: Cost mode overrides — routes to cheap/free providers before CLI detection
+    case "${OCTOPUS_COST_MODE:-standard}" in
+        budget)
+            if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+                echo "2:openrouter-deepseek,claude-sonnet:medium"
+                return 0
+            fi
+            ;;
+        free)
+            if command -v ollama >/dev/null 2>&1; then
+                echo "2:ollama,claude-sonnet:medium"
+                return 0
+            fi
+            ;;
     esac
 
     # Auto-detect workflow from prompt if not specified

@@ -72,6 +72,49 @@ echo 'export GEMINI_API_KEY="AIza..."' >> ~/.bashrc
 source ~/.bashrc
 ```
 
+## Optional: Reduce Costs with OpenRouter or Ollama
+
+Claude Octopus supports **budget and free routing modes** that replace Codex/Gemini with cheaper alternatives.
+
+### Budget Mode — OpenRouter (8–85x cheaper per query)
+
+Set `OCTOPUS_COST_MODE=budget` with an OpenRouter API key to route coding tasks to DeepSeek-R1 and research tasks to Llama 3.3-70B instead of GPT-5.3-Codex and Gemini Pro.
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export OCTOPUS_COST_MODE=budget
+# Get key from: https://openrouter.ai/keys
+```
+
+| Workflow | Standard Cost | Budget Cost | Savings |
+|----------|--------------|-------------|---------|
+| Full embrace | $0.10–0.30 | $0.01–0.03 | ~10x |
+| Discover | $0.02–0.04 | $0.002–0.005 | ~10x |
+| Develop | $0.04–0.10 | $0.005–0.015 | ~8x |
+
+> **Note:** Factory, Security, and TDD workflows will display a warning when budget mode is active, as these workflows benefit most from frontier model quality.
+
+### Free Mode — Ollama (local models, zero API cost)
+
+Install [Ollama](https://ollama.com) and set `OCTOPUS_COST_MODE=free` to run all research and dispatch tasks locally. Requires ~20–40GB VRAM for best results.
+
+```bash
+# Install Ollama: https://ollama.com
+ollama pull llama3.3:70b      # Recommended for research/dispatch
+ollama pull qwen2.5-coder:32b # Alternative for code-heavy workflows
+export OCTOPUS_COST_MODE=free
+export OCTOPUS_OLLAMA_MODEL=llama3.3:70b  # Optional: customize model
+```
+
+To make cost mode permanent, add to your shell profile:
+```bash
+echo 'export OCTOPUS_COST_MODE=budget' >> ~/.zshrc
+echo 'export OPENROUTER_API_KEY="sk-or-..."' >> ~/.zshrc
+source ~/.zshrc
+```
+
+---
+
 ## Optional: Add Perplexity for Web Search
 
 Perplexity adds live web search to research workflows. When configured, discover/probe phases automatically include a web-grounded research agent with source citations.
