@@ -7,7 +7,7 @@ A Claude Code plugin that turns one model into three. Orchestrates Codex, Gemini
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-9.3.0-blue" alt="Version 9.3.0">
+  <img src="https://img.shields.io/badge/Version-9.3.1-blue" alt="Version 9.3.1">
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.50+-blueviolet" alt="Requires Claude Code v2.1.50+">
   <img src="https://img.shields.io/badge/Factory_AI-Compatible-orange" alt="Factory AI Compatible">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
@@ -109,7 +109,7 @@ claude plugin install octo@nyldn-plugins
 ```bash
 /octo:embrace build stripe integration     # Full lifecycle: research → define → develop → deliver
 /octo:factory "build a CLI that converts CSV to JSON"  # Autonomous pipeline — spec in, software out
-/octo:debate monorepo vs microservices     # Structured three-way AI debate with consensus
+/octo:debate monorepo vs microservices     # Structured four-way AI debate with consensus
 /octo:research htmx vs react in 2026       # Multi-source synthesis from three AI providers
 /octo:design mobile checkout redesign       # UI/UX design with BM25 style intelligence
 /octo:tdd create user auth                 # Red-green-refactor with test discipline
