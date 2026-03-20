@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "8.41.0",
-  "description": "Multi-tentacled orchestrator using Double Diamond methodology. (v8.41.0) Feature adoption: 3 new hooks, 10 native agents, command consolidation, data-driven flags, spec plan mode, mixed models. 32 expert personas, 36 commands, 50 skills. Commands '/octo:*'. Run /octo:setup for guided setup. Compatible with Claude Code and Factory AI Droid.",
+  "version": "9.7.6",
+  "description": "Multi-tentacled orchestrator using Double Diamond methodology. (v9.7.6) 3-tier adaptive statusline, dependency installer, smart HUD. 32 expert personas, 40 commands, 50 skills. Commands '/octo:*'. Run /octo:setup for guided setup. Compatible with Claude Code and Factory AI Droid.",
   "author": {
     "name": "nyldn"
   },
