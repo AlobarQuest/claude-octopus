@@ -5,7 +5,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ORCH="$PROJECT_ROOT/scripts/orchestrate.sh"
+ORCH_MAIN="$PROJECT_ROOT/scripts/orchestrate.sh"
+ORCH_LIB="$PROJECT_ROOT/scripts/lib/providers.sh"
+# Combined search target (provider functions extracted to lib/ in v9.7.7)
+ORCH=$(mktemp)
+trap "rm -f "$ORCH"" EXIT
+cat "$ORCH_LIB" "$ORCH_MAIN" > "$ORCH"
 # Support grepping across orchestrate.sh + lib/*.sh
 _ORCH_ALL_TMP=$(mktemp)
 cat "$ORCH" "$PROJECT_ROOT/scripts/lib/"*.sh 2>/dev/null > "$_ORCH_ALL_TMP"

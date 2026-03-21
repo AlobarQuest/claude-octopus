@@ -5,7 +5,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ORCH="$PROJECT_ROOT/scripts/orchestrate.sh"
+ORCH_MAIN="$PROJECT_ROOT/scripts/orchestrate.sh"
+ORCH_LIB="$PROJECT_ROOT/scripts/lib/providers.sh"
+# Combined search target (provider functions extracted to lib/ in v9.7.7)
+ORCH=$(mktemp)
+trap "rm -f "$ORCH"" EXIT
+cat "$ORCH_LIB" "$ORCH_MAIN" > "$ORCH"
 
 TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
 pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
