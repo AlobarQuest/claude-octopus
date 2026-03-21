@@ -59,7 +59,7 @@ get_circuit_state() {
     local provider="$1"
     local state_file="$RESILIENCE_STATE_DIR/${provider}.state"
     if [[ -f "$state_file" ]]; then
-        <"$state_file"
+        cat "$state_file"
     else
         echo "closed"
     fi
@@ -164,7 +164,7 @@ get_failure_count() {
     local provider="$1"
     local count_file="$RESILIENCE_STATE_DIR/${provider}.failures"
     if [[ -f "$count_file" ]]; then
-        <"$count_file"
+        cat "$count_file"
     else
         echo "0"
     fi
