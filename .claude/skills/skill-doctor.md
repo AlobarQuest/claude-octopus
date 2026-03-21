@@ -104,7 +104,7 @@ cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor auth --verbose
 
 | Category | What it checks |
 |----------|---------------|
-| `providers` | Claude Code version, Codex CLI installed, Gemini CLI installed, Perplexity API key |
+| `providers` | Claude Code version, Codex CLI installed, Gemini CLI installed, Perplexity API key, Ollama local LLM |
 | `auth` | Authentication status for each provider |
 | `config` | Plugin version, install scope, feature flags |
 | `state` | Project state.json, stale results, workspace writable |
@@ -162,6 +162,22 @@ Available profiles:
 - **strict** — All hooks enabled including quality and security gates
 
 Override: Set `OCTO_HOOK_PROFILE=<profile>` or `OCTO_DISABLED_HOOKS=hook1,hook2` to fine-tune which hooks run.
+
+---
+
+## Runtime Context
+
+The doctor checks for project-level `RUNTIME.md` — a file that provides project-specific context (API endpoints, env vars, test commands, build steps) to orchestration prompts.
+
+### What the Doctor Checks
+
+- **RUNTIME.md exists** in the project root (also checks `.octopus/RUNTIME.md` and `.claude-octopus/RUNTIME.md`)
+- If missing, suggest creating one from the template: `cp "${CLAUDE_PLUGIN_ROOT}/templates/RUNTIME.md" ./RUNTIME.md`
+- If present, confirm it contains at least one populated section (not just the template defaults)
+
+### Why It Matters
+
+Without a `RUNTIME.md`, orchestration prompts lack project-specific details — leading to generic advice about test commands, environment variables, and build steps. A populated `RUNTIME.md` makes every workflow more accurate.
 
 ---
 
