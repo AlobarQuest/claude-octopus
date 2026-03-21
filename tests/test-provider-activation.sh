@@ -15,6 +15,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
+# v9.7.8: Also search lib/ modules for extracted functions
+SCRIPTS_ALL="$PROJECT_ROOT/scripts/orchestrate.sh $PROJECT_ROOT/scripts/lib/*.sh"
 
 PASS=0
 FAIL=0
@@ -123,8 +125,8 @@ echo ""
 echo -e "\033[0;34mTest Group 3: Codex OAuth token freshness check (P1-A)\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 3.1: check_codex_auth_freshness function exists
-if grep -q 'check_codex_auth_freshness()' "$ORCHESTRATE"; then
+# 3.1: check_codex_auth_freshness function exists (may be in lib/)
+if grep -rq 'check_codex_auth_freshness()' $SCRIPTS_ALL; then
     pass "3.1 check_codex_auth_freshness() function exists"
 else
     fail "3.1 check_codex_auth_freshness() function missing" \
@@ -132,14 +134,14 @@ else
 fi
 
 # 3.2: Function checks auth.json expiry
-if grep -A 20 'check_codex_auth_freshness()' "$ORCHESTRATE" | grep -q 'expires_at\|expiry\|auth\.json'; then
+if grep -rA 20 'check_codex_auth_freshness()' $SCRIPTS_ALL | grep -q 'expires_at\|expiry\|auth\.json'; then
     pass "3.2 check_codex_auth_freshness checks token expiry field"
 else
     fail "3.2 check_codex_auth_freshness doesn't check token expiry"
 fi
 
 # 3.3: Function is called from preflight (not just defined)
-call_count=$(grep -c 'check_codex_auth_freshness' "$ORCHESTRATE" 2>/dev/null || echo 0)
+call_count=$(grep -rc 'check_codex_auth_freshness' $SCRIPTS_ALL 2>/dev/null | awk -F: '{s+=$NF} END{print s}')
 if [[ $call_count -ge 2 ]]; then
     pass "3.3 check_codex_auth_freshness is called (not just defined)"
 else
@@ -148,7 +150,7 @@ else
 fi
 
 # 3.4: Function provides actionable error message
-if grep -A 30 'check_codex_auth_freshness()' "$ORCHESTRATE" | grep -q 'codex auth\|codex login'; then
+if grep -rA 30 'check_codex_auth_freshness()' $SCRIPTS_ALL | grep -q 'codex auth\|codex login'; then
     pass "3.4 Function provides actionable fix suggestion (codex auth)"
 else
     fail "3.4 Function doesn't suggest 'codex auth' fix"
