@@ -31,20 +31,11 @@ Multi-LLM orchestration plugin for Claude Code — coordinates Codex, Gemini, Pe
 
 ## What's New
 
-**v9.10.0** — Eight tentacles: Qwen CLI as 8th provider, hardened OpenRouter, robust json_extract, Copilot Coding Agent files.
-
-**v9.9.x** — Copilot CLI + Ollama providers, adapter bug fixes, doc consolidation, community PR fixes.
-
-<details>
-<summary>Older releases</summary>
-
-| Version | Highlights |
-|---------|-----------|
-| 9.8.0 | Adversarial debate in 9 workflows, visual indicators on all commands |
-| 9.0–9.7 | 92% fewer forks, four-way debates, context awareness, session handoff, smart router |
-| 8.50–8.55 | Multi-LLM code review, reaction engine, parallel workstreams, smart router v2 |
-
-</details>
+| Version | Best Features |
+|---------|--------------|
+| **v9** (current) | 8 providers (Codex, Gemini, Copilot, Qwen, Ollama, Perplexity, OpenRouter, Claude). Four-way AI debates. Smart router — just say what you need. 92% faster execution. Context-aware warnings. Session handoff across conversations. Adversarial review in every workflow. |
+| **v8** | Multi-LLM code review with inline PR comments. Parallel workstreams in isolated git worktrees. Reaction engine — auto-responds to CI failures. 32 specialized personas. Dark Factory autonomous pipeline. |
+| **v7** | Double Diamond workflow. Multi-provider dispatch. Quality gates and consensus scoring. Configurable sandbox modes. |
 
 [Full changelog →](CHANGELOG.md)
 
