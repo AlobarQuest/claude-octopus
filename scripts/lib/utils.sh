@@ -140,6 +140,8 @@ validate_agent_command() {
             return 0 ;;
         "perplexity_execute"*) # v8.24.0: Perplexity Sonar API (Issue #22)
             return 0 ;;
+        "copilot "*|"copilot")   # GitHub Copilot CLI
+            return 0 ;;
         "env NODE_NO_WARNINGS="*) # only allow env with NODE_NO_WARNINGS prefix
             return 0 ;;
         *)

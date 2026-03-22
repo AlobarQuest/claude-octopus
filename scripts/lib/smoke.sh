@@ -988,7 +988,7 @@ provider_smoke_test() {
     local pids=()
 
     if [[ "$has_codex" == "true" ]]; then
-        _smoke_test_provider "codex" 10 "$codex_result_file" &
+        _smoke_test_provider "codex" "${OCTOPUS_CODEX_SMOKE_TIMEOUT:-45}" "$codex_result_file" &
         pids+=($!)
     else
         echo "SKIP" > "$codex_result_file"

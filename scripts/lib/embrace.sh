@@ -40,14 +40,17 @@ get_dispatch_strategy() {
         fi
     fi
 
-    local has_codex=false has_gemini=false
+    local has_codex=false has_gemini=false has_copilot=false
     command -v codex >/dev/null 2>&1 && has_codex=true
     command -v gemini >/dev/null 2>&1 && has_gemini=true
+    command -v copilot >/dev/null 2>&1 && has_copilot=true
 
     case "$workflow" in
         review|security)
             # Each provider misses different bugs — all 3 essential
-            if [[ "$has_codex" == true && "$has_gemini" == true ]]; then
+            if [[ "$has_codex" == true && "$has_gemini" == true && "$has_copilot" == true ]]; then
+                echo "4:codex,gemini,copilot,claude-sonnet:high"
+            elif [[ "$has_codex" == true && "$has_gemini" == true ]]; then
                 echo "3:codex,gemini,claude-sonnet:high"
             elif [[ "$has_codex" == true ]]; then echo "2:codex,claude-sonnet:high"
             elif [[ "$has_gemini" == true ]]; then echo "2:gemini,claude-sonnet:high"
@@ -61,7 +64,8 @@ get_dispatch_strategy() {
             else echo "1:claude-sonnet:low"; fi ;;
         research|*)
             # Gemini solo 64% vs multi-LLM 65% — 2 providers sufficient
-            if [[ "$has_gemini" == true ]]; then echo "2:gemini,claude-sonnet:high"
+            if [[ "$has_gemini" == true && "$has_copilot" == true ]]; then echo "3:gemini,copilot,claude-sonnet:high"
+            elif [[ "$has_gemini" == true ]]; then echo "2:gemini,claude-sonnet:high"
             elif [[ "$has_codex" == true ]]; then echo "2:codex,claude-sonnet:medium"
             else echo "1:claude-sonnet:medium"; fi ;;
     esac

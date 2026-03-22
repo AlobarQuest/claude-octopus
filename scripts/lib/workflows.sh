@@ -130,8 +130,8 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     echo "## Output" >> "$result_file"
     echo '```' >> "$result_file"
 
-    # Append gemini headless flag
-    if [[ "$agent_type" == gemini* ]]; then
+    # Append gemini/copilot headless flag
+    if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == copilot* ]]; then
         cmd_array+=(-p "")
     fi
 
@@ -987,4 +987,5 @@ EOF
     echo -e "${GREEN}${_BOX_BOT}${NC}"
     echo -e "Final document: ${CYAN}$delivery_file${NC}"
     echo ""
+}
 }

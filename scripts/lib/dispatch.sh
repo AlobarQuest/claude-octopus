@@ -89,7 +89,7 @@ get_agent_command() {
             echo "perplexity_execute $model"
             ;;
         copilot|copilot-research)  # v9.9.0: GitHub Copilot CLI — copilot -p (Issue #198)
-            echo "copilot_execute $agent_type"
+            echo "copilot --no-ask-user"
             ;;
         ollama|ollama-*)  # v9.9.0: Ollama local LLM — ollama run
             model=$(get_agent_model "$agent_type" "$phase" "$role")
