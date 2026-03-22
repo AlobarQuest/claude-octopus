@@ -13,41 +13,40 @@ A Claude Code plugin that orchestrates eight AI providers with distinct roles, a
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
 
-🐙 **Eight tentacles, one workflow.** Each provider is a tentacle with a distinct role — Codex for implementation depth, Gemini for ecosystem breadth, Qwen for free-tier research, Ollama for local privacy, Copilot for GitHub-native intelligence, Perplexity for live web search, OpenRouter for 100+ model access, and Claude for synthesis. A 75% consensus gate ensures disagreements get caught, not ignored.
+🐙 **Research, build, review, and ship — with eight AI providers checking each other's work.** Say what you need, and the right workflow runs. A 75% consensus gate catches disagreements before they reach production. No single model's blind spots slip through.
 
-🧠 **Persistent cross-session memory.** Deeply integrates with [claude-mem](https://github.com/thedotmack/claude-mem) for searchable, persistent memory across conversations — past decisions, research, and context survive session boundaries so your next workflow picks up where the last one left off.
+🧠 **Remembers across sessions.** Integrates with [claude-mem](https://github.com/thedotmack/claude-mem) for persistent memory — past decisions, research, and context survive session boundaries.
 
-⚡ **Spec in, software out.** Dark Factory mode takes a spec and autonomously runs the full pipeline — research, define, develop, deliver — with holdout testing and satisfaction scoring. You review the output, not every step.
+⚡ **Spec in, software out.** Dark Factory mode takes a spec and autonomously runs the full pipeline — research, define, develop, deliver. You review the output, not every step.
 
-🔄 **Methodology, not just machinery.** Built on the Double Diamond framework, every task moves through four structured phases: discover, define, develop, deliver. Quality gates between phases mean sloppy work can't advance. Other orchestrators give you infrastructure to build workflows on — Octopus gives you the workflows.
+🔄 **Four-phase methodology, not just tools.** Every task moves through Discover → Define → Develop → Deliver, with quality gates between phases. Other orchestrators give you infrastructure. Octopus gives you the workflows.
 
-🐙 **32 specialized personas, 47 commands, 50 skills.** Not generic agents. A security-auditor that thinks in OWASP. A backend-architect that designs APIs. A ui-ux-designer grounded in BM25 design intelligence. Personas activate automatically based on what you ask — say "audit my API" and the right expert shows up. Don't know the command name? Just say what you need — the smart router figures it out.
+🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **47 commands** (slash commands you type), **50 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
 
-🐙 **Works with just Claude. Scales to eight.** Zero external providers needed to start. You get every persona, every workflow, every skill on day one. Add providers one at a time — each tentacle activates automatically when detected.
+🐙 **Works with just Claude. Scales to eight.** Zero providers needed to start. Add them one at a time — each activates automatically when detected.
 
-💰 **Three providers cost nothing extra.** Codex and Gemini authenticate via OAuth (included with ChatGPT/Google AI subscriptions). Qwen offers 1,000-2,000 free requests/day via OAuth. Copilot uses your existing GitHub subscription. Ollama runs locally at zero cost. Only Perplexity and OpenRouter require API keys.
+💰 **Five providers cost nothing extra.** Codex and Gemini use OAuth (included with subscriptions). Qwen has 1,000-2,000 free requests/day. Copilot uses your GitHub subscription. Ollama runs locally for free.
 
 ---
 
-## Recent Updates
+## What's New
 
-| Version | What shipped |
-|---------|-------------|
-| **9.10.0** | **Eight tentacles** — Qwen CLI as 8th provider (free-tier via OAuth), hardened OpenRouter (timeout, retry, HTTP status), robust json_extract (jq/python3/regex), DeepSeek R1-0528, Copilot Coding Agent native `.github/agents/` files. |
-| **9.9.3** | **Copilot dispatch fix + repo polish** — Fixed 5 Copilot integration bugs (#206): dispatch now uses real binary, added to command allowlist/embrace strategies/headless flag/provider metrics. Codex smoke timeout configurable (45s default). Updated README/SECURITY/CONTRIBUTING, YAML issue templates, CODE_OF_CONDUCT, PR template, repo topics/description. |
-| **9.9.2** | **Doc consolidation** — 9 stale docs removed (archived to dev repo), provider counts normalized to 7 across all docs, debate refs updated to four-way, new `config/providers/copilot/CLAUDE.md`. |
-| **9.9.0** | **Copilot CLI + Ollama providers** — GitHub Copilot CLI (GA) as optional zero-cost provider via `copilot -p` programmatic mode with 5-tier fallback auth. Ollama as local LLM provider with CLI dispatch + ANTHROPIC_BASE_URL bridge. Adapter bug fixes: debate flag placement, quality_threshold forwarding, env var allowlists. ARCHITECTURE.md updated to 7-provider model. 23 new adapter tests. |
-| **9.8.0** | **Adversarial debate everywhere** — 9 workflows now use multi-LLM cross-checking (multi, spec, define, factory, develop, prd, staged-review, parallel, tdd). **Visual indicators on all commands** — every `/octo:*` command shows a 🐙 activation line so you always know what's running. **CI fixes** — test-debate-skill.sh and test-packaging-integrity.sh smoke tests repaired. |
-| **9.5–9.7** | **Context awareness** — workflow-aware warnings at 65/75/80% with phase-specific advice. **Polished statusline** — gradient bar, active agent name, auto-compact indicators (⚠/💀). **Session handoff** — `.octo-continue.md` preserves multi-LLM workflow state across sessions. **Smart router renamed** `/octo:auto`. **Intent pre-loading** — high-confidence prompts inject persona context before workflow starts. |
-| **9.0–9.4** | **92% fewer subshell forks** (9.4) — two rounds cut orchestrate.sh from ~900 forks/workflow to ~70. **Four-way debates** — Sonnet joins as permanent 4th participant. **Auto code review** after dev workflows. **claude-mem integration** — persistent cross-session memory. **Monolith decomposition** — 7 modules extracted to lib/. |
-| **8.55** | **Smart router v2.0** — just say what you need and `/octo:auto` routes to the right workflow. 17 supported workflows, learns your preferences over time |
-| **8.54** | **Multi-agentic research** — `/octo:research` now runs perspectives in parallel with configurable intensity (Quick / Standard / Deep) |
-| **8.53** | **Agent resume + custom agents** — `/octo:resume` continues previous agents, drop your own agents in `~/.claude/agents/` |
-| **8.50** | **Multi-LLM code review** — 4-agent fleet (Codex logic + Gemini security + Claude architecture + Perplexity CVE), inline PR comments |
-| **8.45** | **Reaction engine** — auto-responds to CI failures, review comments, and stuck agents without manual intervention |
-| **8.44** | **Parallel workstreams** — `/octo:parallel` runs tasks in isolated git worktrees, each with its own agent |
+**v9.10.0** — Eight tentacles: Qwen CLI as 8th provider, hardened OpenRouter, robust json_extract, Copilot Coding Agent files.
 
-[Full changelog](CHANGELOG.md)
+**v9.9.x** — Copilot CLI + Ollama providers, adapter bug fixes, doc consolidation, community PR fixes.
+
+<details>
+<summary>Older releases</summary>
+
+| Version | Highlights |
+|---------|-----------|
+| 9.8.0 | Adversarial debate in 9 workflows, visual indicators on all commands |
+| 9.0–9.7 | 92% fewer forks, four-way debates, context awareness, session handoff, smart router |
+| 8.50–8.55 | Multi-LLM code review, reaction engine, parallel workstreams, smart router v2 |
+
+</details>
+
+[Full changelog →](CHANGELOG.md)
 
 ## Star History
 
@@ -57,54 +56,44 @@ A Claude Code plugin that orchestrates eight AI providers with distinct roles, a
 
 ## Quickstart
 
-**Step 1 — Add the marketplace** (run in your terminal, not inside a Claude Code session):
-
 ```bash
+# Terminal (not inside a Claude Code session):
 claude plugin marketplace add https://github.com/nyldn/claude-octopus.git
-```
-
-**Step 2 — Install the plugin:**
-
-```bash
 claude plugin install octo@nyldn-plugins
-```
 
-**Step 3 — Run setup** (inside a Claude Code session):
-
-```
+# Then inside Claude Code:
 /octo:setup
 ```
 
-Setup detects installed providers, shows what's missing, and walks you through configuration. You need **zero** external providers to start — Claude is built in. Add Codex or Gemini for multi-AI features.
-
-**Or from the Claude Code UI:** Type `/plugin` in a Claude Code session, go to the **Marketplace** tab, and install **octo**.
-
-> **Note:** `/plugin` inside a session opens an interactive UI — it does not accept subcommands. Use the terminal CLI (`claude plugin ...`) for scripted installs.
+That's it. Setup detects installed providers, shows what's missing, and walks you through configuration. You need **zero** external providers to start — Claude is built in.
 
 <details>
-<summary>Factory AI (Droid)</summary>
+<summary>Alternative install methods</summary>
 
+**From the Claude Code UI:** Type `/plugin` in a session → **Marketplace** tab → install **octo**.
+
+**Factory AI (Droid):**
 ```bash
 droid plugin marketplace add https://github.com/nyldn/claude-octopus
 droid plugin install octo@claude-octopus
 ```
-
-See [docs/FACTORY-AI.md](docs/FACTORY-AI.md) for full Factory AI setup instructions.
 </details>
 
-**To update** (run in your terminal, not inside a Claude Code session):
-```bash
-claude plugin update octo
-```
+<details>
+<summary>Update / Troubleshooting</summary>
 
-If that fails (older installs used a different name), do a clean reinstall:
 ```bash
+# Update
+claude plugin update octo
+
+# Clean reinstall (if update fails)
 claude plugin uninstall claude-octopus 2>/dev/null
 claude plugin uninstall octo 2>/dev/null
 rm -rf ~/.claude/plugins/cache/nyldn-plugins/claude-octopus
 claude plugin marketplace add https://github.com/nyldn/claude-octopus.git
 claude plugin install octo@nyldn-plugins
 ```
+</details>
 
 ---
 
