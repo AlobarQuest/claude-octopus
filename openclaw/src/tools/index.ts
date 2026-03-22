@@ -31,7 +31,7 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "skill-code-review", description: "Expert multi-AI code review with quality and security analysis", type: "skill", file: "skill-code-review.md" },
   { name: "skill-content-pipeline", description: "Extract patterns and anatomy from URLs — use to reverse-engineer content strategies from live pages", type: "skill", file: "skill-content-pipeline.md" },
   { name: "skill-context-detection", description: "Auto-detect work context (Dev vs Knowledge) for workflow tailoring", type: "skill", file: "skill-context-detection.md" },
-  { name: "skill-copilot-provider", description: "GitHub Copilot integration roadmap — currently aspirational, not wired as a runtime provider", type: "skill", file: "skill-copilot-provider.md" },
+  { name: "skill-copilot-provider", description: "GitHub Copilot as limited-role provider via gh copilot CLI for research, explanation, and suggestion tasks", type: "skill", file: "skill-copilot-provider.md" },
   { name: "skill-cost-projections", description: "Project remaining workflow cost from per-phase averages — warns on budget ceiling overruns", type: "skill", file: "skill-cost-projections.md" },
   { name: "skill-coverage-audit", description: "Trace codepaths in diffs, map against tests, auto-generate missing coverage", type: "skill", file: "skill-coverage-audit.md" },
   { name: "skill-debate", description: "Structured four-way AI debates between Claude, Sonnet, Gemini, and Codex", type: "skill", file: "skill-debate.md" },
