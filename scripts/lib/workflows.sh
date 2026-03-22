@@ -96,6 +96,8 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
         gemini*) provider_name="gemini" ;;
         claude*) provider_name="claude" ;;
         perplexity*) provider_name="perplexity" ;;
+        copilot*) provider_name="copilot" ;;
+        ollama*) provider_name="ollama" ;;
         *) provider_name="$agent_type" ;;
     esac
     update_metrics "provider" "$provider_name" 2>/dev/null || true
@@ -987,5 +989,4 @@ EOF
     echo -e "${GREEN}${_BOX_BOT}${NC}"
     echo -e "Final document: ${CYAN}$delivery_file${NC}"
     echo ""
-}
 }

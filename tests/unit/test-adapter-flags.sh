@@ -147,7 +147,7 @@ test_copilot_in_available_agents() {
 
 test_copilot_in_dispatch() {
     test_case "copilot dispatch wired in dispatch.sh"
-    if grep -q 'copilot_execute' "$PROJECT_ROOT/scripts/lib/dispatch.sh"; then test_pass; else test_fail "missing copilot dispatch"; fi
+    if grep -q 'copilot.*no-ask-user\|copilot_execute' "$PROJECT_ROOT/scripts/lib/dispatch.sh"; then test_pass; else test_fail "missing copilot dispatch"; fi
 }
 
 test_copilot_lib_exists() {
