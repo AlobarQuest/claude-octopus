@@ -10,7 +10,11 @@ BRIDGE_DIR="${HOME}/.claude-octopus/bridge"
 BRIDGE_LEDGER="${BRIDGE_DIR}/task-ledger.json"
 
 # Read hook input from stdin
-hook_input=$(cat 2>/dev/null || true)
+if command -v timeout &>/dev/null; then
+    hook_input=$(timeout 3 cat 2>/dev/null || true)
+else
+    hook_input=$(cat 2>/dev/null || true)
+fi
 
 # If bridge is not enabled or ledger doesn't exist, continue
 if [[ "${OCTOPUS_AGENT_TEAMS_BRIDGE:-auto}" == "disabled" ]]; then

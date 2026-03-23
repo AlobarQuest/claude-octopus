@@ -258,7 +258,8 @@ test_openclaw_flags_before_command() {
         return
     fi
 
-    if grep -q '\.\.\.flags, command, prompt' "$src"; then
+    # Pattern: [...flags, command, ...postFlags, prompt] or [...flags, command, prompt]
+    if grep -q '\.\.\.flags, command' "$src"; then
         test_pass
     else
         test_fail "OpenClaw extension should pass flags before command"
@@ -314,9 +315,8 @@ test_registry_count_matches() {
 
 test_build_check_mode() {
     test_case "build-openclaw.sh --check mode succeeds (registry in sync)"
-    local output
-    output=$("$PROJECT_ROOT/scripts/build-openclaw.sh" --check 2>&1)
-    local exit_code=$?
+    local output exit_code
+    output=$("$PROJECT_ROOT/scripts/build-openclaw.sh" --check 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         test_pass
@@ -443,9 +443,8 @@ test_validate_script_exists() {
 
 test_validate_script_passes() {
     test_case "validate-openclaw.sh passes all checks"
-    local output
-    output=$("$PROJECT_ROOT/tests/validate-openclaw.sh" 2>&1)
-    local exit_code=$?
+    local output exit_code
+    output=$("$PROJECT_ROOT/tests/validate-openclaw.sh" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         test_pass

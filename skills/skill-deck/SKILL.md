@@ -1,7 +1,7 @@
 ---
 name: skill-deck
 version: 1.0.0
-description: Generate slide decks from briefs with optional multi-AI research. Use when: AUTOMATICALLY ACTIVATE when user requests:. "create a deck", "build slides", "make a presentation". "generate a pitch deck", "create board presentation"
+description: "Generate slide decks from briefs with optional multi-AI research. Use when: AUTOMATICALLY ACTIVATE when user requests:. \"create a deck\", \"build slides\", \"make a presentation\". \"generate a pitch deck\", \"create board presentation\""
 ---
 
 # Slide Deck Generator

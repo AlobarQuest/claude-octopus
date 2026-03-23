@@ -10,6 +10,8 @@ updated: 2026-02-21
 
 # Sentinel (/octo:sentinel)
 
+**Your first output line MUST be:** `🐙 Octopus Sentinel`
+
 GitHub-aware work monitor that triages issues, PRs, and CI failures. Sentinel observes and recommends workflows but never auto-executes them.
 
 ## Usage

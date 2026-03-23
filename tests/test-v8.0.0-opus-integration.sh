@@ -83,7 +83,7 @@ echo -e "${BLUE}Test Group 1: orchestrate.sh - claude-opus agent type${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 1.1: get_agent_command has claude-opus case
-if grep -q 'claude-opus) echo "claude --print -m opus"' "$ORCHESTRATE_SH"; then
+if grep -q 'claude-opus) echo "claude --print --model opus"' "$ORCHESTRATE_SH"; then
     assert_pass "1.1 get_agent_command has claude-opus → 'claude --print -m opus'"
 else
     assert_fail "1.1 get_agent_command has claude-opus → 'claude --print -m opus'"
@@ -112,10 +112,10 @@ fi
 
 # 1.5: get_agent_command maps claude-opus to opus model
 # Refactored: get_agent_command returns command string (not model ID)
-if grep -q 'claude-opus).*echo "claude --print -m opus"' "$ORCHESTRATE_SH"; then
-    assert_pass "1.5 get_agent_command maps claude-opus to 'claude --print -m opus'"
+if grep -q 'claude-opus).*echo "claude --print --model opus"' "$ORCHESTRATE_SH"; then
+    assert_pass "1.5 get_agent_command maps claude-opus to 'claude --print --model opus'"
 else
-    assert_fail "1.5 get_agent_command maps claude-opus to 'claude --print -m opus'"
+    assert_fail "1.5 get_agent_command maps claude-opus to 'claude --print --model opus'"
 fi
 
 # 1.6: claude-opus maps to claude provider for config precedence

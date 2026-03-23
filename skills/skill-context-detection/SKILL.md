@@ -1,7 +1,7 @@
 ---
 name: skill-context-detection
 version: 1.0.0
-description: Auto-detect work context (Dev vs Knowledge) for workflow tailoring
+description: "Auto-detect work context (Dev vs Knowledge) for workflow tailoring"
 ---
 
 # Context Detection - Internal Skill
@@ -225,3 +225,50 @@ To verify context detection is working:
 1. In a code repository, ask "octo research caching patterns" → Should detect **Dev Context**
 2. In same repo, ask "octo research market opportunities" → Should detect **Knowledge Context**
 3. With `/octo:km on` set, ask "octo research API patterns" → Should use **Knowledge Context** (explicit override)
+
+---
+
+## Proactive Skill Suggestions
+
+When detecting the user's work stage, surface relevant command suggestions:
+
+| Detected Context | Suggestion |
+|-----------------|------------|
+| Brainstorming / exploring ideas | Consider `/octo:brainstorm` for structured ideation |
+| Reviewing a plan or strategy | Consider `/octo:plan` for strategic planning |
+| Debugging errors or failures | Consider `/octo:debug` for systematic investigation |
+| Writing or running tests | Consider `/octo:tdd` for test-driven development |
+| Code review before merge | Consider `/octo:review` for multi-AI code review |
+| Ready to deploy or ship | Consider `/octo:deliver` for quality-gated delivery |
+| Researching a topic | Consider `/octo:research` for multi-source synthesis |
+| Working on security | Consider `/octo:security` for OWASP compliance audit |
+
+### Suggestion Format
+
+Suggestions should be non-intrusive, appended as a brief note:
+
+```
+💡 Tip: You appear to be debugging — `/octo:debug` provides systematic investigation with multi-AI support.
+```
+
+### Persistent Opt-Out
+
+- If user says "stop suggesting" or "no more tips": set `OCTO_PROACTIVE_SUGGESTIONS=off` in `.claude-octopus/preferences.json`
+- If user says "be proactive" or "turn on tips": set `OCTO_PROACTIVE_SUGGESTIONS=on`
+- Check preference at suggestion time — never suggest when opted out
+- Respect current mode: dev mode suggestions differ from knowledge work suggestions
+
+### Re-Enable Suggestions
+
+Users who previously opted out can re-enable suggestions at any time:
+- Say "be proactive", "turn on tips", or "enable suggestions"
+- Manually edit `~/.claude-octopus/preferences.json` and set `OCTO_PROACTIVE_SUGGESTIONS` to `on`
+- Default state (no preference set) is suggestions enabled
+
+### Detection Signals
+
+Detect work stage from:
+- Recent tool usage (many Bash calls = likely implementing/debugging)
+- File types being edited (.test.ts = testing, .md = documentation)
+- Error patterns in recent output (stack traces = debugging)
+- Git state (uncommitted changes = implementing, clean tree = ready to review/ship)

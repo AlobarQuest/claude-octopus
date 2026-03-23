@@ -16,6 +16,8 @@ validation_gates:
 
 # Writing Plans
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - Implementation Planning`
+
 ## Overview
 
 Write comprehensive implementation plans assuming the engineer has **zero context** for the codebase and **questionable taste**.

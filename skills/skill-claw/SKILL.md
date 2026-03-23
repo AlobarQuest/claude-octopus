@@ -1,10 +1,12 @@
 ---
 name: skill-claw
 version: 1.0.0
-description: OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox. Use when: AUTOMATICALLY ACTIVATE when user asks about:. "manage openclaw" or "openclaw status" or "openclaw health". "update openclaw" or "upgrade openclaw" or "openclaw doctor"
+description: "OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox. Use when: AUTOMATICALLY ACTIVATE when user asks about:. \"manage openclaw\" or \"openclaw status\" or \"openclaw health\". \"update openclaw\" or \"upgrade openclaw\" or \"openclaw doctor\""
 ---
 
 # OpenClaw Instance Administration
+
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - OpenClaw Administration`
 
 ## The Iron Law
 

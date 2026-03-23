@@ -44,24 +44,15 @@ AskUserQuestion({
 
 If invoked with arguments (e.g., `/octo:staged-review src/auth/`), use that path directly and skip the question.
 
-## Step 2: Load and Execute Skill
+## Step 2: Execute Staged Review
 
-**✓ CORRECT — Use the Skill tool:**
-```
-Skill(skill: "skill-staged-review", args: "<scope>")
-```
-
-**✗ INCORRECT — Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:staged-review", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-staged-review` skill. Skills use the `Skill` tool, not `Task`.
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-staged-review.md`
 
 The skill runs two stages:
 1. **Stage 1** (Spec Compliance) — Validate against intent contract
 2. **Gate check** — Stage 1 must pass before Stage 2
-3. **Stage 2** (Code Quality) — Stub detection + quality review
+3. **Stage 2** (Code Quality) — Stub detection + multi-LLM quality review (Codex for logic, Gemini for security, Claude for architecture — synthesized into unified findings)
 4. **Combined report** — Unified verdict
 
 ### Post-Completion — Interactive Next Steps

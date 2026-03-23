@@ -69,7 +69,23 @@ cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor agents
 cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor recurrence
 ```
 
-### Step 3: Verbose or JSON Output
+### Step 3: Check & Install Dependencies
+
+Run the dependency checker to find missing CLIs, statusline config, and recommended plugins:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh" check
+```
+
+If the check reports missing deps, offer to install them:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh" install
+```
+
+This auto-installs: Codex CLI, Gemini CLI, jq, and the statusline resolver. For plugins (claude-mem, document-skills), it prints `/plugin install` commands the user must run manually.
+
+### Step 4: Verbose or JSON Output
 
 ```bash
 # Detailed output for troubleshooting
@@ -88,7 +104,7 @@ cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor auth --verbose
 
 | Category | What it checks |
 |----------|---------------|
-| `providers` | Claude Code version, Codex CLI installed, Gemini CLI installed, Perplexity API key |
+| `providers` | Claude Code version, Codex CLI installed, Gemini CLI installed, Perplexity API key, Ollama local LLM (server + models), circuit breaker status, provider fallback history |
 | `auth` | Authentication status for each provider |
 | `config` | Plugin version, install scope, feature flags |
 | `state` | Project state.json, stale results, workspace writable |
@@ -99,6 +115,7 @@ cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor auth --verbose
 | `conflicts` | Conflicting plugins detection |
 | `agents` | Agent definitions, worktree isolation, CLI registration, version compatibility |
 | `recurrence` | Failure pattern detection — flags repeated quality gate failures, source hotspots, 48h trends |
+| `deps` | Software dependencies — Node.js, jq, Codex/Gemini CLIs, statusline resolver, recommended plugins |
 
 ---
 
@@ -116,6 +133,7 @@ All checks pass — no action needed.
 | Gemini CLI not found | Install Gemini CLI from Google |
 | Perplexity not configured | `export PERPLEXITY_API_KEY="pplx-..."` (optional) |
 | Auth expired | Re-run `codex login` or `gemini login` |
+| Circuit breaker OPEN | Provider had 3+ consecutive transient failures — wait for cooldown or check provider status |
 | Stale state | Delete `.octo/state.json` and re-initialize |
 | Invalid hooks.json | Check `hooks.json` syntax — must be valid JSON |
 | Conflicting plugins | Uninstall conflicting plugins or adjust scope |
@@ -130,6 +148,60 @@ All checks pass — no action needed.
 | Doctor finds stale project state | Suggest `/octo:status` to review |
 | Doctor finds hook errors | Guide user to fix hooks.json |
 | All checks pass, user still has issues | Suggest `/octo:debug` for deeper investigation |
+
+---
+
+## Hook Profile
+
+Claude Octopus hooks can run in different profiles to balance cost and coverage.
+
+Current profile: `$OCTO_HOOK_PROFILE` (default: standard)
+
+Available profiles:
+- **minimal** — Only session lifecycle and cost tracking hooks (lowest overhead)
+- **standard** — All hooks except expensive review/security gates (default)
+- **strict** — All hooks enabled including quality and security gates
+
+Override: Set `OCTO_PROFILE=budget|balanced|quality` or `OCTO_DISABLED_HOOKS=hook1,hook2` to fine-tune. Legacy `OCTO_HOOK_PROFILE` still works (minimal→budget, standard→balanced, strict→quality).
+
+---
+
+## Intensity Profile
+
+The doctor reports the active intensity profile — a single knob controlling hook gating, model selection, phase skipping, and context verbosity.
+
+### What the Doctor Checks
+
+- **Current profile**: `OCTO_PROFILE` value (budget/balanced/quality, default: balanced)
+- **Profile source**: env var, legacy `OCTO_HOOK_PROFILE`, or auto-selected from intent
+- **Hook gating**: which hooks are enabled/disabled at this profile level
+- **Model hints**: which model (sonnet/opus) is recommended for each phase
+- **Context verbosity**: compressed/standard/full
+
+### Profile Summary
+
+| Dimension | budget | balanced | quality |
+|-----------|--------|----------|---------|
+| Hooks | essential only | standard (no quality gates) | all hooks |
+| Models | Sonnet everywhere | Sonnet + Opus for synthesis | Opus for most phases |
+| Phases | Skip discover if context given | Skip re-discovery | All phases run |
+| Context | Compressed | Standard | Full inlining |
+
+---
+
+## Runtime Context
+
+The doctor checks for project-level `RUNTIME.md` — a file that provides project-specific context (API endpoints, env vars, test commands, build steps) to orchestration prompts.
+
+### What the Doctor Checks
+
+- **RUNTIME.md exists** in the project root (also checks `.octopus/RUNTIME.md` and `.claude-octopus/RUNTIME.md`)
+- If missing, suggest creating one from the template: `cp "${CLAUDE_PLUGIN_ROOT}/templates/RUNTIME.md" ./RUNTIME.md`
+- If present, confirm it contains at least one populated section (not just the template defaults)
+
+### Why It Matters
+
+Without a `RUNTIME.md`, orchestration prompts lack project-specific details — leading to generic advice about test commands, environment variables, and build steps. A populated `RUNTIME.md` makes every workflow more accurate.
 
 ---
 

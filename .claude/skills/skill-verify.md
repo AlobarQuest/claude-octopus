@@ -15,6 +15,8 @@ validation_gates:
 
 # Verification Before Completion
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - Verification Gate`
+
 ## The Iron Law
 
 <HARD-GATE>

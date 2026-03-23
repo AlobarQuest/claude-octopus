@@ -1,7 +1,7 @@
 ---
 name: skill-doc-delivery
 version: 1.0.0
-description: Convert markdown to DOCX, PPTX, XLSX office documents. Use when: AUTOMATICALLY ACTIVATE when user requests:. Export knowledge work to office formats (e.g., "export to Word", "create PowerPoint", "convert to DOCX"). Generate professional documents from research (e.g., "create presentation from this synthesis")
+description: "Convert markdown to DOCX, PPTX, XLSX office documents. Use when: AUTOMATICALLY ACTIVATE when user requests:. Export knowledge work to office formats (e.g., \"export to Word\", \"create PowerPoint\", \"convert to DOCX\"). Generate professional documents from research (e.g., \"create presentation from this synthesis\")"
 ---
 
 # Document Delivery for Knowledge Workers

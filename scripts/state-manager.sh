@@ -2,7 +2,10 @@
 # State management utilities for Claude Octopus
 # Provides persistent state tracking across sessions
 
-set -euo pipefail
+# v9.7.8: Use -eo (not -euo) to match orchestrate.sh's strictness level.
+# When sourced, -u (nounset) would escalate globally and crash on any unguarded
+# ${VAR} in the 14K+ line caller and its libraries (#108, #189).
+set -eo pipefail
 
 # Configuration
 STATE_DIR=".claude-octopus"

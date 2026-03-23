@@ -1,6 +1,6 @@
-#!/bin/bash
-# tests/smoke/test-debate-skill.sh
-# Tests AI Debate Hub integration (wolverin0/claude-skills)
+#!/usr/bin/env bash
+# Test suite for AI Debate Hub integration
+# Verifies skill-debate.md, command routing, attribution, and version consistency
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -9,41 +9,41 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "AI Debate Hub Integration"
 
-test_integration_skill_exists() {
-    test_case "Integration layer skill exists (skill-debate-integration.md)"
+test_debate_skill_exists() {
+    test_case "Debate skill exists (skill-debate.md)"
 
-    local integration_file="$PROJECT_ROOT/.claude/skills/skill-debate-integration.md"
+    local skill_file="$PROJECT_ROOT/.claude/skills/skill-debate.md"
 
-    if [[ -f "$integration_file" ]]; then
+    if [[ -f "$skill_file" ]]; then
         test_pass
     else
-        test_fail "skill-debate-integration.md not found at $integration_file"
+        test_fail "skill-debate.md not found at $skill_file"
         return 1
     fi
 }
 
 test_skill_has_frontmatter() {
-    test_case "skill-debate-integration.md has YAML frontmatter"
+    test_case "skill-debate.md has YAML frontmatter"
 
-    local integration_file="$PROJECT_ROOT/.claude/skills/skill-debate-integration.md"
+    local skill_file="$PROJECT_ROOT/.claude/skills/skill-debate.md"
 
-    if grep -q "^---$" "$integration_file" && \
-       grep -q "^name: skill-debate-integration$" "$integration_file" && \
-       grep -q "^description:" "$integration_file"; then
+    if grep -q "^---$" "$skill_file" && \
+       grep -q "^name: skill-debate$" "$skill_file" && \
+       grep -q "^description:" "$skill_file"; then
         test_pass
     else
-        test_fail "skill-debate-integration.md missing required YAML frontmatter"
+        test_fail "skill-debate.md missing required YAML frontmatter"
         return 1
     fi
 }
 
 test_skill_has_attribution() {
-    test_case "skill-debate-integration.md includes wolverin0 attribution"
+    test_case "skill-debate.md includes wolverin0 attribution"
 
-    local integration_file="$PROJECT_ROOT/.claude/skills/skill-debate-integration.md"
+    local skill_file="$PROJECT_ROOT/.claude/skills/skill-debate.md"
 
-    if grep -q "wolverin0" "$integration_file" && \
-       grep -q "https://github.com/wolverin0/claude-skills" "$integration_file"; then
+    if grep -q "wolverin0" "$skill_file" && \
+       grep -q "https://github.com/wolverin0/claude-skills" "$skill_file"; then
         test_pass
     else
         test_fail "Missing attribution to wolverin0"
@@ -51,31 +51,15 @@ test_skill_has_attribution() {
     fi
 }
 
-test_plugin_json_includes_skills() {
-    test_case "plugin.json includes both debate skills"
+test_plugin_json_includes_debate() {
+    test_case "plugin.json includes debate skill"
 
     local plugin_file="$PROJECT_ROOT/.claude-plugin/plugin.json"
 
-    if grep -q ".claude/skills/skill-debate.md" "$plugin_file" && \
-       grep -q ".claude/skills/skill-debate-integration.md" "$plugin_file"; then
+    if grep -q ".claude/skills/skill-debate.md" "$plugin_file"; then
         test_pass
     else
-        test_fail "plugin.json missing debate skill references"
-        return 1
-    fi
-}
-
-test_plugin_json_has_dependencies_section() {
-    test_case "plugin.json maintains debate skill integration"
-
-    local plugin_file="$PROJECT_ROOT/.claude-plugin/plugin.json"
-
-    # NOTE: Dependencies section was removed in v7.6.3 as it's not supported by Claude Code validator
-    # We verify integration by checking that debate skills are included instead
-    if grep -q "skill-debate" "$plugin_file"; then
-        test_pass
-    else
-        test_fail "plugin.json missing debate skill integration"
+        test_fail "plugin.json missing debate skill reference"
         return 1
     fi
 }
@@ -100,16 +84,31 @@ test_debate_skill_content() {
     fi
 }
 
+test_debate_has_quality_gates() {
+    test_case "skill-debate.md includes quality gates (merged from integration)"
+
+    local skill_file="$PROJECT_ROOT/.claude/skills/skill-debate.md"
+
+    if grep -q "Quality Gates" "$skill_file" && \
+       grep -q "Cost Tracking" "$skill_file"; then
+        test_pass
+    else
+        test_fail "skill-debate.md missing quality gates or cost tracking sections"
+        return 1
+    fi
+}
+
 test_debate_command_routing() {
     test_case "Debate command routing exists in orchestrate.sh"
 
-    local orchestrate="$PROJECT_ROOT/scripts/orchestrate.sh"
+    local orch="$PROJECT_ROOT/scripts/orchestrate.sh"
+    local libs="$PROJECT_ROOT/scripts/lib/*.sh"
 
-    if grep -q "debate|deliberate|consensus)" "$orchestrate" && \
-       grep -q "wolverin0" "$orchestrate"; then
+    if grep -rq "debate|deliberate|consensus)" $orch $libs && \
+       grep -rq "wolverin0" $orch $libs; then
         test_pass
     else
-        test_fail "orchestrate.sh missing debate command routing or attribution"
+        test_fail "orchestrate.sh/lib missing debate command routing or attribution"
         return 1
     fi
 }
@@ -134,7 +133,6 @@ test_changelog_attribution() {
 
     local changelog="$PROJECT_ROOT/CHANGELOG.md"
 
-    # v8.37.0 trimmed pre-8.22.0 history; just verify CHANGELOG exists with entries
     if [[ -f "$changelog" ]] && grep -q '\[8\.' "$changelog"; then
         test_pass
     else
@@ -152,7 +150,6 @@ test_version_consistency() {
 
     local plugin_version=$(grep '"version"' "$plugin_json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
     local package_version=$(grep '"version"' "$package_json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
-    # Extract version from marketplace.json plugins array
     local marketplace_version=$(grep -A 3 '"octo"' "$marketplace_json" | grep '"version"' | sed 's/.*"version": *"\([^"]*\)".*/\1/')
 
     if [[ "$plugin_version" == "$package_version" ]] && \
@@ -165,12 +162,12 @@ test_version_consistency() {
 }
 
 # Run all tests
-test_integration_skill_exists
+test_debate_skill_exists
 test_skill_has_frontmatter
 test_skill_has_attribution
-test_plugin_json_includes_skills
-test_plugin_json_has_dependencies_section
+test_plugin_json_includes_debate
 test_debate_skill_content
+test_debate_has_quality_gates
 test_debate_command_routing
 test_readme_attribution
 test_changelog_attribution

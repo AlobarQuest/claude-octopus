@@ -1,5 +1,5 @@
 ---
-description: "Discovery phase - Multi-AI research and exploration"
+description: "\"Discovery phase - Multi-AI research and exploration\""
 ---
 
 # Discover - Discovery Phase 🔍
@@ -19,12 +19,11 @@ When the user invokes this command (e.g., `/octo:discover <arguments>`):
 Skill(skill: "octo:discover", args: "<user's arguments>")
 ```
 
-**✗ INCORRECT - Do NOT use Task tool:**
+**✗ INCORRECT:**
 ```
+Skill(skill: "flow-discover", ...)  ❌ Wrong! Internal skill name, not resolvable by Skill tool
 Task(subagent_type: "octo:discover", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
-
-**Why:** This command loads the `flow-discover` skill. Skills use the `Skill` tool, not `Task`.
 
 ### Step 1: Ask Clarifying Questions
 
@@ -36,14 +35,13 @@ Ask 3 clarifying questions to ensure focused research:
 AskUserQuestion({
   questions: [
     {
-      question: "How deep should the research go?",
-      header: "Depth",
+      question: "How thorough should the research be?",
+      header: "Research Intensity",
       multiSelect: false,
       options: [
-        {label: "Quick overview (Recommended)", description: "1-2 min, surface-level scan"},
-        {label: "Moderate depth", description: "2-3 min, standard coverage"},
-        {label: "Comprehensive", description: "3-4 min, thorough analysis"},
-        {label: "Deep dive", description: "4-5 min, exhaustive research"}
+        {label: "Quick (1-2 min)", description: "2 agents — fast problem space scan"},
+        {label: "Standard (2-4 min)", description: "4-5 agents — balanced multi-perspective coverage (recommended)"},
+        {label: "Deep (3-6 min)", description: "6-7 agents — exhaustive analysis with web search"}
       ]
     },
     {
@@ -72,13 +70,20 @@ AskUserQuestion({
 })
 ```
 
+Map the intensity answer:
+- "Quick" → `quick`
+- "Standard" → `standard`
+- "Deep" → `deep`
+
 After receiving answers, incorporate them into the Skill invocation.
 
-### Step 2: Invoke Skill
+### Step 2: Invoke Skill with Intensity
 
 ```
-Skill(skill: "octo:discover", args: "<user's arguments>")
+Skill(skill: "octo:discover", args: "[intensity=quick|standard|deep] <user's arguments>")
 ```
+
+Example: `Skill(skill: "octo:discover", args: "[intensity=standard] OAuth authentication patterns")`
 
 ### Step 3: Post-Completion — Interactive Next Steps
 
@@ -105,7 +110,7 @@ AskUserQuestion({
 
 ---
 
-**Auto-loads the `flow-discover` skill for the research/discovery phase.**
+**Auto-loads the discover skill for the research/discovery phase.**
 
 ## Quick Usage
 

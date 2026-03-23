@@ -1,19 +1,408 @@
+## [9.10.2] - 2026-03-22
+
+### Changed
+
+- **embrace.sh dispatch** — Now detects all 5 CLI providers (codex, gemini, copilot, qwen, ollama) and dynamically builds dispatch strategies. 3+ available CLIs → all join the fleet. Qwen and Ollama now participate in research, review, and architecture workflows.
+- **Debate participants** — Copilot (🟢) and Qwen (🟤) join as supplementary participants when available, alongside core four (Codex/Gemini/Sonnet/Opus).
+- **Smart setup prompt** — Detects when legacy users have new providers (Copilot/Qwen/Ollama) and proactively informs them of extra tentacles.
+- **Codex mini model** — Updated `gpt-5-codex-mini` → `gpt-5.4-mini` across dispatch, models catalog, provider routing, and docs. GPT-5.4 Mini is 2x faster and uses 30% token quota vs GPT-5.4.
+
+### Fixed
+
+- **Emoji conflict** — Qwen 🟠→🟤 (Sonnet keeps 🟠 as established).
+
+---
+
+## [9.10.1] - 2026-03-22
+
+### Changed
+
+- **SEO: "Multi-LLM orchestration" in opening paragraph** — First sentence now leads with "Multi-LLM orchestration plugin for Claude Code" and names all 8 providers. This is the Google snippet zone (~155 chars). Repo description updated to match.
+- **README: outcome-first opening bullets** — Lead with what it does for you, not which 8 providers it uses. Defined jargon inline (personas = role-specific agents, skills = reusable workflows).
+- **README: condensed What's New** — 14 detailed changelog rows → 3-row table by major version (v9/v8/v7) with best end-user features.
+- **README: simplified Quickstart** — 3 commands upfront, alternatives + troubleshooting in collapsible `<details>` blocks.
+
+---
+
+## [9.10.0] - 2026-03-22
+
+### Added
+
+- **Qwen CLI as 8th provider**: Free-tier research via Qwen OAuth (1,000-2,000 requests/day). Fork of Gemini CLI — same dispatch pattern. Agent types: `qwen`, `qwen-research`. Detection, doctor, health check, dispatch, model resolver, circuit breaker, workflows, preflight, and install-deps all wired.
+- **Copilot Coding Agent native files**: `.github/agents/*.agent.md` for all 10 agents. YAML frontmatter with Copilot tool aliases (read, edit, execute, search). Makes agents discoverable by GitHub's server-side coding agent.
+- **Gemini .toml custom commands**: `.gemini/commands/octo/` with 4 persona commands (research, review, architect, implement) for human interactive use. Not used in headless dispatch (stdin+slash don't compose — verified via Codex source analysis).
+- **Gemini provider test suite**: 44 tests covering dispatch, detection, doctor, health, models, circuit breaker, workflows, embrace, MCP, .toml commands, pricing, and config.
+
+### Fixed
+
+- **P0: json_extract reliability** — Replaced brittle regex (`"field":"value"`) with 3-tier fallback: jq (if available) → python3 one-liner → improved regex that handles whitespace, escaped quotes, numeric values, and missing fields.
+- **P1: OpenRouter hardening** — Added `--max-time 60` timeout, HTTP status code handling (429 retry with Retry-After, 502/503/524 error messages), deduplicated `openrouter_execute()` and `openrouter_execute_model()` into one core function.
+- **P1: DeepSeek model update** — `deepseek/deepseek-r1` → `deepseek/deepseek-r1-0528` across dispatch, model-resolver, models catalog, and docs.
+- **CC version detection tests consolidated** — 4 test files merged into `test-cc-version-detection.sh` (103 tests).
+
+---
+
+## [9.9.3] - 2026-03-22
+
+### Fixed
+
+- **Copilot dispatch broken end-to-end** (#206, PR #207 by @PavelPancocha): 5 bugs that prevented Copilot from ever running in workflows despite detection:
+  1. `dispatch.sh` returned bash function name (`copilot_execute`) instead of executable — `timeout` can't exec functions. Fixed: `copilot --no-ask-user`.
+  2. `validate_agent_command()` in utils.sh rejected `copilot` — not in allowlist. Fixed: added `copilot` pattern.
+  3. `embrace.sh` never included Copilot in dispatch strategies — only checked codex/gemini. Fixed: added `has_copilot` detection + 3/4-provider strategies.
+  4. Headless `-p ""` stdin flag only appended for `gemini*` agents — Copilot needs it too. Fixed: extended condition to `copilot*`.
+  5. Provider metrics tracking fell through to wildcard for copilot/ollama. Fixed: added explicit cases.
+- **Stray `}` at EOF in workflows.sh** — caused syntax error when sourced (CodeRabbit catch from PR #207).
+- **Codex smoke test timeout too short** — hardcoded 10s, but MCP initialization takes 20-40s. Now configurable via `OCTOPUS_CODEX_SMOKE_TIMEOUT` (default: 45s).
+
+### Changed
+
+- **README tagline** — "turns one model into three" → "orchestrates seven AI providers"
+- **SECURITY.md** — supported versions 4.x → 9.x, fixed package names, added Copilot/Ollama to deps
+- **CONTRIBUTING.md** — removed dead Python/coordinator.py refs, added real test commands, bash 3.x compat
+- **PR template** — removed dead `coordinator.py` check, added real test/registry/version-bump checklist
+- **Issue templates** — upgraded from markdown to YAML forms with provider dropdowns and version fields
+
+### Added
+
+- **CODE_OF_CONDUCT.md** — Contributor Covenant v2.1
+- **Repo topics** — 12 discoverable tags (claude-code, multi-ai, ai-orchestration, etc.)
+
+### Removed
+
+- **39 stale remote branches** — all merged/orphaned branches cleaned up
+- **Wiki and Projects tabs** — disabled (unused)
+- **Discussions** — disabled
+
+---
+
+## [9.9.2] - 2026-03-22
+
+### Changed
+
+- **Documentation consolidation**: Removed 9 stale/redundant docs from plugin (archived to dev repo). Kept 7 user-facing docs + 5 provider configs. Rewrote `docs/README.md` index.
+- **Provider counts normalized to 7** across README.md ("Seven Providers"), ARCHITECTURE.md (Copilot no longer "aspirational"), CLAUDE.md (detection section, modular config tree), COMMAND-REFERENCE.md ("47 commands"), copilot-instructions.md.
+- **Debate references updated to four-way** across COMMAND-REFERENCE.md (was "3-way").
+
+### Added
+
+- **`config/providers/copilot/CLAUDE.md`**: New provider config file for GitHub Copilot CLI (was missing).
+
+### Removed
+
+- `docs/CLI-REFERENCE.md` — CLI flags are in orchestrate.sh `--help`
+- `docs/PLUGIN-ARCHITECTURE.md` — Overlapped ARCHITECTURE.md, perpetually stale
+- `docs/FACTORY-AI.md` — Factory-specific, stale counts
+- `docs/SANDBOX-CONFIGURATION.md` — Documented invalid mode (`danger-full-access`); valid modes are in dispatch.sh
+- `docs/NATIVE-INTEGRATION.md` — Outdated v8.15 content
+- `docs/INTERACTIVE_QUESTIONS_GUIDE.md` — Developer reference, rarely used
+- `docs/PDF_PAGE_SELECTION.md` — Belongs in document-skills plugin
+- `docs/RELEASE_AUTOMATION.md` — Internal workflow, moved to dev repo
+- `docs/agent-decision-tree.md` — Internal design doc, moved to dev repo
+
+### Fixed
+
+- **Ollama CLAUDE.md**: Corrected false "no streaming in CLI mode" claim.
+- **AGENTS.md**: Fixed path `agents/` → `.claude/agents/`.
+
+---
+
+## [9.9.1] - 2026-03-22
+
+### Fixed
+
+- **Ollama dispatch missing**: Added `ollama|ollama-*` case to `dispatch.sh` and `ollama` to `AVAILABLE_AGENTS` — v9.9.0 wired detection but missed the dispatch branch.
+- **detect-providers incomplete**: `detect_providers()`, `cmd_detect_providers()`, `install-deps.sh`, and `is_agent_available_v2()` now include Perplexity, Ollama, and Copilot (were only in doctor.sh).
+- **copilot-instructions.md wrong path**: `marketplace.json` → `.claude-plugin/marketplace.json`.
+
+### Changed
+
+- **Removed inline adversarial steps**: Deleted STEP 6.5 (flow-define), STEP 3.5 (flow-develop), STEP 4.5 (flow-deliver) — superseded by centralized multi-LLM adversarial debate system (v9.4.0+v9.8.0).
+
+---
+
+## [9.9.0] - 2026-03-22
+
+### Added
+
+- **GitHub Copilot CLI as runtime provider** (#198): Official `copilot -p` programmatic mode (GA Feb 2026) with 5-tier fallback auth chain: `COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → keychain → `gh` CLI. Agent types: `copilot`, `copilot-research`. Zero additional cost (uses GitHub Copilot subscription). Graceful degradation when unavailable.
+- **Ollama as local LLM provider**: Primary integration via `ollama run` CLI dispatch. Doctor checks CLI install + server health + model count. Added to provider health checks, circuit breaker, and model resolver (`ollama*` → `llama3.3`). Secondary `ANTHROPIC_BASE_URL` bridge path documented for drop-in compatibility.
+- **Repo-level agent discovery files**: `AGENTS.md` for GitHub Copilot coding agent discovery, `.github/copilot-instructions.md` for Copilot-specific repo instructions.
+- **Adapter integration tests** (`test-adapter-flags.sh`): 23 tests covering debate flag placement, quality_threshold forwarding, env var allowlists, and Copilot wiring.
+
+### Fixed
+
+- **Debate flag placement in MCP/OpenClaw** (CRITICAL): Both adapters placed grapple-specific flags (`-r`, `--mode`) before the command, where orchestrate.sh's global parser consumed them incorrectly. OpenClaw's `-d` flag collided with the global `--dir` flag. Added `postFlags` parameter to both `runOrchestrate()` and `executeOrchestrate()`. Debate flags now correctly go after the subcommand.
+- **`quality_threshold` silently ignored**: Both MCP and OpenClaw accepted the parameter but never forwarded it. Now passes `-q` flag to orchestrate.sh when non-default.
+- **MCP/OpenClaw env var allowlists**: Added `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Ollama bridge), `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` (Copilot auth), `PERPLEXITY_API_KEY` (was missing from OpenClaw).
+- **OpenClaw registry stale**: Regenerated to 97 entries matching current skills/commands.
+- **OpenClaw debate description**: "Three-way" → "Four-way" (Sonnet was added as 4th participant in v9.4.0).
+- **OpenClaw debate style param**: Removed broken `style` param (no CLI mapping) and `-d` flag. Replaced with `mode` param (cross-critique/blinded) matching orchestrate.sh's actual `--mode` flag.
+- **`test-openclaw-compat.sh` early abort**: `test_build_check_mode` and `test_validate_script_passes` used command substitution under `set -e`, causing the entire suite to abort on first failure. Fixed with `&& exit_code=0 || exit_code=$?` pattern.
+
+### Changed
+
+- **ARCHITECTURE.md**: Updated from "three providers" to 5 core + 2 optional (Codex, Gemini, Claude, Perplexity, OpenRouter + Ollama, Copilot). Updated provider table and ASCII diagram.
+- **skill-copilot-provider.md v2.0**: Rewritten from `gh copilot` (retired) to official `copilot -p` programmatic mode. Documents auth chain, PAT setup, and premium request quota.
+- **setup.md**: Added Copilot CLI setup section with install and auth instructions.
+- **skill-doctor.md**: Updated providers table to match actual doctor checks.
+- **test-copilot-provider.sh**: Updated assertions for v2.0 skill content (37 tests).
+
+---
+
+## [9.8.0] - 2026-03-22
+
+### Added
+
+- **Adversarial debate in 9 workflows**: Multi-LLM cross-checking now wired into `/octo:multi` (mandatory synthesis with disagreement surfacing), `/octo:spec` (completeness challenge), `/octo:define` (requirements challenge), `/octo:factory` (pre-embrace scenario coverage gate), `/octo:develop` (pre-implementation devil's advocate), `/octo:prd` (draft adversarial review), `/octo:staged-review` (multi-LLM Stage 2 with Codex logic + Gemini security), `/octo:parallel` (WBS decomposition cross-check), `/octo:tdd` (test design review). All skippable with `--fast`.
+- **Visual activation indicators on all commands**: Every `/octo:*` command now shows a 🐙 indicator line when activated. 19 commands and 10 skills that were missing indicators now have them. 7 skills that falsely claimed `visual_indicators_displayed` in their contract now actually display one. 4 existing banners missing the 🐙 emoji prefix now include it.
+
+### Fixed
+
+- **test-debate-skill.sh CI failure**: Wrong helper path (`tests/smoke/test-helpers.sh` → `tests/helpers/test-framework.sh`) caused "Missing test-helpers.sh" on every CI run.
+- **test-packaging-integrity.sh CI failure**: `set -euo pipefail` + `eval "source ..."` subshell broke on CI when sourced scripts referenced unset runtime variables. Replaced with file-existence check that doesn't require executing sourced code.
+
+---
+
+## [9.7.8] - 2026-03-21
+
+### Fixed
+
+- **Windows `${USER}` unbound variable crash** (#201): `$USER` is unset on Windows (Git Bash) — Windows uses `$USERNAME` instead. All 6 occurrences in the model cache path now use `${USER:-${USERNAME:-unknown}}` to handle both platforms.
+- **Codex smoke test false negative outside git repos** (#202): `codex exec` requires a git repository, so the smoke test always failed with "Not inside a trusted directory" when run from a non-git directory. Now creates a temp git repo for the test and cleans up after. Added `GIT_REPO_REQUIRED` error classifier for a clearer message if the workaround fails.
+
+---
+
+## [9.7.7] - 2026-03-20
+
+### Fixed
+
+- **Broken Skill() dispatch in 9 commands**: `doctor`, `claw`, `loop`, `debug`, `deck`, `docs`, `security`, `staged-review`, `tdd` all used `Skill(skill: "skill-name")` which failed with "Unknown skill" because the Skill tool requires plugin-qualified names. Replaced with direct file read instructions. Net -93 lines.
+- **Factory AI manifest stale at v8.41.0**: Bumped `.factory-plugin/plugin.json` to 9.7.7 with correct command/skill counts.
+- **HTTP webhook hook no-op**: Removed the `type: http` hook entry that fired with an empty `OCTOPUS_WEBHOOK_URL`. The shell script fallback (`telemetry-webhook.sh`) already has the guard.
+- **MCP server Node version guard**: Added `check-node-version.js` that fails fast with a clear error on Node < 18 instead of silently crashing.
+
+### Changed
+
+- **PostToolUse context-awareness scoped**: Changed from blanket `{}` matcher to `Bash|Agent|Write|Edit` only. Eliminates a bash process spawn on every Read/Grep/Glob call.
+- **SessionStart hooks consolidated (5 → 4)**: Merged `session-sync.sh` into `session-start-memory.sh`, reducing process spawns per session start/resume/compact.
+- **context-awareness.sh timeout guard**: Added `timeout 3 cat` pattern for stdin drain consistency with other hooks.
+
+---
+
+## [9.7.6] - 2026-03-19
+
+### Added
+
+- **Dependency installer** (`scripts/install-deps.sh`): New `check` and `install` modes that auto-detect and install missing CLIs (Codex, Gemini), jq, and the statusline resolver. Reports recommended plugin status (claude-mem, document-skills) with copy-paste `/plugin install` commands.
+- **Setup dependency check**: `/octo:setup` now runs `install-deps.sh check` first — shows what's missing before provider detection. Offers `install` to fix everything in one shot.
+- **Doctor deps category**: `/octo:doctor` gains a `deps` check category and install step (Step 3) for fixing missing software dependencies.
+
+---
+
+## [9.7.5] - 2026-03-19
+
+### Fixed
+
+- **Statusline version goes stale on plugin update**: `settings.json` contained a versioned cache path (e.g., `.../octo/9.6.1/hooks/...`) that never updated when the plugin upgraded. Added `statusline-resolver.sh` — a version-agnostic wrapper that finds the latest cached version via `sort -V`. New `statusline-auto-repair.sh` SessionStart hook auto-installs the resolver to `~/.claude-octopus/statusline.sh` and patches `settings.json` if it detects a stale versioned path.
+
+---
+
+## [9.7.4] - 2026-03-19
+
+### Changed
+
+- **3-tier adaptive statusline**: Tier 1 (Node 16+ HUD with smart columns), Tier 2 (bash + jq with context bar/cost/phase), Tier 3 (pure bash with grep/cut — zero external dependencies). Works on any POSIX system regardless of installed tools.
+- **Node version check**: Verifies Node >= 16 before attempting ESM HUD delegation. Node 14-15 users gracefully fall to Tier 2 instead of crashing on `node:` protocol imports.
+- **Removed unnecessary timeout from statusline**: Claude Code cancels in-flight statusline scripts on new updates per [official docs](https://code.claude.com/docs/en/statusline), so `timeout` guard is unnecessary (kept on hooks where it's still needed).
+
+---
+
+## [9.7.3] - 2026-03-19
+
+### Fixed
+
+- **`local` outside function** — `octopus-statusline.sh` used `local wt_suffix` at script scope, which aborts under `set -e`. Broke the entire bash statusline fallback when worktrees were active. Same bug in `scheduler-security-gate.sh` silently bypassed file path restrictions.
+- **Atomic credential writes** — `writeBackCredentials` now uses temp file + `renameSync` with `mode: 0o600`. Prevents concurrent sessions from clobbering `~/.claude/.credentials.json`.
+- **Atomic cache writes** — `writeUsageCache` uses temp + `renameSync` to prevent torn JSON from concurrent sessions.
+- **Python injection in context-awareness** — Bridge file path was interpolated into `python3 -c` string literal. Now passed via `os.environ['BRIDGE_PATH']`.
+- **Unsafe `/tmp` glob removed** — `context-awareness.sh` no longer falls back to `ls -t /tmp/octopus-ctx-*.json`. Exits cleanly when `CLAUDE_SESSION_ID` is unset.
+- **5 additional timeout guards** — `plan-mode-interceptor.sh`, `scheduler-security-gate.sh`, `sysadmin-safety-gate.sh`, `telemetry-webhook.sh`, `agent-teams-phase-gate.sh` now have the `command -v timeout` fallback pattern. Total: 10 hooks hardened.
+- **HUD stdin timeout** — `readStdin()` now uses `Promise.race` with a 5s guard to prevent indefinite hang on unclosed pipes.
+- **`contextBar` clamp** — `Math.min(10, Math.max(0, ...))` prevents `RangeError` if pct > 100 reaches the function.
+- **Bridge file permissions** — Written with `umask 0177` (owner-only) instead of default umask.
+
+---
+
+## [9.7.2] - 2026-03-19
+
+### Added
+
+- **Smart HUD columns**: `smartColumns()` auto-detects context and adjusts visible columns — hides Cost for OAuth subscription users, shows Cache/Session/Changes/Tokens only when data is meaningful. Column factory pattern ensures config-ordered rendering. `"smart": true` is the default; set `"smart": false` in `.hud-config.jsonc` for manual control.
+- **Octo brand column**: New `Octo:` column (always first) displays octopus icon, plugin version, and effort level dot. Model column moved to second position, Context column anchors the end.
+- **Context bridge session_id fix**: Both statusline hooks now extract `session_id` from stdin JSON instead of relying on `CLAUDE_SESSION_ID` env var (which isn't set for statusLine commands). Context-awareness hook falls back to finding the most recent bridge file when env var is missing.
+- `test-hud-smart-mode.sh` — 31 tests across 5 groups covering timeout fallback, smart mode, Octo column, context bridge, and functional HUD output.
+
+### Fixed
+
+- **Timeout fallback for macOS**: All 6 hook files now check `command -v timeout` before using GNU `timeout`. Falls back to plain `cat` when `timeout` (GNU coreutils) isn't installed — fixes silent stdin read failures on stock macOS that caused model showing "unknown" and 0% context in the statusline.
+
+---
+
+## [9.6.1] - 2026-03-19
+
+### Added
+
+- **Enhanced HUD rewrite**: Full async rewrite of `octopus-hud.mjs` (295 → 880 lines). Concurrent API/transcript/version fetching via `Promise.all`. First call ~300-500ms, subsequent calls <10ms (all cache hits).
+- **Rate limit tracking**: 5h/7d usage from Anthropic OAuth API with color-coded percentages and reset countdown timers. Credential reading from `.credentials.json` with macOS Keychain fallback. Token refresh on expiry. 60s/15s cache TTLs.
+- **Transcript-based agent tracking**: Parses JSONL transcripts for running/completed agents (Task/proxy_Task tool_use blocks). Background agent tracking, stale agent detection (30 min timeout), max 100 agents in memory. Agent detail tree with `├─`/`└─` prefixes showing type, model, elapsed time, description.
+- **Cache hit rate**: Computes cache read vs total tokens from `current_usage` fields. Displayed as percentage with color coding.
+- **Version check**: Fetches latest Claude Code version from npm registry with 1h cache. Shows update indicator dot when current differs from latest.
+- **Configurable column system**: `~/.claude-octopus/.hud-config.jsonc` with JSONC parsing (supports `//` comments). 14 columns available, 5 default ON. Vertical (2-row labels+values) and horizontal (single-row compact) layouts.
+- **Tailwind color palette**: Replaced basic ANSI (31-37) with 24-bit Tailwind colors — Emerald-600 for good, Amber-600 for warning, Red-600 for critical, Slate-600/700/800 for data/labels/separators.
+- Updated `test-enhanced-hud.sh` — 30 tests across 6 groups covering rate limit functions, display, enhanced features, Octopus preserved functions, config system, and layout support.
+
+---
+
+## [9.6.0] - 2026-03-18
+
+### Added
+
+- **Enhanced statusline**: Gradient context bar (`▰▱`), auto-compact warning indicators (`⚠` at 80%, `💀` at 90%), active agent name display, project state from `.octo/STATE.md` when idle. Performance-cached with 2s TTL.
+- **Workflow-aware context warnings**: `context-awareness.sh` now reads session.json and gives phase-specific advice (probe→"use /octo:quick", tangle→"split into smaller /octo:develop", ink→"focus on verification"). New 80% AUTO_COMPACT severity level.
+- **Session handoff file**: `.octo-continue.md` auto-written on PreCompact and SessionEnd. Contains workflow state, pending work, key decisions, blockers, and resume instructions. Read by `/octo:resume`.
+- **Enhanced intent detection**: `user-prompt-submit.sh` now has HIGH/LOW confidence levels (2+ keyword hits = HIGH). HIGH confidence injects persona context (security auditor, code reviewer, debugger, TDD orchestrator hints). Provider pre-warming writes `primed_providers` to session.json.
+- **New script**: `scripts/write-handoff.sh` — standalone handoff file generator.
+- 4 new test suites: enhanced-hud (18), context-awareness-v2 (14), handoff (12), prompt-submit-v2 (12) — 56 new assertions.
+
+---
+
+## [9.5.0] - 2026-03-18
+
+### Added
+
+- **Stdin timeout guards**: All 6 hook files now use `timeout 3 cat` instead of bare `cat` reads, preventing hook hangs on stdin stalls.
+- **50KB output guard**: `guard_output()` in `lib/utils.sh` redirects oversized output to temp files with `@file:` pointers. Wired into `aggregate_results()` and `synthesize_probe_results()`.
+- **Agent permission audit**: Removed `Agent` tool from 7 read-only agents (backend-architect, code-reviewer, security-auditor, performance-engineer, docs-architect, cloud-architect, database-architect). Added `readonly: true` to 6 agents. Removed `Bash` from security-auditor.
+- **Context bridge**: Both statusline hooks (bash + Node.js HUD) now write `/tmp/octopus-ctx-$SESSION.json` with context usage data for cross-hook awareness.
+- **Context awareness hook**: New `hooks/context-awareness.sh` (PostToolUse, blanket) warns at 65% (WARNING) and 75% (CRITICAL) context usage. Debounced every 5 tool calls with severity escalation bypass.
+- **Structured return contracts**: All 10 agent files now have `## Output Contract` with COMPLETE/BLOCKED/PARTIAL status markers and per-agent customized sections.
+- **Contract compliance scoring**: `score_result_file()` Factor 5 adds up to 20 pts for structured status markers in agent output.
+- **Compound init command**: `init-workflow)` dispatch case returns full environment bundle (providers, models, capabilities, files, paths) as JSON in a single call.
+- **Smart router renamed**: `/octo:octo` → `/octo:auto`. The old `/octo:octo` command remains as a legacy redirect. 40 commands total.
+- 6 new test suites: stdin-timeout-guards (12), output-guard (6), agent-permissions-audit (12), context-bridge (12), agent-return-contracts (32), compound-init (17) — 91 new assertions.
+
+---
+
+## [9.4.3] - 2026-03-17
+
+### Fixed
+
+- Legacy `claude-octopus` install detection in doctor and preflight — users who installed before the v9.0 rename to `octo` now see a clear diagnostic with the uninstall/reinstall command. (#196)
+
+---
+
+## [9.4.2] - 2026-03-17
+
+### Changed
+
+- **Round 2 speed optimization**: 26 echo|grep → bash builtins, 22 $(cat) → $(<), $(date +%s) caching in 5 hot functions, 124 separator literals → variables. ~100 additional forks eliminated per workflow.
+- **Combined with Round 1 (v9.4.1)**: orchestrate.sh goes from ~900 subshell forks per workflow to ~70 — a 92% reduction in subprocess overhead.
+
+### Removed
+
+- `archive_usage_session()` dead function and `cost-archive` command (deprecated with message).
+
+### Fixed
+
+- Missing file guard on `generate_factory_scenarios()` — `$(<)` without `[[ -f ]]` check could abort under `set -e`.
+- Newline regression in `match_routing_rule` keyword matching — `grep -qw` treated newlines as word boundaries, space-padding didn't.
+- Redundant dual `nocasematch` blocks in `parse_factory_spec` merged into single block + `case` statement.
+- `_classify_smoke_error` nocasematch wrapped in subshell to prevent leak on future early returns.
+- Timing skew: `start_time_ms` in `spawn_agent` and `probe_single_agent` restored to fresh `$(date +%s)` (metrics accuracy over micro-optimization).
+
+---
+
+## [9.4.1] - 2026-03-17
+
+### Changed
+
+- Flag pruning, speed optimization (~750 fewer subshell forks), pre-existing test fixes
+
+---
+
+# Changelog
+
+## [9.4.0] - 2026-03-17
+
+### Added
+
+- **Four-way AI debates**: Sonnet now participates as a permanent 4th debater alongside Codex, Gemini, and Claude/Opus. Dispatched via `Agent(model: "sonnet", run_in_background: true)` — runs in parallel, no added latency, no extra cost. Skill version v4.7 → v4.8.
+- **Auto code review + E2E verification**: After any `/octo:develop`, `/octo:embrace`, or `/octo:deliver` workflow completes, two Sonnet agents automatically launch in parallel — one code reviewer, one E2E tester. Findings presented before the "what next?" prompt. No manual request needed.
+- **Monolith guard test**: `tests/smoke/test-monolith-guard.sh` (15 tests) enforces orchestrate.sh line count threshold, lib file existence, no function duplication, and source guards.
+- **Test infrastructure helper**: `tests/helpers/grep-octopus.sh` searches across `orchestrate.sh` + `lib/*.sh` so tests survive function extraction.
+
+### Changed
+
+- **Wave 1 decomposition**: Extracted 3 new lib modules from orchestrate.sh (22,668 → 22,377 lines):
+  - `lib/utils.sh` (183 lines): json_extract, json_escape, sanitize_external_content, validate_agent_command, validate_output_file, sanitize_review_id, secure_tempfile
+  - `lib/similarity.sh` (103 lines): jaccard_similarity, extract_headings, check_convergence, generate_bigrams, bigram_similarity
+  - `lib/models.sh` (129 lines): get_model_catalog, is_known_model, get_model_capability, list_models
+
+### Fixed
+
+- **`list_models --tier` parsing bug**: `shift` inside a `for` loop produced wrong results. Replaced with proper `while [[ $# -gt 0 ]]` pattern.
+- **`log()` forward-reference in utils.sh**: Extracted functions called `log()` before it was defined. Added `_utils_log()` fallback that uses stderr when `log()` isn't available.
+- **`validate_output_file` silent failure**: When `RESULTS_DIR` was unset, validation silently rejected all files with a misleading error. Now explicitly checks and reports the missing variable.
+- **9 review pipeline bugs** silently dropping all findings (#182-#190) — see v9.3.1 below for individual fixes.
+
+---
+
+## [9.3.1] - 2026-03-16
+
+### Fixed
+
+- **awk filter drops codex exec clean stdout**: The output filter expected a `--------` header separator that `codex exec` doesn't emit on stdout. Now detects clean stdout and passes through directly. (#182)
+- **claude-sonnet agent `-m` flag rejected**: Claude CLI v2.1.76 requires `--model` (long form). Updated `claude-sonnet`, `claude-opus`, and `claude-opus-fast` agent commands. (#183)
+- **log() INFO/WARN pollutes captured output**: `log()` INFO and WARN levels wrote to stdout, corrupting function return values captured via `$()`. Now all log levels write to stderr. (#183)
+- **check_provider_health uses removed `codex auth status`**: Codex CLI v0.114 removed `auth status`. Now checks `~/.codex/auth.json` directly. (#184)
+- **Claude CLI not found in non-interactive shells**: When `~/.local/bin` isn't on PATH, the script now probes common install locations before falling back. (#185)
+- **Round 1 findings parser feeds full markdown to jq**: The parser now extracts the `## Output` section from result files before JSON parsing, instead of feeding the entire markdown document to jq. (#186)
+- **Gemini provider status never written**: Round 1 findings collection now writes provider status events for all agent types, not just codex. (#187)
+- **LLM JSON wrapped in markdown fences breaks jq**: Added fence stripping after `run_agent_sync` in Rounds 2, 3 (debate), and 3 (synthesis). (#188)
+- **PURPLE unbound variable crashes setup_wizard**: Added `PURPLE` color variable as alias for `MAGENTA`. (#189)
+- **Round 1 `wait` returns immediately**: Replaced bare `wait` (which only catches direct children) with polling for `## Status:` markers in result files, with 5-minute timeout. (#190)
+
+---
+
 ## [9.3.0] - 2026-03-16
 
 ### Added
 
-- **Ollama provider** — local models (llama3.3:70b, qwen2.5-coder:32b, etc.) now a first-class provider. Detected via `command -v ollama`, dispatched through `get_cmd_for_agent()` / `get_agent_command_array()`, registered in `AVAILABLE_AGENTS` and `is_agent_available_v2()`.
-- **`OCTOPUS_COST_MODE=budget`** — routes dispatch to `openrouter-deepseek` (DeepSeek-R1 for coding) and `meta-llama/llama-3.3-70b-instruct` (for research) via existing OpenRouter infrastructure. Requires `OPENROUTER_API_KEY`. ~10x cheaper per workflow than standard Codex+Gemini.
-- **`OCTOPUS_COST_MODE=free`** — routes dispatch to Ollama local models. Zero API cost after hardware. Requires `ollama` CLI installed.
-- **`OCTOPUS_OLLAMA_MODEL`** env var to select local model (default: `llama3.3:70b`).
-- **Quality gate warning** for factory, security, and TDD workflows when budget/free mode is active — raises awareness and logs to audit trail.
-- **Cost mode docs** in `/octo:setup` and `docs/CLI-REFERENCE.md` with pricing table and configuration examples.
+- **Search spiral guard**: Research agents get a prompt-level instruction preventing search loops without synthesis. Unconditional in `probe_single_agent()`, role-gated (`researcher`) in `spawn_agent()`.
+- **Per-role token budget proportions**: `get_role_budget_proportion()` scales `enforce_context_budget()` by role — implementers/researchers get 60%, planners/reviewers 40%, verifiers/synthesizers 25%. Prevents one chatty agent from starving others.
+- **Heuristic learning**: `record_run_pattern()` records file co-occurrence from successful agent runs to `~/.claude-octopus/.octo/patterns.jsonl` (capped 200 entries). `build_heuristic_context()` injects "when modifying X, successful runs usually first read Y" hints (≤500 chars) into future prompts. Kill switch: `OCTOPUS_HEURISTIC_LEARNING=off`.
 
 ### Changed
 
-- `get_openrouter_model()` returns DeepSeek-R1 / Llama 3.3-70B / Qwen-2.5-72B in budget mode instead of routing to Claude via OpenRouter.
-- `OCTOPUS_DISPATCH_STRATEGY=full|minimal` now logs a warning when it overrides `OCTOPUS_COST_MODE`.
-- `detect_providers()` "no providers" message now includes Ollama install hint.
+- `enforce_context_budget()` now accepts an optional second parameter (`role`) for budget scaling.
+
+---
+
+## [9.2.2] - 2026-03-16
+
+### Fixed
+
+- **Codex subagent dispatch intercepted by Codex superpowers skill system**: When Codex CLI has "superpowers" skills installed, its skill system intercepts octo's dispatched prompts and forces its own brainstorming workflow instead of responding directly. Fixed by prepending a user-level override preamble to all Codex dispatches that tells the model to skip skills. (#176)
+
+---
+
+## [9.2.1] - 2026-03-16
+
+### Fixed
+
+- **jq parse error in `code-review`**: Bash `${1:-{}}` parameter expansion appended an extra `}` to the JSON profile string, causing jq parse errors. Fixed by quoting the default value. (#172)
+- **"Argument list too long" with large diffs**: The review pipeline passed prompts (including embedded diffs) as CLI arguments, exceeding `ARG_MAX` for PRs with >2000 lines. All agent types now use stdin-based prompt delivery. (#173)
 
 ---
 

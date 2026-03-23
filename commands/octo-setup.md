@@ -1,14 +1,30 @@
 ---
-description: Check Claude Octopus setup status and get configuration instructions
+description: "Check Claude Octopus setup status and get configuration instructions"
 ---
 
 # Claude Octopus Setup
 
 This command checks your current setup and provides instructions for any missing dependencies.
 
-## Auto-Detection
+## Dependency Check
 
-Running setup detection...
+First, check all software dependencies (CLIs, statusline, recommended plugins):
+
+```bash
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh check
+```
+
+If dependencies are missing, install them:
+
+```bash
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh install
+```
+
+**Note:** Plugin installs (claude-mem, document-skills) can't be auto-installed via script. The install command above will print `/plugin install` commands — copy and paste them to install.
+
+## Provider Detection
+
+Running provider detection...
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh detect-providers
@@ -137,6 +153,66 @@ source ~/.bashrc
 
 **Note:** Perplexity is fully optional. All workflows work without it. It simply adds an extra web search perspective (~$0.01-0.05/query).
 
+## Optional: Add GitHub Copilot CLI for Zero-Cost Research
+
+If you have a GitHub Copilot subscription (Pro, Pro+, Business, or Enterprise), the Copilot CLI adds another research perspective at zero additional API cost — prompts count against your existing subscription quota.
+
+**Install:**
+```bash
+brew install copilot-cli
+# Or: npm install -g @github/copilot
+```
+
+**Authenticate:**
+```bash
+# Option 1: Interactive login (recommended)
+copilot login
+
+# Option 2: Fine-grained PAT for automation
+# Create at: https://github.com/settings/personal-access-tokens/new
+# Enable "Copilot Requests" permission
+export COPILOT_GITHUB_TOKEN="github_pat_..."
+```
+
+**Note:** Copilot CLI also reuses `gh` CLI authentication automatically. If you already use `gh auth login`, Copilot may work with no additional setup.
+
+**Note:** Copilot is fully optional. Classic PATs (`ghp_*`) are NOT supported — use fine-grained PATs (`github_pat_*`) or OAuth login.
+
+## Optional: Add Qwen CLI for Free-Tier Research
+
+Qwen CLI (fork of Gemini CLI) offers 1,000-2,000 free requests per day via Qwen OAuth. Excellent for research and code review at zero cost.
+
+**Install:**
+```bash
+npm install -g @qwen-code/qwen-code
+```
+
+**Authenticate:**
+```bash
+# Interactive OAuth (recommended — free tier, no API key needed)
+qwen
+# Follow the browser-based OAuth flow
+```
+
+**Note:** Qwen is fully optional. It uses the same dispatch pattern as Gemini CLI.
+
+## New Provider Detection
+
+After running provider detection, if you detect new providers (Copilot, Qwen, Ollama) that are installed but NOT yet used in workflows, **proactively inform the user**:
+
+```
+💡 New providers detected! You have extra tentacles available:
+  🟢 Copilot CLI — zero-cost research (using your GitHub subscription)
+  🟤 Qwen CLI — free-tier research (1,000-2,000 requests/day)
+  ⚫ Ollama — local LLM (fully offline, zero cost)
+
+These will automatically join your workflows. No configuration needed —
+Claude Octopus detects and uses them when running /octo:research,
+/octo:review, /octo:debate, and other multi-provider commands.
+```
+
+**Only show this if the user previously had ONLY Codex/Gemini and new providers are now detected.** Don't show it if they've already seen it.
+
 ## If You See: CODEX_AUTH=none or GEMINI_AUTH=none
 
 The CLI is installed but not authenticated. Configure authentication:
@@ -170,6 +246,7 @@ You should see at least one provider with status:
 - ✓ Codex: Installed and authenticated (oauth or api-key)
 - ✓ Gemini: Installed and authenticated (oauth or api-key)
 - ✓ Perplexity: Configured (api-key) — optional, adds web search
+- ✓ Copilot: Installed and authenticated — optional, zero-cost research
 
 ### Quick Auth Check (Claude Code v2.1.41+)
 
@@ -252,6 +329,9 @@ No! You only need ONE provider (Codex or Gemini) to use Claude Octopus. Both pro
 - **Codex (OpenAI):** Best for code generation, refactoring, complex logic
 - **Gemini (Google):** Best for analysis, long-context understanding, multi-modal tasks
 - **Perplexity (optional):** Adds live web search with citations to research workflows
+- **Copilot (optional):** Zero-cost research via GitHub subscription — uses Claude/GPT/Gemini models
+- **Qwen (optional):** Free-tier research — 1,000-2,000 requests/day via Qwen OAuth
+- **Ollama (optional):** Zero-cost local LLM — fully offline, privacy-sensitive workflows
 
 Having both providers enables multi-AI workflows where different models review each other's work, but a single provider works great for most tasks. Perplexity is a bonus — it grounds research in live web data.
 
@@ -287,19 +367,21 @@ Add the export statement to your shell profile (~/.zshrc or ~/.bashrc) so it loa
 
 ### Can't update or uninstall the plugin
 
-If you see "not installed in user scope", the plugin was installed at project scope. Try:
+The plugin update UI is currently broken — "Failed to update: Plugin 'octo' not found" is a known issue. Manual cleanup is required:
 
-```
-/plugin uninstall octo@nyldn-plugins --scope project
+**Step 1:** Edit `~/.claude/settings.json` → remove `"octo@nyldn-plugins"` from the `enabledPlugins` array.
+
+**Step 2:** Remove plugin files:
+```bash
+rm -rf ~/.claude/plugins/octo@nyldn-plugins
+rm -rf ~/.claude/installed-plugins/octo@nyldn-plugins
 ```
 
-Then reinstall:
+**Step 3:** Reinstall:
 ```
 /plugin marketplace add https://github.com/nyldn/claude-octopus.git
 /plugin install octo@nyldn-plugins
 ```
-
-To check your install scope, run `/octo:status` or ask Claude to run `orchestrate.sh doctor`.
 
 ## Getting Help
 

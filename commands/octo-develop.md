@@ -1,5 +1,5 @@
 ---
-description: "Development phase - Build solutions with multi-AI implementation and quality gates"
+description: "\"Development phase - Build solutions with multi-AI implementation and quality gates\""
 ---
 
 # Develop - Development Phase 🛠️
@@ -19,12 +19,11 @@ When the user invokes this command (e.g., `/octo:develop <arguments>`):
 Skill(skill: "octo:develop", args: "<user's arguments>")
 ```
 
-**✗ INCORRECT - Do NOT use Task tool:**
+**✗ INCORRECT:**
 ```
+Skill(skill: "flow-develop", ...)  ❌ Wrong! Internal skill name, not resolvable by Skill tool
 Task(subagent_type: "octo:develop", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
-
-**Why:** This command loads the `flow-develop` skill. Skills use the `Skill` tool, not `Task`.
 
 ### Post-Completion — Interactive Next Steps
 
@@ -51,7 +50,7 @@ AskUserQuestion({
 
 ---
 
-**Auto-loads the `flow-develop` skill for the implementation phase.**
+**Auto-loads the develop skill for the implementation phase.**
 
 ## Quick Usage
 

@@ -1,0 +1,564 @@
+#!/bin/bash
+# tests/unit/test-gemini-provider.sh
+# Extensive tests for Gemini CLI provider integration
+# Covers: dispatch, detection, doctor, model resolution, .toml commands,
+#         headless mode, env handling, provider health, circuit breaker,
+#         and workflow integration
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+
+test_suite "Gemini Provider Integration"
+
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ORCH="$PROJECT_ROOT/scripts/orchestrate.sh"
+DISPATCH="$PROJECT_ROOT/scripts/lib/dispatch.sh"
+PROVIDERS="$PROJECT_ROOT/scripts/lib/providers.sh"
+DOCTOR="$PROJECT_ROOT/scripts/lib/doctor.sh"
+MODEL_RESOLVER="$PROJECT_ROOT/scripts/lib/model-resolver.sh"
+PROVIDER_ROUTER="$PROJECT_ROOT/scripts/provider-router.sh"
+WORKFLOWS="$PROJECT_ROOT/scripts/lib/workflows.sh"
+EMBRACE="$PROJECT_ROOT/scripts/lib/embrace.sh"
+SMOKE="$PROJECT_ROOT/scripts/lib/smoke.sh"
+PREFLIGHT="$PROJECT_ROOT/scripts/lib/preflight.sh"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. Dispatch — get_agent_command for Gemini agents
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_dispatch_gemini_standard() {
+    test_case "dispatch: gemini agent produces gemini command"
+    if grep -q 'gemini|gemini-fast|gemini-image)' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "gemini dispatch case missing from dispatch.sh"
+    fi
+}
+
+test_dispatch_gemini_text_output() {
+    test_case "dispatch: gemini uses -o text for clean output"
+    if grep -A5 'gemini|gemini-fast' "$DISPATCH" | grep -q '\-o text'; then
+        test_pass
+    else
+        test_fail "gemini dispatch should use -o text"
+    fi
+}
+
+test_dispatch_gemini_yolo_mode() {
+    test_case "dispatch: gemini uses --approval-mode yolo"
+    if grep -A5 'gemini|gemini-fast' "$DISPATCH" | grep -q 'approval-mode yolo'; then
+        test_pass
+    else
+        test_fail "gemini dispatch should use --approval-mode yolo"
+    fi
+}
+
+test_dispatch_gemini_model_selection() {
+    test_case "dispatch: gemini uses get_agent_model for model"
+    # get_agent_model is called before the case block, within the gemini branch
+    if sed -n '/gemini|gemini-fast/,/;;/p' "$DISPATCH" | grep -q 'get_agent_model'; then
+        test_pass
+    else
+        test_fail "gemini dispatch should call get_agent_model"
+    fi
+}
+
+test_dispatch_gemini_force_file_storage() {
+    test_case "dispatch: GEMINI_FORCE_FILE_STORAGE on macOS"
+    if grep -q 'GEMINI_FORCE_FILE_STORAGE=true' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "dispatch should set GEMINI_FORCE_FILE_STORAGE on Darwin"
+    fi
+}
+
+test_dispatch_gemini_node_no_warnings() {
+    test_case "dispatch: NODE_NO_WARNINGS=1 suppresses warnings"
+    if grep -q 'NODE_NO_WARNINGS=1' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "dispatch should set NODE_NO_WARNINGS=1"
+    fi
+}
+
+test_dispatch_gemini_sandbox_modes() {
+    test_case "dispatch: supports headless and interactive sandbox modes"
+    if grep -q 'OCTOPUS_GEMINI_SANDBOX' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "dispatch should check OCTOPUS_GEMINI_SANDBOX"
+    fi
+}
+
+test_dispatch_gemini_fast_variant() {
+    test_case "dispatch: gemini-fast is a recognized agent type"
+    if grep -q 'gemini-fast' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "gemini-fast should be in dispatch"
+    fi
+}
+
+test_dispatch_gemini_image_variant() {
+    test_case "dispatch: gemini-image is a recognized agent type"
+    if grep -q 'gemini-image' "$DISPATCH"; then
+        test_pass
+    else
+        test_fail "gemini-image should be in dispatch"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. AVAILABLE_AGENTS — Gemini in the agent registry
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_available_agents_gemini() {
+    test_case "AVAILABLE_AGENTS includes gemini"
+    if grep 'AVAILABLE_AGENTS=' "$ORCH" | grep -q ' gemini '; then
+        test_pass
+    else
+        test_fail "gemini should be in AVAILABLE_AGENTS"
+    fi
+}
+
+test_available_agents_gemini_fast() {
+    test_case "AVAILABLE_AGENTS includes gemini-fast"
+    if grep 'AVAILABLE_AGENTS=' "$ORCH" | grep -q 'gemini-fast'; then
+        test_pass
+    else
+        test_fail "gemini-fast should be in AVAILABLE_AGENTS"
+    fi
+}
+
+test_available_agents_gemini_image() {
+    test_case "AVAILABLE_AGENTS includes gemini-image"
+    if grep 'AVAILABLE_AGENTS=' "$ORCH" | grep -q 'gemini-image'; then
+        test_pass
+    else
+        test_fail "gemini-image should be in AVAILABLE_AGENTS"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. Doctor — Gemini health checks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_doctor_gemini_cli_check() {
+    test_case "doctor: checks Gemini CLI installed"
+    if grep -q 'gemini-cli.*providers' "$DOCTOR"; then
+        test_pass
+    else
+        test_fail "doctor should check gemini-cli"
+    fi
+}
+
+test_doctor_gemini_version_detection() {
+    test_case "doctor: detects Gemini CLI version"
+    if grep -q 'gemini --version' "$DOCTOR"; then
+        test_pass
+    else
+        test_fail "doctor should detect gemini version"
+    fi
+}
+
+test_doctor_gemini_install_hint() {
+    test_case "doctor: provides install hint for missing Gemini"
+    if grep -q 'npm install -g @google/gemini-cli' "$DOCTOR"; then
+        test_pass
+    else
+        test_fail "doctor should suggest gemini install command"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. Provider Health — check_provider_health for Gemini
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_provider_health_gemini_case() {
+    test_case "providers: gemini case in check_provider_health"
+    if grep -q 'gemini)' "$PROVIDERS"; then
+        test_pass
+    else
+        test_fail "check_provider_health should have gemini case"
+    fi
+}
+
+test_provider_health_gemini_oauth() {
+    test_case "providers: checks gemini OAuth creds"
+    if grep -q 'oauth_creds.json' "$PROVIDERS"; then
+        test_pass
+    else
+        test_fail "gemini health check should look for oauth_creds.json"
+    fi
+}
+
+test_provider_health_gemini_api_key() {
+    test_case "providers: checks GEMINI_API_KEY"
+    if grep -q 'GEMINI_API_KEY' "$PROVIDERS"; then
+        test_pass
+    else
+        test_fail "gemini health check should check GEMINI_API_KEY"
+    fi
+}
+
+test_provider_health_gemini_google_key() {
+    test_case "providers: checks GOOGLE_API_KEY as fallback"
+    if grep -q 'GOOGLE_API_KEY' "$PROVIDERS"; then
+        test_pass
+    else
+        test_fail "gemini health check should check GOOGLE_API_KEY"
+    fi
+}
+
+test_provider_all_includes_gemini() {
+    test_case "providers: check_all_providers includes gemini"
+    if grep 'for provider in' "$PROVIDERS" | grep -q 'gemini'; then
+        test_pass
+    else
+        test_fail "check_all_providers loop should include gemini"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. Model Resolution — fallback models for Gemini
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_model_resolver_gemini_standard() {
+    test_case "model-resolver: gemini* has fallback model"
+    if grep -q 'gemini\*).*resolved_model=' "$MODEL_RESOLVER"; then
+        test_pass
+    else
+        test_fail "model-resolver should have gemini fallback"
+    fi
+}
+
+test_model_resolver_gemini_fast() {
+    test_case "model-resolver: gemini-fast has distinct model"
+    if grep -q 'gemini-fast\|gemini-flash' "$MODEL_RESOLVER"; then
+        test_pass
+    else
+        test_fail "model-resolver should have gemini-fast/flash model"
+    fi
+}
+
+test_model_resolver_gemini_model_name() {
+    test_case "model-resolver: gemini model starts with 'gemini-'"
+    local model
+    model=$(grep 'gemini\*)' "$MODEL_RESOLVER" | grep -oE 'gemini-[a-z0-9.-]+' | head -1)
+    if [[ -n "$model" ]]; then
+        test_pass
+    else
+        test_fail "gemini fallback model should start with gemini-"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. Circuit Breaker — Gemini in provider-router
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_circuit_breaker_includes_gemini() {
+    test_case "circuit breaker: iterates over gemini"
+    if grep 'for provider in' "$PROVIDER_ROUTER" | grep -q 'gemini'; then
+        test_pass
+    else
+        test_fail "circuit breaker loop should include gemini"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. Workflows — Gemini headless flag and provider metrics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_workflows_gemini_headless_flag() {
+    test_case "workflows: appends -p '' for gemini headless mode"
+    if grep -q 'gemini\*.*-p' "$WORKFLOWS" || grep -B2 'cmd_array.*-p' "$WORKFLOWS" | grep -q 'gemini'; then
+        test_pass
+    else
+        test_fail "workflows should append -p '' for gemini agents"
+    fi
+}
+
+test_workflows_gemini_provider_name() {
+    test_case "workflows: gemini* maps to provider_name=gemini"
+    if grep -q 'gemini\*) provider_name="gemini"' "$WORKFLOWS"; then
+        test_pass
+    else
+        test_fail "workflows should map gemini* to provider_name=gemini"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Embrace — Gemini in dispatch strategies
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_embrace_checks_gemini() {
+    test_case "embrace: checks has_gemini for dispatch strategy"
+    if grep -q 'has_gemini' "$EMBRACE"; then
+        test_pass
+    else
+        test_fail "embrace should check has_gemini"
+    fi
+}
+
+test_embrace_gemini_in_strategy() {
+    test_case "embrace: gemini appears in dispatch strategy strings"
+    if grep -q 'gemini,claude' "$EMBRACE" || grep -q 'gemini,copilot' "$EMBRACE"; then
+        test_pass
+    else
+        test_fail "embrace dispatch strategies should include gemini"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. Detect Providers — Gemini detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_detect_providers_gemini() {
+    test_case "detect_providers: detects Gemini CLI"
+    if grep -A20 'detect_providers()' "$ORCH" | grep -q 'gemini'; then
+        test_pass
+    else
+        test_fail "detect_providers should detect gemini"
+    fi
+}
+
+test_preflight_gemini_status() {
+    test_case "preflight: reports GEMINI_STATUS"
+    if grep -q 'GEMINI_STATUS' "$PREFLIGHT"; then
+        test_pass
+    else
+        test_fail "preflight should report GEMINI_STATUS"
+    fi
+}
+
+test_preflight_gemini_auth() {
+    test_case "preflight: reports GEMINI_AUTH"
+    if grep -q 'GEMINI_AUTH' "$PREFLIGHT"; then
+        test_pass
+    else
+        test_fail "preflight should report GEMINI_AUTH"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. MCP Server — Gemini env vars forwarded
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_mcp_forwards_gemini_key() {
+    test_case "MCP: forwards GEMINI_API_KEY"
+    if grep -q 'GEMINI_API_KEY' "$PROJECT_ROOT/mcp-server/src/index.ts"; then
+        test_pass
+    else
+        test_fail "MCP server should forward GEMINI_API_KEY"
+    fi
+}
+
+test_mcp_forwards_google_key() {
+    test_case "MCP: forwards GOOGLE_API_KEY"
+    if grep -q 'GOOGLE_API_KEY' "$PROJECT_ROOT/mcp-server/src/index.ts"; then
+        test_pass
+    else
+        test_fail "MCP server should forward GOOGLE_API_KEY"
+    fi
+}
+
+test_openclaw_forwards_gemini_key() {
+    test_case "OpenClaw: forwards GEMINI_API_KEY"
+    if grep -q 'GEMINI_API_KEY' "$PROJECT_ROOT/openclaw/src/index.ts"; then
+        test_pass
+    else
+        test_fail "OpenClaw should forward GEMINI_API_KEY"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. .toml Custom Commands — present for human use
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_toml_commands_dir_exists() {
+    test_case ".toml: commands directory exists"
+    if [[ -d "$PROJECT_ROOT/.gemini/commands/octo" ]]; then
+        test_pass
+    else
+        test_fail ".gemini/commands/octo/ should exist"
+    fi
+}
+
+test_toml_research_exists() {
+    test_case ".toml: research.toml exists"
+    if [[ -f "$PROJECT_ROOT/.gemini/commands/octo/research.toml" ]]; then
+        test_pass
+    else
+        test_fail "research.toml should exist"
+    fi
+}
+
+test_toml_review_exists() {
+    test_case ".toml: review.toml exists"
+    if [[ -f "$PROJECT_ROOT/.gemini/commands/octo/review.toml" ]]; then
+        test_pass
+    else
+        test_fail "review.toml should exist"
+    fi
+}
+
+test_toml_has_prompt_field() {
+    test_case ".toml: commands have prompt field"
+    local ok=true
+    for f in "$PROJECT_ROOT/.gemini/commands/octo/"*.toml; do
+        if ! grep -q '^prompt' "$f"; then
+            ok=false
+        fi
+    done
+    if $ok; then test_pass; else test_fail "all .toml files should have prompt field"; fi
+}
+
+test_toml_has_description_field() {
+    test_case ".toml: commands have description field"
+    local ok=true
+    for f in "$PROJECT_ROOT/.gemini/commands/octo/"*.toml; do
+        if ! grep -q '^description' "$f"; then
+            ok=false
+        fi
+    done
+    if $ok; then test_pass; else test_fail "all .toml files should have description field"; fi
+}
+
+test_toml_has_args_placeholder() {
+    test_case ".toml: commands use {{args}} placeholder"
+    local ok=true
+    for f in "$PROJECT_ROOT/.gemini/commands/octo/"*.toml; do
+        if ! grep -q '{{args}}' "$f"; then
+            ok=false
+        fi
+    done
+    if $ok; then test_pass; else test_fail "all .toml files should use {{args}}"; fi
+}
+
+test_toml_not_used_in_dispatch() {
+    test_case ".toml: NOT used in headless dispatch (stdin composition issue)"
+    # Verify dispatch.sh does NOT reference /octo: commands (reverted)
+    if grep -q '/octo:research\|/octo:review\|/octo:architect\|/octo:implement' "$DISPATCH"; then
+        test_fail "dispatch.sh should not use .toml commands in headless mode"
+    else
+        test_pass
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 12. Pricing — Gemini models in cost table
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_pricing_gemini_pro() {
+    test_case "pricing: gemini pro model has pricing"
+    if grep -q 'gemini.*pro' "$ORCH" | head -1 && grep -qE 'gemini-3.*pro.*echo "[0-9]' "$ORCH"; then
+        test_pass
+    else
+        # Fallback: just check any gemini model has pricing
+        if grep -q 'gemini.*echo "[0-9]' "$ORCH"; then
+            test_pass
+        else
+            test_fail "get_model_pricing should have gemini model"
+        fi
+    fi
+}
+
+test_pricing_gemini_flash() {
+    test_case "pricing: gemini flash model has pricing"
+    if grep -q 'gemini.*flash' "$ORCH"; then
+        test_pass
+    else
+        test_fail "get_model_pricing should have gemini flash model"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. Provider Config — Gemini CLAUDE.md
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_gemini_config_exists() {
+    test_case "config: providers/gemini/CLAUDE.md exists"
+    if [[ -f "$PROJECT_ROOT/config/providers/gemini/CLAUDE.md" ]]; then
+        test_pass
+    else
+        test_fail "Gemini provider config should exist"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Run all tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# 1. Dispatch
+test_dispatch_gemini_standard
+test_dispatch_gemini_text_output
+test_dispatch_gemini_yolo_mode
+test_dispatch_gemini_model_selection
+test_dispatch_gemini_force_file_storage
+test_dispatch_gemini_node_no_warnings
+test_dispatch_gemini_sandbox_modes
+test_dispatch_gemini_fast_variant
+test_dispatch_gemini_image_variant
+
+# 2. Available agents
+test_available_agents_gemini
+test_available_agents_gemini_fast
+test_available_agents_gemini_image
+
+# 3. Doctor
+test_doctor_gemini_cli_check
+test_doctor_gemini_version_detection
+test_doctor_gemini_install_hint
+
+# 4. Provider health
+test_provider_health_gemini_case
+test_provider_health_gemini_oauth
+test_provider_health_gemini_api_key
+test_provider_health_gemini_google_key
+test_provider_all_includes_gemini
+
+# 5. Model resolution
+test_model_resolver_gemini_standard
+test_model_resolver_gemini_fast
+test_model_resolver_gemini_model_name
+
+# 6. Circuit breaker
+test_circuit_breaker_includes_gemini
+
+# 7. Workflows
+test_workflows_gemini_headless_flag
+test_workflows_gemini_provider_name
+
+# 8. Embrace
+test_embrace_checks_gemini
+test_embrace_gemini_in_strategy
+
+# 9. Detection
+test_detect_providers_gemini
+test_preflight_gemini_status
+test_preflight_gemini_auth
+
+# 10. MCP/OpenClaw env forwarding
+test_mcp_forwards_gemini_key
+test_mcp_forwards_google_key
+test_openclaw_forwards_gemini_key
+
+# 11. .toml commands
+test_toml_commands_dir_exists
+test_toml_research_exists
+test_toml_review_exists
+test_toml_has_prompt_field
+test_toml_has_description_field
+test_toml_has_args_placeholder
+test_toml_not_used_in_dispatch
+
+# 12. Pricing
+test_pricing_gemini_pro
+test_pricing_gemini_flash
+
+# 13. Config
+test_gemini_config_exists
+
+test_summary

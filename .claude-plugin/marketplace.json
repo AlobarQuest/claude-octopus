@@ -5,41 +5,41 @@
   },
   "metadata": {
     "description": "Multi-tentacled orchestration plugin for Claude Code",
-    "version": "1.0.0"
+    "version": "9.10.2"
   },
   "plugins": [
     {
       "name": "octo",
       "source": "./",
-      "description": "v9.2.0 - smart dispatch, blind spot library, skill name fix. Install as octo@nyldn-plugins. 100 detection flags, claude-mem bridge. 32 personas, 39 commands, 50 skills. Run /octo:setup.",
-      "version": "9.2.0",
+      "description": "v9.10.2 - Multi-LLM orchestration for Claude Code with Double Diamond workflows, provider routing, safety gates, and automation. 32 personas, 47 commands, 44 skills. Run /octo:setup.",
+      "version": "9.10.2",
       "author": {
         "name": "nyldn"
       },
       "repository": "https://github.com/nyldn/claude-octopus",
+      "homepage": "https://github.com/nyldn/claude-octopus",
       "license": "MIT",
       "keywords": [
+        "multi-llm",
         "multi-agent",
         "orchestration",
+        "cowork",
         "double-diamond",
         "codex",
         "gemini",
+        "copilot",
+        "qwen",
+        "ollama",
+        "perplexity",
+        "openrouter",
         "multi-provider",
         "provider-routing",
-        "openrouter",
-        "crossfire",
         "adversarial-review",
-        "essential-tools",
-        "playwright",
-        "shellcheck",
-        "claude-code-2.1.16",
-        "session-aware",
-        "discipline-skills",
+        "claude-code-plugin",
         "tdd",
         "debugging",
-        "shortcuts",
-        "ux-improvement",
-        "categorized-commands"
+        "code-review",
+        "research"
       ],
       "category": "orchestration"
     }

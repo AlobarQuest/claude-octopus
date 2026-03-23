@@ -1,7 +1,7 @@
 ---
 name: skill-security-framing
 version: 1.0.0
-description: URL validation and content wrapping for untrusted sources. Use when: This skill provides SECURITY UTILITIES - it should be referenced by other skills,. not invoked directly by users. Auto-integrate when:. Fetching content from URLs
+description: "URL validation and content wrapping for untrusted sources. Use when: This skill provides SECURITY UTILITIES - it should be referenced by other skills,. not invoked directly by users. Auto-integrate when:. Fetching content from URLs"
 ---
 
 # Security Framing Standard

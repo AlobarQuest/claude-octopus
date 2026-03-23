@@ -1,5 +1,5 @@
 ---
-description: "Dark Factory Mode - Spec-in, software-out autonomous pipeline"
+description: "\"Dark Factory Mode - Spec-in, software-out autonomous pipeline\""
 ---
 
 # Factory - Dark Factory Mode (v8.25.0)
@@ -52,6 +52,10 @@ Read the spec file and verify it contains:
 - Ideally: actors, constraints, acceptance criteria
 
 If the spec is minimal, warn the user but proceed — factory mode works with thin specs (lower quality results).
+
+### Step 3.5: Adversarial Scenario Coverage Gate
+
+Before committing to the expensive embrace phase, verify scenario coverage by dispatching the spec to a second provider. This quick check (~30 seconds) can save a wasted $2.00 factory run. See skill-factory.md Step 4.5 for details. Skip with `--fast`.
 
 ### Step 4: Execute Factory Pipeline
 

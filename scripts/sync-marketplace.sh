@@ -14,9 +14,11 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 CHECK_ONLY=false
 [[ "${1:-}" == "--check" ]] && CHECK_ONLY=true
 
-# Count actual files
-SKILL_COUNT=$(find "$ROOT_DIR/.claude/skills" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
-COMMAND_COUNT=$(find "$ROOT_DIR/.claude/commands" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+# Count shipped plugin artifacts from the plugin root.
+# Skills are generated from .claude/skills, but human_only entries are excluded
+# from the published plugin surface.
+SKILL_COUNT=$(find "$ROOT_DIR/skills" -mindepth 2 -maxdepth 2 -name "SKILL.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+COMMAND_COUNT=$(find "$ROOT_DIR/commands" -maxdepth 1 -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 PERSONA_COUNT=$(find "$ROOT_DIR/agents/personas" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 
 # Get current version from plugin.json (source of truth)
@@ -42,7 +44,8 @@ else:
 # Extract the feature summary (first part before counts)
 # Format: "v8.33.0 - UI/UX design workflow with BM25 design intelligence. 34 personas, 49 commands, 51 skills. Run /octo:setup."
 # We preserve the feature summary but regenerate the counts
-FEATURE_SUMMARY=$(echo "$CURRENT_DESC" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+ - //' | sed -E 's/\. [0-9]+ personas,.*//')
+# Strip version prefix, counts suffix, and trailing "Run /octo:setup." (we re-append it)
+FEATURE_SUMMARY=$(echo "$CURRENT_DESC" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+ - //' | sed -E 's/[.,] [0-9]+ personas,.*//' | sed -E 's/\.? *Run \/octo:setup\.?$//')
 
 # Build expected description
 EXPECTED_DESC="v${VERSION} - ${FEATURE_SUMMARY}. ${PERSONA_COUNT} personas, ${COMMAND_COUNT} commands, ${SKILL_COUNT} skills. Run /octo:setup."

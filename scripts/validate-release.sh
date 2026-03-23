@@ -84,7 +84,33 @@ fi
 echo ""
 
 # ============================================================================
-# 3. COMMAND REGISTRATION CHECK
+# 3. CLAUDE PLUGIN VALIDATION
+# ============================================================================
+echo "🧪 Checking Claude plugin validation..."
+
+if command -v claude >/dev/null 2>&1; then
+    if claude plugin validate "$ROOT_DIR/.claude-plugin/plugin.json"; then
+        echo -e "  ${GREEN}✓ Claude plugin validator passed${NC}"
+    else
+        echo -e "  ${RED}ERROR: claude plugin validate failed for plugin.json${NC}"
+        ((errors++))
+    fi
+
+    if claude plugin validate "$ROOT_DIR/.claude-plugin/marketplace.json"; then
+        echo -e "  ${GREEN}✓ Marketplace manifest validator passed${NC}"
+    else
+        echo -e "  ${RED}ERROR: claude plugin validate failed for marketplace.json${NC}"
+        ((errors++))
+    fi
+else
+    echo -e "  ${YELLOW}WARNING: claude CLI not installed; skipping runtime plugin validation${NC}"
+    ((warnings++))
+fi
+
+echo ""
+
+# ============================================================================
+# 4. COMMAND REGISTRATION CHECK
 # ============================================================================
 echo "📝 Checking command registration..."
 
@@ -120,7 +146,7 @@ fi
 echo ""
 
 # ============================================================================
-# 4. COMMAND FRONTMATTER FORMAT CHECK
+# 5. COMMAND FRONTMATTER FORMAT CHECK
 # ============================================================================
 echo "📛 Checking command frontmatter format..."
 
@@ -143,7 +169,7 @@ fi
 echo ""
 
 # ============================================================================
-# 5. SKILL REGISTRATION CHECK
+# 6. SKILL REGISTRATION CHECK
 # ============================================================================
 echo "🎯 Checking skill registration..."
 
@@ -174,7 +200,7 @@ fi
 echo ""
 
 # ============================================================================
-# 6. SKILL FRONTMATTER FORMAT CHECK
+# 7. SKILL FRONTMATTER FORMAT CHECK
 # ============================================================================
 echo "🏷️  Checking skill frontmatter format..."
 
@@ -201,7 +227,7 @@ fi
 echo ""
 
 # ============================================================================
-# 7. MARKETPLACE DESCRIPTION VERSION CHECK
+# 8. MARKETPLACE DESCRIPTION VERSION CHECK
 # ============================================================================
 echo "🏪 Checking marketplace description..."
 
@@ -217,7 +243,7 @@ fi
 echo ""
 
 # ============================================================================
-# 8. GIT TAG CHECK & AUTO-CREATE
+# 9. GIT TAG CHECK & AUTO-CREATE
 # ============================================================================
 echo "🔖 Checking git tag..."
 

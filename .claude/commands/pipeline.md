@@ -5,6 +5,8 @@ description: "Run content analysis pipeline on URL(s) to extract patterns and cr
 
 # /octo:pipeline
 
+**Your first output line MUST be:** `🐙 Octopus Content Pipeline`
+
 Analyze content from URLs to extract patterns, psychological techniques, and structural elements.
 
 **Usage:**

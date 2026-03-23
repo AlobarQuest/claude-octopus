@@ -40,6 +40,8 @@ validation_gates:
 
 # OpenClaw Instance Administration
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - OpenClaw Administration`
+
 ## The Iron Law
 
 ```

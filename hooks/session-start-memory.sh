@@ -9,6 +9,9 @@
 
 set -euo pipefail
 
+# --- 0. Session sync (merged from session-sync.sh to reduce hook spawns) ---
+export CLAUDE_OCTOPUS_SESSION_ID="${CLAUDE_SESSION_ID:-}"
+
 SESSION_FILE="${HOME}/.claude-octopus/session.json"
 MEMORY_DIR="${HOME}/.claude/projects"
 

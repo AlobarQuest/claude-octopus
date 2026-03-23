@@ -1,5 +1,5 @@
 ---
-description: "Manage the scheduled workflow runner daemon (start/stop/status)"
+description: "\"Manage the scheduled workflow runner daemon (start/stop/status)\""
 ---
 
 # Scheduler

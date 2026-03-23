@@ -1,7 +1,7 @@
 ---
 name: skill-tdd
 version: 1.0.0
-description: Test-driven development workflow. Use when: Use when implementing any feature, bugfix, or behavior change.. Auto-invoke when user says "implement X", "add feature Y", "fix bug Z".
+description: "Build features with tests-before-code rigor — use for new features needing test coverage. Use when: Use when implementing any feature, bugfix, or behavior change.. Auto-invoke when user says \"implement X\", \"add feature Y\", \"fix bug Z\"."
 ---
 
 # Test-Driven Development (TDD)
@@ -80,6 +80,37 @@ test('retry works', async () => {  // Vague name
   // ...
 });
 ```
+
+## Phase 1.5: Adversarial Test Design Review (RECOMMENDED)
+
+**After writing the initial test(s) but BEFORE verifying they fail, challenge the test design with a second provider.** A single-model test suite often has systematic blind spots — the same model that writes the tests will write implementation that trivially satisfies them. An adversarial review catches scenarios that would pass with a stub that doesn't actually work.
+
+**If an external provider is available, dispatch the test specs for challenge:**
+
+```bash
+codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+
+Review these test specifications for a TDD workflow. Your job is to find gaps, not confirm quality.
+
+1. What SCENARIOS are missing? (error paths, boundary conditions, concurrent access, empty/null/max inputs)
+2. What BOUNDARY CONDITIONS are untested? (off-by-one, integer overflow, empty strings, max-length strings)
+3. Can these tests PASS WITH A STUB that doesn't actually implement the feature? If yes, what test would catch the stub?
+4. Do the tests verify BEHAVIOR or IMPLEMENTATION? (Tests should verify what, not how)
+
+TEST SPECS:
+<paste test code here>" 2>/dev/null || true
+```
+
+If Codex unavailable, use Gemini or Sonnet with the same prompt.
+
+**After receiving the challenge:**
+- Add any genuinely missing test cases to the RED phase
+- Strengthen any tests that could pass with a trivial stub
+- Dismiss challenges that test implementation details rather than behavior
+
+**Skip with `--fast` or when user requests speed over thoroughness.**
+
+---
 
 ## Phase 2: VERIFY RED - Watch It Fail
 
@@ -165,6 +196,12 @@ Confirm:
 | "Deleting X hours is wasteful" | Sunk cost fallacy. Unverified code is debt. |
 | "Need to explore first" | Fine. Throw away exploration, start with TDD. |
 | "TDD will slow me down" | TDD is faster than debugging. |
+
+## Strategy Rotation
+
+If the same test continues to fail after 2 fix attempts, examine the test itself — it may be incorrect. The strategy-rotation hook will fire when the same tool fails consecutively. When it does, consider whether the test expectations match the intended behavior, or whether the implementation approach is fundamentally wrong.
+
+---
 
 ## Red Flags - STOP and Start Over
 

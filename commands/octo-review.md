@@ -1,6 +1,5 @@
 ---
-command: review
-description: Expert multi-LLM code review with inline PR comments — competes with CC Code Review
+description: "Expert multi-LLM code review with inline PR comments — competes with CC Code Review"
 ---
 
 # /octo:review
@@ -21,13 +20,13 @@ When the user invokes this command (e.g., `/octo:review <arguments>`):
 
 **Determine mode based on session autonomy:**
 
-If `AUTONOMY_MODE` env var is `autonomous` or session is running headlessly, skip Q&A and auto-infer:
+If `AUTONOMY_MODE` env var is `autonomous`, or session is running headlessly, or `OCTOPUS_WORKFLOW_PHASE` is set (indicating a pipeline context like `/octo:develop` or `/octo:embrace`), skip Q&A and auto-infer with ALL focus areas:
 1. Run `git diff --cached` — if non-empty, `target=staged`
 2. Run `gh pr view --json number` — if open PR exists, set `target=<pr_number>`
 3. Otherwise `target=working-tree`
-4. Set `provenance=unknown`, `autonomy=autonomous`, `publish=ask`, `debate=auto`
+4. Set `provenance=unknown`, `autonomy=autonomous`, `publish=ask`, `debate=auto`, `focus=["correctness","security","architecture","tdd"]`
 
-**Otherwise (supervised mode), use AskUserQuestion:**
+**Otherwise (supervised mode), you MUST use AskUserQuestion to ask these questions:**
 
 ```javascript
 AskUserQuestion({
@@ -51,7 +50,8 @@ AskUserQuestion({
         {label: "Correctness", description: "Logic bugs, edge cases, regressions"},
         {label: "Security & Edge Cases", description: "OWASP, race conditions, partial failures"},
         {label: "Architecture", description: "API contracts, integration, breaking changes"},
-        {label: "TDD discipline", description: "Verify failing-test-first evidence and minimal implementation"}
+        {label: "TDD discipline", description: "Verify failing-test-first evidence and minimal implementation"},
+        {label: "All areas (Recommended)", description: "Correctness + Security + Architecture + TDD"}
       ]
     },
     {
@@ -78,6 +78,8 @@ AskUserQuestion({
   ]
 })
 ```
+
+**WAIT for the user's answers before proceeding.**
 
 ## Step 2: Build Review Profile
 

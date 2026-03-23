@@ -9,10 +9,14 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Observation Importance Scoring"
 
-test_score_importance_function_exists() {
-    test_case "score_importance function exists in orchestrate.sh"
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ALL_SRC=$(mktemp)
+cat "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 
-    if grep -q "score_importance()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+test_score_importance_function_exists() {
+    test_case "score_importance function exists"
+
+    if grep -q "score_importance()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "score_importance function not found"
@@ -20,9 +24,9 @@ test_score_importance_function_exists() {
 }
 
 test_search_observations_function_exists() {
-    test_case "search_observations function exists in orchestrate.sh"
+    test_case "search_observations function exists"
 
-    if grep -q "search_observations()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "search_observations()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "search_observations function not found"
@@ -32,7 +36,7 @@ test_search_observations_function_exists() {
 test_importance_in_decision_format() {
     test_case "Importance field added to structured decision format"
 
-    if grep -A 50 "write_structured_decision()" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "Importance"; then
+    if grep -A 50 "write_structured_decision()" "$ALL_SRC" | grep -q "Importance"; then
         test_pass
     else
         test_fail "Importance field not in write_structured_decision"
@@ -42,7 +46,7 @@ test_importance_in_decision_format() {
 test_importance_auto_scoring() {
     test_case "write_structured_decision auto-scores importance"
 
-    if grep -A 30 "write_structured_decision()" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "score_importance"; then
+    if grep -A 30 "write_structured_decision()" "$ALL_SRC" | grep -q "score_importance"; then
         test_pass
     else
         test_fail "Auto-scoring via score_importance not found"
@@ -53,7 +57,7 @@ test_importance_base_scores() {
     test_case "Base scores match spec (security-finding=8, quality-gate=7)"
 
     local func_body
-    func_body=$(sed -n '/^score_importance()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^score_importance()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "security-finding.*8" && \
        echo "$func_body" | grep -q "quality-gate.*7" && \
@@ -69,7 +73,7 @@ test_importance_confidence_adjustment() {
     test_case "Confidence adjusts importance (+1 high, -1 low)"
 
     local func_body
-    func_body=$(sed -n '/^score_importance()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^score_importance()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "high.*+.*1\|base_score + 1" && \
        echo "$func_body" | grep -q "low.*-.*1\|base_score - 1"; then
@@ -83,7 +87,7 @@ test_importance_clamped() {
     test_case "Importance is clamped to 1-10"
 
     local func_body
-    func_body=$(sed -n '/^score_importance()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^score_importance()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "lt 1" && echo "$func_body" | grep -q "gt 10"; then
         test_pass
@@ -95,7 +99,7 @@ test_importance_clamped() {
 test_high_importance_in_embrace() {
     test_case "High-importance observations injected into embrace workflow"
 
-    if grep -A 10 "cleanup_expired_checkpoints" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "search_observations"; then
+    if grep -A 10 "cleanup_expired_checkpoints" "$ALL_SRC" | grep -q "search_observations"; then
         test_pass
     else
         test_fail "High-importance injection not found in embrace_full_workflow"
@@ -127,4 +131,5 @@ test_importance_clamped
 test_high_importance_in_embrace
 test_dry_run_with_importance
 
+rm -f "$ALL_SRC"
 test_summary

@@ -1,8 +1,10 @@
 ---
-description: Security audit with OWASP compliance and vulnerability detection
+description: "Security audit with OWASP compliance and vulnerability detection"
 ---
 
 # Security - Security Audit Skill
+
+**Your first output line MUST be:** `🐙 Octopus Security Audit`
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
@@ -73,19 +75,12 @@ AskUserQuestion({
 
 **After receiving answers, incorporate them into the security audit scope and severity thresholds.**
 
-### Step 2: Execute Security Audit with Skill Tool
+### Step 2: Execute Security Audit
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:security", args: "<user's arguments + context>")
-```
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-security-framing.md`
 
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:security", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-security-audit` skill. Skills use the `Skill` tool, not `Task`.
+Apply the user's answers from Step 1 as the audit scope and severity thresholds.
 
 ---
 
@@ -99,7 +94,7 @@ Task(subagent_type: "octo:security", ...)  ❌ Wrong! This is a skill, not an ag
    ```
    One provider plays attacker, the other plays defender. Claude synthesizes.
 
-2. **"Full adversarial cycle"**: Run the `octopus-security` (squeeze) workflow which already
+2. **"Full adversarial cycle"**: Run the `octopus-security-audit` (squeeze) workflow which already
    implements Blue→Red→Remediate→Validate, but add debate transitions between each phase:
    - After Blue Team: debate whether defense is sufficient
    - After Red Team: debate severity and exploitability of findings

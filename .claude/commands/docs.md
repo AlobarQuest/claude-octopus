@@ -5,25 +5,12 @@ description: Document delivery with export to PPTX, DOCX, PDF formats
 
 # Docs - Document Delivery Skill
 
-## 🤖 INSTRUCTIONS FOR CLAUDE
+**Your first output line MUST be:** `🐙 Octopus Document Delivery`
 
-When the user invokes this command (e.g., `/octo:docs <arguments>`):
+## Instructions
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "skill-doc-delivery", args: "<user's arguments>")
-```
-
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:docs", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-doc-delivery` skill. Skills use the `Skill` tool, not `Task`.
-
----
-
-**Auto-loads the `skill-doc-delivery` skill for document creation and export.**
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-doc-delivery.md`
 
 ## Quick Usage
 

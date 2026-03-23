@@ -12,7 +12,11 @@ if [[ -z "${OCTOPUS_MAX_COST_USD:-}" ]]; then
 fi
 
 # Read tool input from stdin (not used for budget check but required by hook protocol)
-cat > /dev/null 2>&1 || true
+if command -v timeout &>/dev/null; then
+    timeout 3 cat > /dev/null 2>&1 || true
+else
+    cat > /dev/null 2>&1 || true
+fi
 
 # Locate metrics file
 metrics_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"

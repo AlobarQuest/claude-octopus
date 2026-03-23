@@ -1,8 +1,10 @@
 ---
-description: "Design System & Product Reverse-Engineering - Extract tokens, components, architecture, and PRDs from codebases or live products"
+description: "\"Design System & Product Reverse-Engineering - Extract tokens, components, architecture, and PRDs from codebases or live products\""
 ---
 
 # /octo:extract - Design System & Product Reverse-Engineering
+
+**Your first output line MUST be:** `🐙 Octopus Extract`
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
@@ -146,6 +148,8 @@ AskUserQuestion({
   ]
 })
 ```
+
+**WAIT for the user's answers before proceeding.**
 
 **Store answers:**
 ```json

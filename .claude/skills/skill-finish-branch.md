@@ -25,6 +25,8 @@ validation_gates:
 
 # Finishing a Development Branch
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - Branch Completion`
+
 ## Overview
 
 Guide completion of development work with clear options and safe execution.

@@ -37,7 +37,7 @@ command -v gemini &> /dev/null && gemini_status="Available" || gemini_status="No
 ```
 Display banner:
 ```
-CLAUDE OCTOPUS ACTIVATED - Dark Factory Mode
+🐙 CLAUDE OCTOPUS ACTIVATED - Dark Factory Mode
 Pipeline: Parse → Scenarios → Embrace → Holdout → Score → Report
 
 Providers:
@@ -73,6 +73,56 @@ DO NOT proceed past this gate if file does not exist.
 "${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" set_current_workflow "factory" "factory" 2>/dev/null || true
 ```
 Failure → continue without state, warn user.
+
+### STEP 4.5: Adversarial Scenario Coverage Gate (RECOMMENDED)
+
+**Before committing to the expensive embrace phase (~$0.50-2.00), verify that generated scenarios actually cover the spec's edge cases.** A quick cross-provider challenge here can prevent wasting an entire factory run on incomplete scenario coverage.
+
+**After orchestrate.sh parses the spec (Phase 1-2) and before embrace execution (Phase 4), dispatch a scenario coverage review:**
+
+If a second provider is available (Codex or Gemini), dispatch the challenge:
+
+```bash
+# Read the spec to extract behaviors and constraints
+SPEC_CONTENT=$(<"<spec_path>")
+
+# Challenge scenario coverage with a different provider
+codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+
+You are a QA adversary. Given this specification and generated scenarios, identify coverage gaps.
+
+SPECIFICATION:
+${SPEC_CONTENT}
+
+Answer:
+1. Which spec BEHAVIORS have no scenario testing them?
+2. Which EDGE CASES from the spec constraints are untested?
+3. Which FAILURE MODES are not covered (network failures, invalid input, concurrent access)?
+4. Rate overall coverage: SUFFICIENT / GAPS-FOUND / CRITICAL-GAPS
+
+Be specific — cite the behavior or constraint ID that lacks coverage." 2>/dev/null || true
+```
+
+If Codex is unavailable, use Gemini:
+```bash
+printf '%s' "You are a QA adversary. Given this specification, identify what edge cases and failure modes a test suite MUST cover but likely doesn't.
+
+SPECIFICATION:
+${SPEC_CONTENT}
+
+List: 1) Untested behaviors 2) Untested edge cases 3) Missing failure modes 4) Coverage rating" | gemini -p "" -o text --approval-mode yolo 2>/dev/null || true
+```
+
+**After receiving the challenge response:**
+- If CRITICAL-GAPS found: warn the user and suggest refining the spec with `/octo:spec` before proceeding
+- If GAPS-FOUND: note the gaps but proceed — the holdout phase (Phase 5) will catch some of these
+- If SUFFICIENT: proceed with confidence
+
+**This is a lightweight gate — it adds ~30 seconds but can save a $2.00 factory run on a spec with poor scenario coverage.**
+
+**Skip with `--fast` or when user explicitly requests speed over thoroughness.**
+
+---
 
 ### STEP 5: Execute orchestrate.sh factory (MANDATORY — Bash Tool)
 ```bash

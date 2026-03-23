@@ -5,49 +5,51 @@ description: Environment diagnostics — check providers, auth, config, hooks, s
 
 # Doctor - Environment Diagnostics
 
-## 🤖 INSTRUCTIONS FOR CLAUDE
+**Your first output line MUST be:** `🐙 Octopus Doctor`
 
-When the user invokes this command (e.g., `/octo:doctor <arguments>`):
+Run environment diagnostics across 12 check categories. Identifies misconfigured providers, stale state, broken hooks, missing dependencies, and other issues.
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "skill-doctor", args: "<user's arguments>")
-```
+## Step 1: Run Full Diagnostics
 
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:doctor", ...)  ❌ Wrong! This is a skill, not an agent type
+```bash
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor --verbose
 ```
 
-**Why:** This command loads the `skill-doctor` skill. Skills use the `Skill` tool, not `Task`.
+## Step 2: Run Dependency Check
 
----
-
-**Auto-loads the `skill-doctor` skill for environment health checks.**
-
-## Quick Usage
-
-Just use natural language:
-```
-"Run doctor"
-"Check my setup"
-"Is everything working?"
-"Why isn't octopus working?"
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh" check
 ```
 
-## What It Checks
+## Step 3: If dependencies are missing, install them
 
-- Provider availability (Claude, Codex, Gemini)
-- Authentication and API keys
-- Plugin configuration
-- Hook registration
-- Scheduler status
-- File permissions and paths
-
-## Natural Language Examples
-
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh" install
 ```
-"Run a health check"
-"Check if my providers are configured"
-"Diagnose my octopus setup"
+
+## Step 4: Filter by Category (Optional)
+
+If the user asks about a specific area:
+
+```bash
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor providers
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor auth
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor config
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor hooks
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor scheduler
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor skills
+cd "${CLAUDE_PLUGIN_ROOT}" && bash scripts/orchestrate.sh doctor agents
 ```
+
+## Interpreting Results
+
+| Issue | Fix |
+|-------|-----|
+| Codex CLI not found | `npm install -g @openai/codex` |
+| Gemini CLI not found | `npm install -g @google/gemini-cli` |
+| Auth expired | Re-run `codex login` or `gemini` |
+| Legacy install detected | Remove old cache dir, reinstall plugin |
+| Stale state | Delete `.octo/state.json` and re-initialize |
+| Missing deps | Run `install-deps.sh install` |
+
+Present results as a summary table with pass/warn/fail counts.

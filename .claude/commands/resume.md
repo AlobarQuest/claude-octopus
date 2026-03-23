@@ -5,6 +5,8 @@ description: Resume a previous agent by ID — continue an interrupted task wher
 
 # /octo:resume — Agent Resume
 
+**Your first output line MUST be:** `🐙 Octopus Agent Resume`
+
 Resume a previously-running Claude agent by ID. Picks up the agent's transcript and continues where it left off.
 
 ## Step 1: Get the Agent ID
@@ -33,11 +35,12 @@ orchestrate.sh agent-resume abc123 "fix the failing test in auth.ts"
 
 ## Requirements
 
-- Claude Code v2.1.55+ (`SUPPORTS_CONTINUATION=true`)
-- Agent Teams enabled (`SUPPORTS_STABLE_AGENT_TEAMS=true`)
+- Claude Code v2.1.34+ (`SUPPORTS_CONTINUATION=true`, `SUPPORTS_STABLE_AGENT_TEAMS=true`)
+- Agent Teams enabled (required for agent transcript access)
 - Agent must have been a Claude agent (not Codex/Gemini — those don't support transcripts)
+- CC v2.1.77+: Resume uses `SendMessage` (auto-resumes stopped agents). The `Agent(resume:)` parameter was removed in v2.1.77.
 
-Run `/octo:doctor` to verify both flags are active.
+Run `/octo:doctor` to verify flags are active.
 
 ## Fallback
 

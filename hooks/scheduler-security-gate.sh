@@ -13,7 +13,12 @@ if [[ -z "${OCTOPUS_JOB_ID:-}" ]]; then
 fi
 
 # Read tool input from stdin
-INPUT=$(cat 2>/dev/null || echo '{}')
+if command -v timeout &>/dev/null; then
+    INPUT=$(timeout 3 cat 2>/dev/null || true)
+else
+    INPUT=$(cat 2>/dev/null || true)
+fi
+[[ -z "$INPUT" ]] && INPUT='{}'
 
 SCHEDULER_DIR="${HOME}/.claude-octopus/scheduler"
 JOB_FILE="${SCHEDULER_DIR}/jobs/${OCTOPUS_JOB_ID}.json"
@@ -60,8 +65,8 @@ if [[ "$TOOL_NAME" == "Read" ]] || [[ "$TOOL_NAME" == "Write" ]] || [[ "$TOOL_NA
             }
 
             # Normalize allowed paths with trailing slash for safe prefix matching
-            local safe_workspace="${WORKSPACE%/}/"
-            local safe_octopus="${HOME}/.claude-octopus/"
+            safe_workspace="${WORKSPACE%/}/"
+            safe_octopus="${HOME}/.claude-octopus/"
 
             # Allow access to workspace and octopus config only (not ~/.claude)
             if [[ "$resolved_path" != "${safe_workspace}"* ]] && \

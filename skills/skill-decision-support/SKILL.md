@@ -1,7 +1,7 @@
 ---
 name: skill-decision-support
 version: 1.0.0
-description: Present options with trade-offs for informed decision-making. Use when: AUTOMATICALLY ACTIVATE when user requests options or choices:. "fix or provide options" or "fix them or provide me options". "give me options" or "what are my options"
+description: "Present options with trade-offs for informed decision-making. Use when: AUTOMATICALLY ACTIVATE when user requests options or choices:. \"fix or provide options\" or \"fix them or provide me options\". \"give me options\" or \"what are my options\""
 ---
 
 # Decision Support & Options Presentation

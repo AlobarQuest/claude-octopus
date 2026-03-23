@@ -5,7 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ORCH="$PROJECT_ROOT/scripts/orchestrate.sh"
+ORCH_MAIN="$PROJECT_ROOT/scripts/orchestrate.sh"
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ORCH=$(mktemp)
+trap 'rm -f "$ORCH"' EXIT
+cat "$ORCH_MAIN" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ORCH" 2>/dev/null
 BRIDGE="$PROJECT_ROOT/scripts/claude-mem-bridge.sh"
 
 TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
@@ -78,10 +82,10 @@ done
 
 # ── 6. Smart router claude-mem hint ──────────────────────────────────
 
-if grep -c 'claude-mem' "$PROJECT_ROOT/.claude/commands/octo.md" >/dev/null 2>&1; then
-    pass "Smart router: octo.md mentions claude-mem"
+if grep -c 'claude-mem' "$PROJECT_ROOT/.claude/commands/auto.md" >/dev/null 2>&1; then
+    pass "Smart router: auto.md mentions claude-mem"
 else
-    fail "Smart router: octo.md mentions claude-mem" "no claude-mem reference in router"
+    fail "Smart router: auto.md mentions claude-mem" "no claude-mem reference in router"
 fi
 
 # ── 7. Observation wiring in save_session_checkpoint ─────────────────

@@ -57,6 +57,10 @@ Read the spec file and verify it contains:
 
 If the spec is minimal, warn the user but proceed — factory mode works with thin specs (lower quality results).
 
+### Step 3.5: Adversarial Scenario Coverage Gate
+
+Before committing to the expensive embrace phase, verify scenario coverage by dispatching the spec to a second provider. This quick check (~30 seconds) can save a wasted $2.00 factory run. See skill-factory.md Step 4.5 for details. Skip with `--fast`.
+
 ### Step 4: Execute Factory Pipeline
 
 ```bash

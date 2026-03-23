@@ -108,7 +108,88 @@ if [[ -n "${TARGET_MEM_DIR:-}" ]] && [[ -f "$SESSION_FILE" ]] && command -v jq &
     fi
 fi
 
-# --- 4. Clean up session artifacts ---
+# --- 4. Cross-task learning extraction (v9.8.0) ---
+# Extracts structured learnings from the session and persists them as individual
+# JSON files in .claude-octopus/learnings/. Capped at 5 learnings per session
+# to stay within budget. These are consumed at session start for relevance matching.
+LEARNINGS_DIR="${HOME}/.claude-octopus/learnings"
+if [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
+    mkdir -p "$LEARNINGS_DIR"
+
+    # Extract session signals for cross-task learning
+    SESSION_WORKFLOW=$(jq -r '.workflow // "none"' "$SESSION_FILE" 2>/dev/null)
+    SESSION_PHASE=$(jq -r '.current_phase // .phase // "none"' "$SESSION_FILE" 2>/dev/null)
+    SESSION_ERRORS=$(jq -r '.errors // [] | length' "$SESSION_FILE" 2>/dev/null) || SESSION_ERRORS=0
+    SESSION_AGENTS=$(jq -r '.total_agent_calls // 0' "$SESSION_FILE" 2>/dev/null)
+
+    # Determine task_type from workflow/phase
+    case "$SESSION_WORKFLOW" in
+        probe|discover|research) TASK_TYPE="research" ;;
+        tangle|develop|build)    TASK_TYPE="implementation" ;;
+        ink|deliver|review)      TASK_TYPE="review" ;;
+        debug|fix)               TASK_TYPE="debugging" ;;
+        *)                       TASK_TYPE="general" ;;
+    esac
+
+    # Determine outcome from error count and phase
+    if [[ "$SESSION_ERRORS" -gt 0 ]]; then
+        OUTCOME="partial"
+    elif [[ "$SESSION_PHASE" == "none" ]]; then
+        OUTCOME="incomplete"
+    else
+        OUTCOME="success"
+    fi
+
+    # Build approach summary from session signals
+    APPROACH="Workflow: ${SESSION_WORKFLOW}, reached phase: ${SESSION_PHASE}, agents used: ${SESSION_AGENTS}"
+
+    # Build lesson from error/success patterns
+    if [[ "$SESSION_ERRORS" -gt 0 ]]; then
+        LESSON="Session encountered ${SESSION_ERRORS} error(s) during ${SESSION_WORKFLOW} — check provider auth and context budget"
+    elif [[ "$SESSION_AGENTS" -gt 3 ]]; then
+        LESSON="Multi-agent workflow (${SESSION_AGENTS} agents) completed successfully — parallel dispatch effective"
+    else
+        LESSON="Standard ${SESSION_WORKFLOW} workflow completed cleanly"
+    fi
+
+    # Only persist if there's meaningful activity (at least 1 agent call or errors)
+    if [[ "$SESSION_AGENTS" -gt 0 || "$SESSION_ERRORS" -gt 0 ]]; then
+        DATE_STAMP=$(date +%Y-%m-%d)
+        TIME_STAMP=$(date +%H%M%S)
+        LEARNING_SLUG=$(echo "$SESSION_WORKFLOW" | tr '[:upper:]/ ' '[:lower:]--' | head -c 30)
+        LEARNING_FILE="${LEARNINGS_DIR}/${DATE_STAMP}-${LEARNING_SLUG}-${TIME_STAMP}.json"
+
+        # Cap at 5 learnings per session — count files written today
+        TODAY_COUNT=$(find "$LEARNINGS_DIR" -name "${DATE_STAMP}-*" -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$TODAY_COUNT" -lt 5 ]]; then
+            jq -n \
+                --arg date "$DATE_STAMP" \
+                --arg task_type "$TASK_TYPE" \
+                --arg approach "$APPROACH" \
+                --arg outcome "$OUTCOME" \
+                --arg lesson "$LESSON" \
+                '{date: $date, task_type: $task_type, approach: $approach, outcome: $outcome, lesson: $lesson}' \
+                > "$LEARNING_FILE" 2>/dev/null || true
+        fi
+
+        # Prune old learnings — keep at most 50 files, remove oldest beyond that
+        TOTAL_LEARNINGS=$(find "$LEARNINGS_DIR" -name "*.json" -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$TOTAL_LEARNINGS" -gt 50 ]]; then
+            # Remove oldest files beyond the cap
+            find "$LEARNINGS_DIR" -name "*.json" -maxdepth 1 -print0 2>/dev/null \
+                | xargs -0 ls -1t 2>/dev/null \
+                | tail -n +51 \
+                | xargs rm -f 2>/dev/null || true
+        fi
+    fi
+fi
+
+# --- 5. Write session handoff file for cross-session resumption (v9.6.0) ---
+if [[ -x "${CLAUDE_PLUGIN_ROOT:-}/scripts/write-handoff.sh" ]]; then
+    "${CLAUDE_PLUGIN_ROOT}/scripts/write-handoff.sh" 2>/dev/null || true
+fi
+
+# --- 6. Clean up session artifacts ---
 # Remove transient files but keep session.json for resume capability
 rm -f "${HOME}/.claude-octopus/.octo/pre-compact-snapshot.json" 2>/dev/null || true
 rm -f "${HOME}/.claude-octopus/.reload-signal" 2>/dev/null || true

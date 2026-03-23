@@ -138,11 +138,11 @@ else
     assert_fail "2.4 resume_agent() gates on empty agent_id"
 fi
 
-# 2.5: Writes JSON instruction file with dispatch_method: "resume"
-if grep -A 60 '^resume_agent()' "$ORCHESTRATE_SH" | grep -q 'dispatch_method.*resume'; then
-    assert_pass "2.5 resume_agent() writes JSON with dispatch_method=resume"
+# 2.5: Writes JSON instruction file with dispatch_method (v2.1.77: "send_message" replaces "resume")
+if grep -A 60 '^resume_agent()' "$ORCHESTRATE_SH" | grep -q 'dispatch_method.*send_message\|dispatch_method.*resume'; then
+    assert_pass "2.5 resume_agent() writes JSON with dispatch_method"
 else
-    assert_fail "2.5 resume_agent() writes JSON with dispatch_method=resume"
+    assert_fail "2.5 resume_agent() writes JSON with dispatch_method"
 fi
 
 # 2.6: Emits AGENT_TEAMS_RESUME signal

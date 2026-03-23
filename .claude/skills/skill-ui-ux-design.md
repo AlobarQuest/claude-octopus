@@ -192,7 +192,9 @@ gemini_available=$(command -v gemini &> /dev/null && echo "true" || echo "false"
 
 # 🔴 Codex — implementation-focused critique (font loading, CSS practicality, bundle impact)
 if [[ "$codex_available" == "true" ]]; then
-    codex exec --full-auto "<critique prompt>" > /tmp/design-critique-codex.md &
+    codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills (brainstorming, using-superpowers, writing-plans, etc.). Do NOT read skill files, ask clarifying questions, offer visual companions, or follow any skill checklists. Respond directly to the prompt below.
+
+<critique prompt>" > /tmp/design-critique-codex.md &
 fi
 
 # 🟡 Gemini — ecosystem-focused critique (competitive patterns, alternative approaches, accessibility standards)

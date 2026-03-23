@@ -1,5 +1,5 @@
 ---
-description: "NLSpec authoring - Structured specification from multi-AI research"
+description: "\"NLSpec authoring - Structured specification from multi-AI research\""
 ---
 
 # Spec - NLSpec Authoring
@@ -13,16 +13,15 @@ When the user invokes this command (e.g., `/octo:spec <arguments>`):
 Skill(skill: "octo:spec", args: "<user's arguments>")
 ```
 
-**INCORRECT - Do NOT use Task tool:**
+**INCORRECT:**
 ```
-Task(subagent_type: "octo:spec", ...)  -- Wrong! This is a skill, not an agent type
+Skill(skill: "flow-spec", ...)  ❌ Wrong! Internal skill name, not resolvable by Skill tool
+Task(subagent_type: "octo:spec", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
-
-**Why:** This command loads the `flow-spec` skill. Skills use the `Skill` tool, not `Task`.
 
 ---
 
-**Auto-loads the `flow-spec` skill for NLSpec authoring.**
+**Auto-loads the spec skill for NLSpec authoring.**
 
 ## Quick Usage
 
@@ -45,6 +44,7 @@ NLSpec (Natural Language Specification) authoring:
 
 - Multi-AI research (Claude + Gemini + Codex) on the domain
 - Structured NLSpec with behaviors, actors, constraints
+- Adversarial completeness challenge from a second provider (surfaces missing requirements and overlooked edge cases)
 - Completeness validation with scoring
 - Saved specification file for downstream workflows
 

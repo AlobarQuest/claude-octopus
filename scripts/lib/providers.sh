@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# Claude Octopus — Provider Detection & Version Checking
+# ═══════════════════════════════════════════════════════════════════════════════
+# Extracted from orchestrate.sh in v9.7.7 monolith decomposition.
+# Contains: version_compare, detect_claude_code_version, detect_enterprise_backend,
+#           detect_fast_mode, check_provider_health, check_all_providers
+# Source-safe: no main execution block.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Version comparison utility
+version_compare() {
+    local version1="$1"
+    local version2="$2"
+    local operator="$3"
+
+    # Split versions into components
+    IFS='.' read -ra V1 <<< "$version1"
+    IFS='.' read -ra V2 <<< "$version2"
+
+    # Compare major.minor.patch
+    for i in 0 1 2; do
+        local v1_part="${V1[$i]:-0}"
+        local v2_part="${V2[$i]:-0}"
+
+        if (( v1_part > v2_part )); then
+            [[ "$operator" == ">=" || "$operator" == ">" ]] && return 0
+            return 1
+        elif (( v1_part < v2_part )); then
+            [[ "$operator" == "<=" || "$operator" == "<" ]] && return 0
+            return 1
+        fi
+    done
+
+    # Versions are equal
+    [[ "$operator" == ">=" || "$operator" == "<=" || "$operator" == "==" ]] && return 0
+    return 1
+}
+
+detect_claude_code_version() {
+    # v8.36.0: Support Factory AI Droid runtime alongside Claude Code
+    if [[ "$OCTOPUS_HOST" == "factory" ]]; then
+        if command -v droid &>/dev/null; then
+            CLAUDE_CODE_VERSION=$(droid --version 2>/dev/null | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            log "INFO" "Factory AI Droid detected (v${CLAUDE_CODE_VERSION:-unknown})"
+        fi
+        # Factory's plugin format is interop with Claude Code — enable all modern features
+        # Factory supports the full plugin API (hooks, skills, commands, agents)
+        if [[ -z "$CLAUDE_CODE_VERSION" ]]; then
+            # Assume latest feature parity if version can't be detected
+            CLAUDE_CODE_VERSION="2.1.69"
+            log "INFO" "Factory AI host: assuming feature parity with Claude Code v2.1.69"
+        fi
+    elif ! command -v claude &>/dev/null; then
+        # Check common install locations not on PATH in non-interactive shells
+        local _claude_path=""
+        for _try_path in "$HOME/.local/bin/claude" "/usr/local/bin/claude" "$HOME/.claude/bin/claude"; do
+            if [[ -x "$_try_path" ]]; then
+                _claude_path="$_try_path"
+                break
+            fi
+        done
+        if [[ -n "$_claude_path" ]]; then
+            # Add directory to PATH for this session
+            export PATH="$(dirname "$_claude_path"):$PATH"
+            log "INFO" "Claude Code CLI found at $_claude_path (added to PATH)"
+        else
+            log "WARN" "Claude Code CLI not found, using fallback mode"
+            return 1
+        fi
+    fi
+    if command -v claude &>/dev/null; then
+        # Get version from Claude CLI
+        CLAUDE_CODE_VERSION=$(claude --version 2>/dev/null | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    fi
+
+    if [[ -z "$CLAUDE_CODE_VERSION" ]]; then
+        log "WARN" "Could not detect host platform version, using fallback mode"
+        return 1
+    fi
+
+    # Check for v2.1.12+ features (bash wildcards, basic task management)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.12" ">="; then
+        SUPPORTS_TASK_MANAGEMENT=true
+        SUPPORTS_BASH_WILDCARDS=true
+    fi
+
+    # Check for v2.1.16+ features (fork context, agent field)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.16" ">="; then
+        SUPPORTS_FORK_CONTEXT=true
+        SUPPORTS_AGENT_FIELD=true
+    fi
+
+    # Check for v2.1.32+ features (agent teams, auto memory)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.32" ">="; then
+        SUPPORTS_AGENT_TEAMS=true
+        SUPPORTS_AUTO_MEMORY=true
+    fi
+
+    # Check for v2.1.33+ features (persistent memory, hook events, agent type routing, agent memory)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.33" ">="; then
+        SUPPORTS_PERSISTENT_MEMORY=true
+        SUPPORTS_HOOK_EVENTS=true
+        SUPPORTS_AGENT_TYPE_ROUTING=true
+        SUPPORTS_AGENT_MEMORY=true
+    fi
+
+    # Check for v2.1.33+ statusline API (context_window.used_percentage, cost tracking)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.33" ">="; then
+        SUPPORTS_STATUSLINE_API=true
+    fi
+
+    # Check for v2.1.34+ features (stable agent teams, sandbox security, agent continuation)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.34" ">="; then
+        SUPPORTS_STABLE_AGENT_TEAMS=true
+        SUPPORTS_CONTINUATION=true
+    fi
+
+    # Check for v2.1.36+ features (fast mode for Opus 4.6)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.36" ">="; then
+        SUPPORTS_FAST_OPUS=true
+    fi
+
+    # Check for v2.1.30+ features (native token counts in Task tool results)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.30" ">="; then
+        SUPPORTS_NATIVE_TASK_METRICS=true
+    fi
+
+    # Check for v2.1.38+ features (Agent Teams Bridge - unified task ledger)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.38" ">="; then
+        SUPPORTS_AGENT_TEAMS_BRIDGE=true
+    fi
+
+    # Check for v2.1.41+ features (auth CLI, anchor mentions, OTel speed)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.41" ">="; then
+        SUPPORTS_AUTH_CLI=true
+        SUPPORTS_ANCHOR_MENTIONS=true
+        SUPPORTS_OTEL_SPEED=true
+    fi
+
+    # Check for v2.1.42+ features (prompt cache optimization, fast startup, effort callout)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.42" ">="; then
+        SUPPORTS_PROMPT_CACHE_OPT=true
+        SUPPORTS_FAST_STARTUP=true
+        SUPPORTS_EFFORT_CALLOUT=true
+    fi
+
+    # Check for v2.1.43+ features (enterprise backend fixes, structured outputs)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.43" ">="; then
+        SUPPORTS_ENTERPRISE_FIX=true
+        SUPPORTS_STRUCTURED_OUTPUTS=true
+    fi
+
+    # Check for v2.1.44+ features (stable auth refresh)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.44" ">="; then
+        SUPPORTS_STABLE_AUTH=true
+    fi
+
+    # Check for v2.1.45+ features (Sonnet 4.6, per-project plugins, immediate plugin install)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.45" ">="; then
+        SUPPORTS_SONNET_46=true
+        SUPPORTS_PER_PROJECT_PLUGINS=true
+        SUPPORTS_IMMEDIATE_PLUGIN_INSTALL=true
+    fi
+
+    # Check for v2.1.47+ features (stable bg agents, hook last_message, agent model field, deferred hooks, parallel file safety)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.47" ">="; then
+        SUPPORTS_STABLE_BG_AGENTS=true
+        SUPPORTS_HOOK_LAST_MESSAGE=true
+        SUPPORTS_AGENT_MODEL_FIELD=true
+        SUPPORTS_DEFERRED_SESSION_HOOKS=true
+        SUPPORTS_PARALLEL_FILE_SAFETY=true
+    fi
+
+    # Check for v2.1.49+ features (ConfigChange hook, plugin scope fix, SDK model caps)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.49" ">="; then
+        SUPPORTS_CONFIG_CHANGE_HOOK=true
+        SUPPORTS_PLUGIN_SCOPE_AUTODETECT=true
+        SUPPORTS_SDK_MODEL_CAPS=true
+    fi
+
+    # Check for v2.1.50+ features (worktree isolation, worktree hooks, agents CLI, fast opus 1M)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.50" ">="; then
+        SUPPORTS_WORKTREE_ISOLATION=true
+        SUPPORTS_WORKTREE_HOOKS=true
+        SUPPORTS_AGENTS_CLI=true
+        SUPPORTS_FAST_OPUS_1M=true
+    fi
+
+    # Check for v2.1.51+ features (remote control, npm registries, fast bash, disk persist, account env vars, managed settings)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.51" ">="; then
+        SUPPORTS_REMOTE_CONTROL=true
+        SUPPORTS_NPM_PLUGIN_REGISTRIES=true
+        SUPPORTS_FAST_BASH=true
+        SUPPORTS_AGGRESSIVE_DISK_PERSIST=true
+        SUPPORTS_ACCOUNT_ENV_VARS=true
+        SUPPORTS_MANAGED_SETTINGS_PLATFORM=true
+    fi
+
+    # Check for v2.1.59+ features (native auto-memory, agent memory GC, smart bash prefixes)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.59" ">="; then
+        SUPPORTS_NATIVE_AUTO_MEMORY=true
+        SUPPORTS_AGENT_MEMORY_GC=true
+        SUPPORTS_SMART_BASH_PREFIXES=true
+    fi
+
+    # Check for v2.1.63+ features (HTTP hooks, shared worktree config, memory fixes, batch, MCP opt-out)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.63" ">="; then
+        SUPPORTS_HTTP_HOOKS=true
+        SUPPORTS_WORKTREE_SHARED_CONFIG=true
+        export SUPPORTS_WORKTREE_SHARED_CONFIG  # Exported for worktree-setup.sh hook
+        SUPPORTS_MEMORY_LEAK_FIXES=true
+        SUPPORTS_BATCH_COMMAND=true
+        SUPPORTS_MCP_OPT_OUT=true
+        SUPPORTS_SKILL_CACHE_RESET=true
+    fi
+
+    # Check for v2.1.66+ features (reduced error logging)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.66" ">="; then
+        SUPPORTS_REDUCED_ERROR_LOGGING=true
+    fi
+
+    # Check for v2.1.68+ features (Opus medium effort default, ultrathink, Opus 4.0/4.1 removed)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.68" ">="; then
+        SUPPORTS_OPUS_MEDIUM_EFFORT=true
+        SUPPORTS_ULTRATHINK=true
+        SUPPORTS_OPUS_40_REMOVED=true
+    fi
+
+    # Check for v2.1.69+ features (CLAUDE_SKILL_DIR, InstructionsLoaded hook, agent fields in hooks, etc.)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.69" ">="; then
+        SUPPORTS_SKILL_DIR_VAR=true
+        SUPPORTS_INSTRUCTIONS_LOADED_HOOK=true
+        SUPPORTS_HOOK_AGENT_FIELDS=true
+        SUPPORTS_STATUSLINE_WORKTREE=true
+        SUPPORTS_RELOAD_PLUGINS=true
+        SUPPORTS_DISABLE_GIT_INSTRUCTIONS=true
+        SUPPORTS_GIT_SUBDIR_PLUGINS=true
+    fi
+
+    # Check for v2.1.72+ features (Agent model override, effort redesign, cron disable env, parallel tool resilience)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.72" ">="; then
+        SUPPORTS_AGENT_MODEL_OVERRIDE=true
+        SUPPORTS_EFFORT_REDESIGN=true
+        SUPPORTS_DISABLE_CRON_ENV=true
+        SUPPORTS_PARALLEL_TOOL_RESILIENCE=true
+    fi
+
+    # Check for v2.1.73+ features (modelOverrides, subagent model fix, bg cleanup, skill deadlock fix)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.73" ">="; then
+        SUPPORTS_MODEL_OVERRIDES=true
+        SUPPORTS_SUBAGENT_MODEL_FIX=true
+        SUPPORTS_BG_PROCESS_CLEANUP=true
+        SUPPORTS_SKILL_DEADLOCK_FIX=true
+    fi
+
+    # Check for v2.1.74+ features (autoMemoryDirectory, full model IDs, /context, plugin-dir override)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.74" ">="; then
+        SUPPORTS_AUTO_MEMORY_DIR=true
+        SUPPORTS_FULL_MODEL_IDS=true
+        SUPPORTS_CONTEXT_SUGGESTIONS=true
+        SUPPORTS_PLUGIN_DIR_OVERRIDE=true
+    fi
+
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.76" ">="; then
+        SUPPORTS_MCP_ELICITATION=true
+        SUPPORTS_WORKTREE_SPARSE_PATHS=true
+        SUPPORTS_EFFORT_COMMAND=true
+        SUPPORTS_BG_PARTIAL_RESULTS=true
+    fi
+
+    # Check for v2.1.77+ features (allowRead sandbox, /copy N, compound bash fix, resume truncation fix,
+    #   PreToolUse deny priority, SendMessage auto-resume, Agent resume param removed, plugin validate,
+    #   /fork→/branch rename, bg bash 5GB kill)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.77" ">="; then
+        SUPPORTS_ALLOW_READ_SANDBOX=true
+        SUPPORTS_COPY_INDEX=true
+        SUPPORTS_COMPOUND_BASH_PERMISSION_FIX=true
+        SUPPORTS_RESUME_TRUNCATION_FIX=true
+        SUPPORTS_PRETOOLUSE_DENY_PRIORITY=true
+        SUPPORTS_SENDMESSAGE_AUTO_RESUME=true
+        SUPPORTS_AGENT_NO_RESUME_PARAM=true
+        SUPPORTS_PLUGIN_VALIDATE_FRONTMATTER=true
+        SUPPORTS_BRANCH_COMMAND=true
+        SUPPORTS_BG_BASH_5GB_KILL=true
+    fi
+
+    log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
+    log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
+    log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
+    log "INFO" "Stable Agent Teams: $SUPPORTS_STABLE_AGENT_TEAMS | Agent Memory: $SUPPORTS_AGENT_MEMORY | Fast Opus: $SUPPORTS_FAST_OPUS"
+    log "INFO" "Native Task Metrics: $SUPPORTS_NATIVE_TASK_METRICS | Agent Teams Bridge: $SUPPORTS_AGENT_TEAMS_BRIDGE"
+    log "INFO" "Auth CLI: $SUPPORTS_AUTH_CLI | Anchor Mentions: $SUPPORTS_ANCHOR_MENTIONS | OTel Speed: $SUPPORTS_OTEL_SPEED"
+    log "INFO" "Prompt Cache Opt: $SUPPORTS_PROMPT_CACHE_OPT | Enterprise Fix: $SUPPORTS_ENTERPRISE_FIX | Stable Auth: $SUPPORTS_STABLE_AUTH"
+    log "INFO" "Sonnet 4.6: $SUPPORTS_SONNET_46 | Per-Project Plugins: $SUPPORTS_PER_PROJECT_PLUGINS"
+    log "INFO" "Stable BG Agents: $SUPPORTS_STABLE_BG_AGENTS | Hook Last Message: $SUPPORTS_HOOK_LAST_MESSAGE | Agent Model Field: $SUPPORTS_AGENT_MODEL_FIELD"
+    log "INFO" "ConfigChange Hook: $SUPPORTS_CONFIG_CHANGE_HOOK | Plugin Scope Auto: $SUPPORTS_PLUGIN_SCOPE_AUTODETECT | SDK Model Caps: $SUPPORTS_SDK_MODEL_CAPS"
+    log "INFO" "Worktree Isolation: $SUPPORTS_WORKTREE_ISOLATION | Worktree Hooks: $SUPPORTS_WORKTREE_HOOKS | Agents CLI: $SUPPORTS_AGENTS_CLI | Fast Opus 1M: $SUPPORTS_FAST_OPUS_1M"
+    log "INFO" "Remote Control: $SUPPORTS_REMOTE_CONTROL | NPM Registries: $SUPPORTS_NPM_PLUGIN_REGISTRIES | Fast Bash: $SUPPORTS_FAST_BASH | Disk Persist: $SUPPORTS_AGGRESSIVE_DISK_PERSIST"
+    log "INFO" "Native Auto-Memory: $SUPPORTS_NATIVE_AUTO_MEMORY | Agent Memory GC: $SUPPORTS_AGENT_MEMORY_GC | Smart Bash Prefixes: $SUPPORTS_SMART_BASH_PREFIXES"
+    log "INFO" "HTTP Hooks: $SUPPORTS_HTTP_HOOKS | Shared WT Config: $SUPPORTS_WORKTREE_SHARED_CONFIG | Batch: $SUPPORTS_BATCH_COMMAND | MCP Opt-Out: $SUPPORTS_MCP_OPT_OUT"
+    log "INFO" "Continuation: $SUPPORTS_CONTINUATION | Skill Cache Reset: $SUPPORTS_SKILL_CACHE_RESET"
+    log "INFO" "Opus Medium Effort: $SUPPORTS_OPUS_MEDIUM_EFFORT | Ultrathink: $SUPPORTS_ULTRATHINK | Opus 4.0 Removed: $SUPPORTS_OPUS_40_REMOVED"
+    log "INFO" "Skill Dir Var: $SUPPORTS_SKILL_DIR_VAR | Instructions Hook: $SUPPORTS_INSTRUCTIONS_LOADED_HOOK | Hook Agent Fields: $SUPPORTS_HOOK_AGENT_FIELDS"
+    log "INFO" "Statusline Worktree: $SUPPORTS_STATUSLINE_WORKTREE | Reload Plugins: $SUPPORTS_RELOAD_PLUGINS | Disable Git Instructions: $SUPPORTS_DISABLE_GIT_INSTRUCTIONS"
+    log "INFO" "Agent Model Override: $SUPPORTS_AGENT_MODEL_OVERRIDE | Effort Redesign: $SUPPORTS_EFFORT_REDESIGN | Disable Cron Env: $SUPPORTS_DISABLE_CRON_ENV"
+    log "INFO" "Model Overrides: $SUPPORTS_MODEL_OVERRIDES | Subagent Model Fix: $SUPPORTS_SUBAGENT_MODEL_FIX | Parallel Tool Resilience: $SUPPORTS_PARALLEL_TOOL_RESILIENCE"
+    log "INFO" "BG Process Cleanup: $SUPPORTS_BG_PROCESS_CLEANUP | Skill Deadlock Fix: $SUPPORTS_SKILL_DEADLOCK_FIX"
+    log "INFO" "Auto Memory Dir: $SUPPORTS_AUTO_MEMORY_DIR | Full Model IDs: $SUPPORTS_FULL_MODEL_IDS | Context Suggestions: $SUPPORTS_CONTEXT_SUGGESTIONS"
+    log "INFO" "Plugin Dir Override: $SUPPORTS_PLUGIN_DIR_OVERRIDE | MCP Elicitation: $SUPPORTS_MCP_ELICITATION | Worktree Sparse Paths: $SUPPORTS_WORKTREE_SPARSE_PATHS"
+    log "INFO" "Effort Command: $SUPPORTS_EFFORT_COMMAND | BG Partial Results: $SUPPORTS_BG_PARTIAL_RESULTS"
+    log "INFO" "Allow Read Sandbox: $SUPPORTS_ALLOW_READ_SANDBOX | SendMessage Auto Resume: $SUPPORTS_SENDMESSAGE_AUTO_RESUME | Agent No Resume Param: $SUPPORTS_AGENT_NO_RESUME_PARAM"
+    log "INFO" "Plugin Validate Frontmatter: $SUPPORTS_PLUGIN_VALIDATE_FRONTMATTER | Branch Command: $SUPPORTS_BRANCH_COMMAND | BG Bash 5GB Kill: $SUPPORTS_BG_BASH_5GB_KILL"
+
+    # v8.29.0: Context window control
+    OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
+    if [[ "$OCTOPUS_CONTEXT_WINDOW" == "standard" && "$SUPPORTS_FAST_OPUS_1M" == "true" ]]; then
+        export CLAUDE_CODE_DISABLE_1M_CONTEXT=1
+        log "INFO" "1M context window disabled by OCTOPUS_CONTEXT_WINDOW=standard"
+    elif [[ "$OCTOPUS_CONTEXT_WINDOW" == "auto" ]]; then
+        # auto: let Claude Code decide based on model and mode
+        unset CLAUDE_CODE_DISABLE_1M_CONTEXT 2>/dev/null || true
+    fi
+
+    # v8.34.0: Disable built-in git instructions to save ~2K tokens (v2.1.69+)
+    if [[ "$SUPPORTS_DISABLE_GIT_INSTRUCTIONS" == "true" ]]; then
+        export CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1
+        log "INFO" "Built-in git instructions disabled (SUPPORTS_DISABLE_GIT_INSTRUCTIONS)"
+    fi
+
+    # v8.5: Detect /fast toggle after version detection
+    detect_fast_mode
+    log "INFO" "User /fast mode: $USER_FAST_MODE"
+
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTERPRISE BACKEND DETECTION (v8.16 - Claude Code v2.1.42+)
+# Detects whether Claude Code is running on an enterprise backend
+# (AWS Bedrock, Google Vertex AI, or Anthropic Foundry)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+detect_enterprise_backend() {
+    # Bedrock: AWS credentials + region
+    if [[ -n "${AWS_BEDROCK_REGION:-}" ]] || [[ -n "${AWS_REGION:-}" && -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        OCTOPUS_BACKEND="bedrock"
+        OCTOPUS_AUTH_REFRESH_INTERVAL="${OCTOPUS_AUTH_REFRESH_INTERVAL:-150}"
+        log "INFO" "Enterprise backend detected: AWS Bedrock (auth refresh: ${OCTOPUS_AUTH_REFRESH_INTERVAL}s)"
+        return 0
+    fi
+
+    # Vertex: GCP project
+    if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]] || [[ -n "${VERTEX_PROJECT:-}" ]]; then
+        OCTOPUS_BACKEND="vertex"
+        log "INFO" "Enterprise backend detected: Google Vertex AI"
+        return 0
+    fi
+
+    # Foundry: Anthropic enterprise
+    if [[ -n "${ANTHROPIC_FOUNDRY_ORG:-}" ]] || [[ -n "${ANTHROPIC_FOUNDRY_BASE_URL:-}" ]]; then
+        OCTOPUS_BACKEND="foundry"
+        log "INFO" "Enterprise backend detected: Anthropic Foundry"
+        return 0
+    fi
+
+    # Auth CLI detection (v2.1.41+): parse `claude auth status` output
+    if [[ "$SUPPORTS_AUTH_CLI" == "true" ]]; then
+        local auth_output
+        auth_output=$(claude auth status 2>/dev/null || true)
+        if [[ "$auth_output" == *"bedrock"* || "$auth_output" == *"Bedrock"* ]]; then
+            OCTOPUS_BACKEND="bedrock"
+            OCTOPUS_AUTH_REFRESH_INTERVAL="${OCTOPUS_AUTH_REFRESH_INTERVAL:-150}"
+            log "INFO" "Enterprise backend detected via auth CLI: AWS Bedrock"
+        elif [[ "$auth_output" == *"vertex"* || "$auth_output" == *"Vertex"* ]]; then
+            OCTOPUS_BACKEND="vertex"
+            log "INFO" "Enterprise backend detected via auth CLI: Google Vertex AI"
+        elif [[ "$auth_output" == *"foundry"* || "$auth_output" == *"Foundry"* ]]; then
+            OCTOPUS_BACKEND="foundry"
+            log "INFO" "Enterprise backend detected via auth CLI: Anthropic Foundry"
+        fi
+    fi
+
+    OCTOPUS_BACKEND="${OCTOPUS_BACKEND:-api}"
+    log "DEBUG" "Backend: $OCTOPUS_BACKEND"
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# /FAST TOGGLE DETECTION (v8.5 - Claude Code v2.1.36+)
+# Detects whether user has enabled /fast mode in their Claude Code session
+# ═══════════════════════════════════════════════════════════════════════════════
+USER_FAST_MODE="false"
+
+detect_fast_mode() {
+    # Check 1: Explicit env var from Claude Code (if exposed)
+    if [[ "${CLAUDE_CODE_FAST_MODE:-}" == "true" || "${CLAUDE_CODE_FAST_MODE:-}" == "1" ]]; then
+        USER_FAST_MODE="true"
+        log "INFO" "/fast mode detected via CLAUDE_CODE_FAST_MODE env var"
+        return 0
+    fi
+
+    # Check 2: Check Claude Code settings.json for fast mode state
+    local settings_file="${HOME}/.claude/settings.json"
+    if [[ -f "$settings_file" ]] && command -v jq &>/dev/null; then
+        local fast_setting
+        fast_setting=$(jq -r '.preferences.fastMode // .fastMode // false' "$settings_file" 2>/dev/null) || fast_setting="false"
+        if [[ "$fast_setting" == "true" ]]; then
+            USER_FAST_MODE="true"
+            log "INFO" "/fast mode detected via settings.json"
+            return 0
+        fi
+    fi
+
+    # Check 3: Check local project settings
+    local local_settings="${HOME}/.claude/projects/$(pwd | tr '/' '-')/settings.json"
+    if [[ -f "$local_settings" ]] && command -v jq &>/dev/null; then
+        local fast_local
+        fast_local=$(jq -r '.preferences.fastMode // .fastMode // false' "$local_settings" 2>/dev/null) || fast_local="false"
+        if [[ "$fast_local" == "true" ]]; then
+            USER_FAST_MODE="true"
+            log "INFO" "/fast mode detected via project settings"
+            return 0
+        fi
+    fi
+
+    USER_FAST_MODE="false"
+    return 0
+}
+
+# Check if a provider is healthy (CLI available + credentials present)
+# Returns 0 if healthy, 1 if unhealthy. Prints diagnostic to stderr.
+check_provider_health() {
+    local provider="$1"
+    local errors=0
+
+    case "$provider" in
+        codex)
+            if ! command -v codex &>/dev/null; then
+                echo "codex CLI not found in PATH" >&2
+                return 1
+            fi
+            # Check for either OAuth or API key
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+                # Try resolving from profile/.env before failing
+                resolve_provider_env "OPENAI_API_KEY" 2>/dev/null
+            fi
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+                # Check if OAuth is configured via auth.json (codex auth status was removed in v0.114)
+                if [[ ! -f "${HOME}/.codex/auth.json" ]]; then
+                    echo "codex: no OPENAI_API_KEY and no ~/.codex/auth.json (run: codex auth)" >&2
+                    return 1
+                fi
+            fi
+            ;;
+        gemini)
+            if ! command -v gemini &>/dev/null; then
+                echo "gemini CLI not found in PATH" >&2
+                return 1
+            fi
+            # v9.2.1: Check OAuth creds first (Issue #177)
+            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+                return 0
+            fi
+            # Try resolving env vars from profile/.env for non-interactive shells
+            if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+                resolve_provider_env "GEMINI_API_KEY" 2>/dev/null
+            fi
+            if [[ -z "${GOOGLE_API_KEY:-}" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
+                resolve_provider_env "GOOGLE_API_KEY" 2>/dev/null
+            fi
+            if [[ -z "${GEMINI_API_KEY:-}" ]] && [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+                # Gemini CLI may use gcloud auth
+                if ! command -v gcloud &>/dev/null; then
+                    echo "gemini: GEMINI_API_KEY not found in non-interactive shell. If your key is in ~/.bashrc, move it to ~/.profile or ~/.env instead (bashrc is skipped in non-interactive shells)" >&2
+                    return 1
+                fi
+            fi
+            ;;
+        claude)
+            if ! command -v claude &>/dev/null; then
+                echo "claude CLI not found in PATH" >&2
+                return 1
+            fi
+            ;;
+        perplexity)
+            if [[ -z "${PERPLEXITY_API_KEY:-}" ]]; then
+                echo "perplexity: PERPLEXITY_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+        openrouter)
+            if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+                echo "openrouter: OPENROUTER_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+        ollama)
+            if ! command -v ollama &>/dev/null; then
+                echo "ollama CLI not found in PATH" >&2
+                return 1
+            fi
+            # Check server is running
+            if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+                echo "ollama: server not running (run: ollama serve)" >&2
+                return 1
+            fi
+            ;;
+        copilot)
+            if ! command -v copilot &>/dev/null; then
+                echo "copilot CLI not found in PATH" >&2
+                return 1
+            fi
+            # Check auth via the same precedence chain as copilot_is_available()
+            if [[ -z "${COPILOT_GITHUB_TOKEN:-}" ]] && \
+               [[ -z "${GH_TOKEN:-}" ]] && \
+               [[ -z "${GITHUB_TOKEN:-}" ]] && \
+               [[ ! -f "${HOME}/.copilot/config.json" ]]; then
+                if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
+                    echo "copilot: not authenticated (run: copilot login)" >&2
+                    return 1
+                fi
+            fi
+            ;;
+        qwen)
+            if ! command -v qwen &>/dev/null; then
+                echo "qwen CLI not found in PATH" >&2
+                return 1
+            fi
+            # Check auth: OAuth creds or config in ~/.qwen/, or API key env var
+            if [[ ! -f "${HOME}/.qwen/oauth_creds.json" ]] && \
+               [[ ! -f "${HOME}/.qwen/config.json" ]] && \
+               [[ -z "${QWEN_API_KEY:-}" ]]; then
+                echo "qwen: not authenticated (run: qwen to trigger OAuth, or set QWEN_API_KEY)" >&2
+                return 1
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# Run health checks for all configured providers, return summary
+# Usage: check_all_providers
+check_all_providers() {
+    local healthy=0 unhealthy=0
+    local -a results=()
+
+    for provider in codex gemini claude perplexity openrouter ollama copilot qwen; do
+        local diag
+        if diag=$(check_provider_health "$provider" 2>&1); then
+            results+=("  ✓ $provider")
+            ((healthy++))
+        else
+            results+=("  ✗ $provider: $diag")
+            ((unhealthy++))
+        fi
+    done
+
+    echo "Provider Health Check:"
+    printf '%s\n' "${results[@]}"
+    echo "  ($healthy healthy, $unhealthy unavailable)"
+}

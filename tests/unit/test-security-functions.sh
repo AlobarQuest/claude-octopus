@@ -26,7 +26,10 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # NOTE: orchestrate.sh has a main execution block that runs on source,
 # so we use grep-based static analysis for function existence checks
 # and extract individual functions for runtime tests.
-ORCHESTRATE_SH="$PROJECT_ROOT/scripts/orchestrate.sh"
+# Functions decomposed to lib/ in v9.7.7+
+ALL_SRC=$(mktemp)
+cat "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
+ORCHESTRATE_SH="$ALL_SRC"
 
 # Helper functions
 pass() {
@@ -56,10 +59,10 @@ info() {
 test_validate_url_function_exists() {
     info "\n=== Testing: validate_external_url function exists ==="
     
-    if grep -q "validate_external_url()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
-        pass "validate_external_url function defined in orchestrate.sh"
+    if grep -q "validate_external_url()" "$ALL_SRC"; then
+        pass "validate_external_url function defined"
     else
-        fail "validate_external_url function NOT found in orchestrate.sh"
+        fail "validate_external_url function NOT found"
     fi
 }
 
@@ -161,10 +164,10 @@ test_url_rejects_long_urls() {
 test_transform_twitter_function_exists() {
     info "\n=== Testing: transform_twitter_url function exists ==="
     
-    if grep -q "transform_twitter_url()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
-        pass "transform_twitter_url function defined in orchestrate.sh"
+    if grep -q "transform_twitter_url()" "$ALL_SRC"; then
+        pass "transform_twitter_url function defined"
     else
-        fail "transform_twitter_url function NOT found in orchestrate.sh"
+        fail "transform_twitter_url function NOT found"
     fi
 }
 
@@ -174,10 +177,10 @@ test_transform_twitter_function_exists() {
 test_wrap_content_function_exists() {
     info "\n=== Testing: wrap_untrusted_content function exists ==="
     
-    if grep -q "wrap_untrusted_content()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
-        pass "wrap_untrusted_content function defined in orchestrate.sh"
+    if grep -q "wrap_untrusted_content()" "$ALL_SRC"; then
+        pass "wrap_untrusted_content function defined"
     else
-        fail "wrap_untrusted_content function NOT found in orchestrate.sh"
+        fail "wrap_untrusted_content function NOT found"
     fi
 }
 
@@ -311,6 +314,7 @@ main() {
     echo -e "Failed: ${RED}$FAILED_TESTS${NC}"
     echo
     
+    rm -f "$ALL_SRC"
     if [ $FAILED_TESTS -gt 0 ]; then
         echo "================================================================"
         echo "  Failures:"

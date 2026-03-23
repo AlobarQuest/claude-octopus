@@ -1,7 +1,7 @@
 ---
 name: octopus-architecture
 version: 1.0.0
-description: System architecture and API design with multi-AI consensus
+description: "System architecture and API design with multi-AI consensus"
 ---
 
 ## ⚠️ EXECUTION CONTRACT (MANDATORY - CANNOT SKIP)

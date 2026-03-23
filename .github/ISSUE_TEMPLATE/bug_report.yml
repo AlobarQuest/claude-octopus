@@ -1,0 +1,77 @@
+name: Bug Report
+description: Report a bug in Claude Octopus
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for reporting! Please fill out the sections below."
+  - type: input
+    id: version
+    attributes:
+      label: Plugin Version
+      description: "Run `/octo:doctor` or check package.json"
+      placeholder: "e.g., 9.9.2"
+    validations:
+      required: true
+  - type: input
+    id: claude-code-version
+    attributes:
+      label: Claude Code Version
+      description: "Run `claude --version`"
+      placeholder: "e.g., 2.1.81"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: "Describe the bug clearly"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: "How can we recreate this?"
+      placeholder: |
+        1. Run `/octo:discover "..."`
+        2. See error...
+    validations:
+      required: true
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Which providers are configured?
+      multiple: true
+      options:
+        - Codex CLI
+        - Gemini CLI
+        - Perplexity API
+        - OpenRouter API
+        - Ollama
+        - Copilot CLI
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (Git Bash)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: "Run the command with `--verbose` or check `~/.claude-octopus/logs/`"
+      render: shell

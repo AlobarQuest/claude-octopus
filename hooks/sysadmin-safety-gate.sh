@@ -6,7 +6,12 @@
 set -euo pipefail
 
 # Read tool output from stdin
-INPUT=$(cat 2>/dev/null || echo '{}')
+if command -v timeout &>/dev/null; then
+    INPUT=$(timeout 3 cat 2>/dev/null || true)
+else
+    INPUT=$(cat 2>/dev/null || true)
+fi
+[[ -z "$INPUT" ]] && INPUT='{}'
 
 # Get tool name from hook input
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")

@@ -6,6 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ALL_SRC=$(mktemp)
+trap 'rm -f "$ALL_SRC"' EXIT
+cat "$ORCHESTRATE" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 
 TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
 
@@ -52,22 +56,22 @@ assert_contains "$(grep -A1 'Style' "$TEST_REVIEW_MD")" \
 assert_contains "$(grep -A1 'Skip' "$TEST_REVIEW_MD")" \
   "src/gen" "parse_review_md: skip section readable"
 
-# ── static checks for functions in orchestrate.sh ────────────────────────────
+# ── static checks for functions ───────────────────────────────────────────────
 
-assert_contains "$(grep -c 'build_review_fleet' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
-  "[1-9]" "build_review_fleet: function exists in orchestrate.sh"
+assert_contains "$(grep -c 'build_review_fleet' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "build_review_fleet: function exists"
 
-assert_contains "$(grep -c 'review_run' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
-  "[1-9]" "review_run: function exists in orchestrate.sh"
+assert_contains "$(grep -c 'review_run' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "review_run: function exists"
 
-assert_contains "$(grep 'normal\|nit\|pre.existing' "$ORCHESTRATE" 2>/dev/null | head -5)" \
-  "normal|nit|pre.existing" "severity model: all three levels referenced in orchestrate.sh"
+assert_contains "$(grep 'normal\|nit\|pre.existing' "$ALL_SRC" 2>/dev/null | head -5)" \
+  "normal|nit|pre.existing" "severity model: all three levels referenced"
 
-assert_contains "$(grep 'code-review)' "$ORCHESTRATE" 2>/dev/null | head -3)" \
+assert_contains "$(grep 'code-review)' "$ALL_SRC" 2>/dev/null | head -3)" \
   "code-review" "dispatch: code-review command exists in main case"
 
-assert_contains "$(grep -c 'post_inline_comments' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
-  "[1-9]" "post_inline_comments: function exists in orchestrate.sh"
+assert_contains "$(grep -c 'post_inline_comments' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "post_inline_comments: function exists"
 
 # ── command file checks ───────────────────────────────────────────────────────
 
@@ -81,21 +85,21 @@ assert_contains "$(cat "$REVIEW_CMD" 2>/dev/null)" \
 # spawn_agent writes ${RESULTS_DIR}/${agent_type}-${task_id}.md
 # review_run must reference that same pattern, not ${task_id}.json
 
-assert_contains "$(grep 'RESULTS_DIR.*agent_type.*task_id' "$ORCHESTRATE" 2>/dev/null | head -5)" \
+assert_contains "$(grep 'RESULTS_DIR.*agent_type.*task_id' "$ALL_SRC" 2>/dev/null | head -5)" \
   "RESULTS_DIR" "review_run: result_file uses RESULTS_DIR/agent_type-task_id pattern (no .json)"
 
-assert_not_contains "$(grep -A5 'round1_files' "$ORCHESTRATE" 2>/dev/null | head -20)" \
+assert_not_contains "$(grep -A5 'round1_files' "$ALL_SRC" 2>/dev/null | head -20)" \
   'task_id.*\.json"' "review_run: result_file not using old .json path pattern"
 
 # ── fallback guards ───────────────────────────────────────────────────────────
 
-assert_contains "$(grep -c 'codex verifier failed' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
+assert_contains "$(grep -c 'codex verifier failed' "$ALL_SRC" 2>/dev/null || echo 0)" \
   "[1-9]" "review_run: verifier run_agent_sync has fallback guard"
 
-assert_contains "$(grep 'post_inline_comments.*findings_file.*||' "$ORCHESTRATE" 2>/dev/null | head -5)" \
+assert_contains "$(grep 'post_inline_comments.*findings_file.*||' "$ALL_SRC" 2>/dev/null | head -5)" \
   "render_terminal_report" "review_run: post_inline_comments guarded with terminal fallback"
 
-assert_contains "$(grep -A2 'commit_id.*headRefOid' "$ORCHESTRATE" 2>/dev/null | head -10)" \
+assert_contains "$(grep -A2 'commit_id.*headRefOid' "$ALL_SRC" 2>/dev/null | head -10)" \
   'commit_id' "post_inline_comments: empty commit_id guarded"
 
 # ── MCP schema ───────────────────────────────────────────────────────────────

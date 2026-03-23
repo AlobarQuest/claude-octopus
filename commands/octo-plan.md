@@ -1,5 +1,5 @@
 ---
-description: "Intelligent plan builder - creates strategic execution plans (doesn't execute). Use /octo:embrace to execute plans."
+description: "\"Intelligent plan builder - creates strategic execution plans (doesn't execute). Use /octo:embrace to execute plans.\""
 ---
 
 # Plan - Intelligent Plan Builder

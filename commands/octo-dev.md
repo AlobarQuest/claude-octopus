@@ -1,5 +1,5 @@
 ---
-description: "Switch to Dev Work mode - optimized for software development"
+description: "\"Switch to Dev Work mode - optimized for software development\""
 ---
 
 # Dev Work Mode

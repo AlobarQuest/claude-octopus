@@ -101,22 +101,22 @@ HEADER
 
     local count=0
 
-    # Process skills
+    # Process skills (sorted for deterministic output across platforms)
     while IFS='|' read -r type name description file; do
         [[ -z "$name" ]] && continue
         # Escape quotes in description
         description=$(echo "$description" | sed 's/"/\\"/g')
         echo "  { name: \"${name}\", description: \"${description}\", type: \"${type}\", file: \"${file}.md\" }," >> "$tmp_file"
         count=$((count + 1))
-    done < <(extract_skills "$SKILLS_DIR" "skill")
+    done < <(extract_skills "$SKILLS_DIR" "skill" | LC_ALL=C sort)
 
-    # Process commands
+    # Process commands (sorted for deterministic output across platforms)
     while IFS='|' read -r type name description file; do
         [[ -z "$name" ]] && continue
         description=$(echo "$description" | sed 's/"/\\"/g')
         echo "  { name: \"${name}\", description: \"${description}\", type: \"${type}\", file: \"${file}.md\" }," >> "$tmp_file"
         count=$((count + 1))
-    done < <(extract_skills "$COMMANDS_DIR" "command")
+    done < <(extract_skills "$COMMANDS_DIR" "command" | LC_ALL=C sort)
 
     echo "];" >> "$tmp_file"
     echo "" >> "$tmp_file"
@@ -129,6 +129,10 @@ HEADER
             return 0
         else
             echo "ERROR: OpenClaw registry is out of date. Run: ./scripts/build-openclaw.sh" >&2
+            if [[ -f "$registry_file" ]]; then
+                echo "Diff:" >&2
+                diff -u "$registry_file" "$tmp_file" >&2 || true
+            fi
             rm "$tmp_file"
             return 1
         fi

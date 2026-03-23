@@ -1,5 +1,5 @@
 ---
-description: "Switch to Knowledge Work mode (or toggle with off)"
+description: "\"Switch to Knowledge Work mode (or toggle with off)\""
 ---
 
 # Knowledge Mode Toggle

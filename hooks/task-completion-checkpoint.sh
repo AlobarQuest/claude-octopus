@@ -24,7 +24,12 @@ log() {
 if [ -t 0 ]; then
     TASK_DATA="{}"
 else
-    TASK_DATA=$(cat)
+    if command -v timeout &>/dev/null; then
+        TASK_DATA=$(timeout 3 cat 2>/dev/null || true)
+    else
+        TASK_DATA=$(cat 2>/dev/null || true)
+    fi
+    [[ -z "$TASK_DATA" ]] && TASK_DATA='{}'
 fi
 
 # v8.29.0: Capture last assistant message for phase context recovery

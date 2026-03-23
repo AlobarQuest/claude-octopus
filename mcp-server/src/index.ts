@@ -64,10 +64,11 @@ const MAX_SELECTION_LENGTH = 50_000; // 50KB max for editor selection
 async function runOrchestrate(
   command: string,
   prompt: string,
-  flags: string[] = []
+  flags: string[] = [],
+  postFlags: string[] = []
 ): Promise<{ text: string; isError: boolean }> {
-  // Flags MUST come before the command per orchestrate.sh's argument parser
-  const args = [...flags, command, prompt];
+  // Global flags MUST come before the command; subcommand flags go after
+  const args = [...flags, command, ...postFlags, prompt];
   try {
     const { stdout, stderr } = await execFileAsync(ORCHESTRATE_SH, args, {
       cwd: PLUGIN_ROOT,
@@ -87,6 +88,13 @@ async function runOrchestrate(
         ...(process.env.GOOGLE_API_KEY && { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY }),
         ...(process.env.OPENROUTER_API_KEY && { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY }),
         ...(process.env.PERPLEXITY_API_KEY && { PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY }),
+        // Ollama Anthropic-compatible path (ANTHROPIC_BASE_URL=http://localhost:11434)
+        ...(process.env.ANTHROPIC_BASE_URL && { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL }),
+        ...(process.env.ANTHROPIC_AUTH_TOKEN && { ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN }),
+        // GitHub Copilot CLI auth (checked in precedence order by copilot CLI)
+        ...(process.env.COPILOT_GITHUB_TOKEN && { COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN }),
+        ...(process.env.GH_TOKEN && { GH_TOKEN: process.env.GH_TOKEN }),
+        ...(process.env.GITHUB_TOKEN && { GITHUB_TOKEN: process.env.GITHUB_TOKEN }),
         // Octopus config — explicit allowlist (never forward security-governing vars)
         ...Object.fromEntries(
           Object.entries(process.env).filter(([k]) =>
@@ -193,9 +201,10 @@ server.tool(
       .describe("Minimum quality score to pass (0-100)"),
   },
   async ({ prompt, quality_threshold }) => {
-    // Use QUALITY_THRESHOLD env var instead of unrecognized CLI flag
-    const env_flags: string[] = [];
-    const { text, isError } = await runOrchestrate("tangle", prompt, env_flags);
+    const flags = quality_threshold !== undefined && quality_threshold !== 75
+      ? ["-q", `${quality_threshold}`]
+      : [];
+    const { text, isError } = await runOrchestrate("tangle", prompt, flags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -231,7 +240,7 @@ server.tool(
 
 server.tool(
   "octopus_debate",
-  "Run a structured three-way AI debate between Claude, Gemini, and Codex on a topic.",
+  "Run a structured four-way AI debate between Claude, Sonnet, Gemini, and Codex on a topic.",
   {
     question: z.string().describe("The question or topic to debate"),
     rounds: z
@@ -240,19 +249,15 @@ server.tool(
       .max(10)
       .default(1)
       .describe("Number of debate rounds"),
-    style: z
-      .enum(["quick", "thorough", "adversarial", "collaborative"])
-      .default("quick")
-      .describe("Debate style"),
     mode: z
       .enum(["cross-critique", "blinded"])
       .default("cross-critique")
       .describe("Evaluation mode: cross-critique (ACH falsification) or blinded (independent evaluation, prevents anchoring bias)"),
   },
-  async ({ question, rounds, style, mode }) => {
-    // orchestrate.sh uses "grapple" for debate
-    const flags = [`-r`, `${rounds}`, `--mode`, mode];
-    const { text, isError } = await runOrchestrate("grapple", question, flags);
+  async ({ question, rounds, mode }) => {
+    // orchestrate.sh grapple parses -r/--mode AFTER the subcommand, not as global flags
+    const postFlags = [`-r`, `${rounds}`, `--mode`, mode];
+    const { text, isError } = await runOrchestrate("grapple", question, [], postFlags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );

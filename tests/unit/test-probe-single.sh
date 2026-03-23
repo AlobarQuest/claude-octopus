@@ -6,6 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
 
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ALL_SRC=$(mktemp)
+trap 'rm -f "$ALL_SRC"' EXIT
+cat "$ORCHESTRATE" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
+
 TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
 pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
 fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
@@ -16,57 +21,57 @@ assert_contains() {
 
 # ── probe_single_agent function exists ────────────────────────────────────────
 
-assert_contains "$(grep -c 'probe_single_agent()' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
-  "[1-9]" "probe_single_agent: function exists in orchestrate.sh"
+assert_contains "$(grep -c 'probe_single_agent()' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "probe_single_agent: function exists"
 
 # ── probe-single dispatch case exists ─────────────────────────────────────────
 
-assert_contains "$(grep -c 'probe-single)' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
-  "[1-9]" "probe-single: dispatch case exists in orchestrate.sh"
+assert_contains "$(grep -c 'probe-single)' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "probe-single: dispatch case exists"
 
 # ── probe-single calls probe_single_agent ────────────────────────────────────
 
-assert_contains "$(grep -A10 'probe-single)' "$ORCHESTRATE" | head -15)" \
+assert_contains "$(grep -A10 'probe-single)' "$ALL_SRC" | head -15)" \
   "probe_single_agent" "probe-single: dispatch calls probe_single_agent()"
 
 # ── probe_single_agent writes result files ───────────────────────────────────
 
-assert_contains "$(grep -A200 'probe_single_agent()' "$ORCHESTRATE" | head -220)" \
+assert_contains "$(grep -A200 'probe_single_agent()' "$ALL_SRC" | head -220)" \
   'RESULTS_DIR.*agent_type.*task_id.*\.md' "probe_single_agent: writes result file to RESULTS_DIR"
 
 # ── probe_single_agent calls apply_persona ───────────────────────────────────
 
-assert_contains "$(grep -A100 'probe_single_agent()' "$ORCHESTRATE" | head -120)" \
+assert_contains "$(grep -A100 'probe_single_agent()' "$ALL_SRC" | head -120)" \
   "apply_persona" "probe_single_agent: calls apply_persona()"
 
 # ── probe_single_agent calls enforce_context_budget ──────────────────────────
 
-assert_contains "$(grep -A100 'probe_single_agent()' "$ORCHESTRATE" | head -120)" \
+assert_contains "$(grep -A100 'probe_single_agent()' "$ALL_SRC" | head -120)" \
   "enforce_context_budget" "probe_single_agent: calls enforce_context_budget()"
 
 # ── probe_single_agent calls get_agent_command ───────────────────────────────
 
-assert_contains "$(grep -A120 'probe_single_agent()' "$ORCHESTRATE" | head -140)" \
+assert_contains "$(grep -A120 'probe_single_agent()' "$ALL_SRC" | head -140)" \
   "get_agent_command" "probe_single_agent: calls get_agent_command()"
 
 # ── probe_single_agent has auth retry logic ──────────────────────────────────
 
-assert_contains "$(grep -A200 'probe_single_agent()' "$ORCHESTRATE" | head -220)" \
+assert_contains "$(grep -A200 'probe_single_agent()' "$ALL_SRC" | head -220)" \
   "auth_attempt|max_auth_retries" "probe_single_agent: has auth retry logic"
 
 # ── probe_single_agent outputs result file path ──────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ORCHESTRATE" | head -270)" \
+assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
   'echo.*result_file' "probe_single_agent: outputs result file path on stdout"
 
 # ── probe_single_agent handles timeout status ────────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ORCHESTRATE" | head -270)" \
+assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
   "Status: TIMEOUT" "probe_single_agent: handles TIMEOUT status"
 
 # ── probe_single_agent handles failure status ────────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ORCHESTRATE" | head -270)" \
+assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
   "Status: FAILED" "probe_single_agent: handles FAILED status"
 
 # ── flow-discover.md references probe-single ─────────────────────────────────
@@ -132,12 +137,12 @@ assert_contains "$(grep -c 'intensity=' "$DISCOVER_CMD" 2>/dev/null || echo 0)" 
 
 # ── backward compat: probe_discover still exists ─────────────────────────────
 
-assert_contains "$(grep -c 'probe_discover()' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
+assert_contains "$(grep -c 'probe_discover()' "$ALL_SRC" 2>/dev/null || echo 0)" \
   "[1-9]" "probe_discover: original function still exists (backward compat)"
 
 # ── backward compat: discover|research|probe dispatch still exists ───────────
 
-assert_contains "$(grep -c 'discover|research|probe)' "$ORCHESTRATE" 2>/dev/null || echo 0)" \
+assert_contains "$(grep -c 'discover|research|probe)' "$ALL_SRC" 2>/dev/null || echo 0)" \
   "[1-9]" "discover|research|probe: original dispatch still exists (backward compat)"
 
 # ── Summary ──────────────────────────────────────────────────────────────────

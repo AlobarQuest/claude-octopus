@@ -1,8 +1,12 @@
 ---
 name: flow-define
 version: 1.0.0
-description: Multi-AI requirements scoping using Codex and Gemini CLIs (Double Diamond Define phase). Use when: AUTOMATICALLY ACTIVATE when user requests clarification or scoping:. "define the requirements for X". "clarify the scope of Y"
+description: "Multi-AI requirements scoping using Codex and Gemini CLIs (Double Diamond Define phase). Use when: AUTOMATICALLY ACTIVATE when user requests clarification or scoping:. \"define the requirements for X\". \"clarify the scope of Y\""
 ---
+
+> This file is generated from a template. Edit the `.tmpl` file, not this file directly.
+> Run `scripts/gen-skill-docs.sh` to regenerate after changes.
+
 
 ## Pre-Definition: State Check
 
@@ -44,6 +48,12 @@ command -v codex &> /dev/null && codex_status="Available ✓" || codex_status="N
 command -v gemini &> /dev/null && gemini_status="Available ✓" || gemini_status="Not installed ✗"
 ```
 
+**Validation:**
+- If BOTH Codex and Gemini unavailable -> STOP, suggest: `/octo:setup`
+- If ONE unavailable -> Continue with available provider(s)
+- If BOTH available -> Proceed normally
+
+
 **Display this banner BEFORE orchestrate.sh execution:**
 
 ```
@@ -59,12 +69,7 @@ Provider Availability:
 ⏱️  Estimated Time: 2-5 minutes
 ```
 
-**Validation:**
-- If BOTH Codex and Gemini unavailable → STOP, suggest: `/octo:setup`
-- If ONE unavailable → Continue with available provider(s)
-- If BOTH available → Proceed normally
-
-**DO NOT PROCEED TO STEP 2 until banner displayed.**
+**DO NOT PROCEED TO STEP 2 until banner displayed.** The banner shows users which providers will run and what costs they'll incur — starting API calls without this visibility violates cost transparency.
 
 ---
 
@@ -101,6 +106,7 @@ fi
 - Discovery phase research (if completed)
 - Prior architectural decisions
 - User vision captured earlier
+- If **claude-mem** is installed, its MCP tools (`search`, `timeline`, `get_observations`) are available — use them to find past decisions on similar topics
 
 **DO NOT PROCEED TO STEP 3 until state read.**
 
@@ -192,7 +198,7 @@ echo "📋 Context captured and saved to .claude-octopus/context/define-context.
 - Guide implementation decisions (develop phase)
 - Validate against user expectations (deliver phase)
 
-**DO NOT PROCEED TO STEP 4 until context captured.**
+**DO NOT PROCEED TO STEP 4 until context captured.** User vision (UX approach, priorities, out-of-scope items) scopes the multi-AI research — without it, providers research too broadly and the definition misses the user's actual intent.
 
 ---
 
@@ -205,12 +211,12 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh define "<user's clarification reque
 ```
 
 **CRITICAL: You are PROHIBITED from:**
-- ❌ Defining requirements directly without calling orchestrate.sh
+- ❌ Defining requirements directly without calling orchestrate.sh — single-model analysis misses the technical-vs-business perspective split that Codex and Gemini provide, producing requirements with blind spots
 - ❌ Using direct analysis instead of orchestrate.sh
 - ❌ Claiming you're "simulating" the workflow
 - ❌ Proceeding to Step 3 without running this command
 
-**This is NOT optional. You MUST use the Bash tool to invoke orchestrate.sh.**
+**You MUST use the Bash tool to invoke orchestrate.sh.**
 
 #### What Users See During Execution (v7.16.0+)
 
@@ -251,7 +257,7 @@ cat "$SYNTHESIS_FILE"
 1. Report error to user
 2. Show logs from `~/.claude-octopus/logs/`
 3. DO NOT proceed with presenting results
-4. DO NOT substitute with direct analysis
+4. DO NOT substitute with direct analysis — fallback to single-model analysis defeats the purpose of multi-provider consensus and produces narrower requirements
 
 ---
 
@@ -335,7 +341,15 @@ Providers:
 🔵 Claude - Consensus building and synthesis
 ```
 
+| Indicator | Provider | Cost Source |
+|-----------|----------|-------------|
+| 🔴 | Codex CLI | User's OPENAI_API_KEY |
+| 🟡 | Gemini CLI | User's GEMINI_API_KEY |
+| 🟣 | Perplexity Sonar | User's PERPLEXITY_API_KEY |
+| 🔵 | Claude | Included with Claude Code |
+
 **This is NOT optional.** Users need to see which AI providers are active and understand they are being charged for external API calls (🔴 🟡).
+
 
 ---
 
@@ -596,7 +610,7 @@ Claude:
 - Security: HTTPS only, secure cookies, CSRF protection
 
 ### Gemini Analysis (Business/User)
-- User journey: Registration → Email verification → Login → Access app
+- User journey: Registration -> Email verification -> Login -> Access app
 - Error handling: Clear messages without security leaks
 - Performance: Auth checks < 50ms
 - Compliance: GDPR (data deletion), password policies

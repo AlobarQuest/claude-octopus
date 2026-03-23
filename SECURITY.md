@@ -12,7 +12,7 @@ Claude Octopus orchestrates external AI CLI tools (Codex CLI, Gemini CLI) with u
 | Environment Variables | API keys, workspace paths | Medium |
 | Task Files | JSON files defining parallel execution | Medium |
 | CI/CD Environment | GitHub Actions workflow inputs | High |
-| External CLIs | Codex and Gemini CLI responses | Low |
+| External CLIs | Codex, Gemini, Copilot, Ollama responses | Low |
 
 ### Attack Vectors and Mitigations
 
@@ -58,10 +58,9 @@ Claude Octopus orchestrates external AI CLI tools (Codex CLI, Gemini CLI) with u
 
 | Version | Supported |
 |---------|-----------|
-| 4.6.x   | Yes - Full security updates |
-| 4.5.x   | Yes - Critical patches only |
-| 4.0-4.4 | Security patches only |
-| < 4.0   | No |
+| 9.9.x   | Yes - Full security updates |
+| 9.0-9.8 | Critical patches only |
+| < 9.0   | No |
 
 ## Reporting Vulnerabilities
 
@@ -137,8 +136,10 @@ Claude Octopus logs security-relevant events to `~/.claude-octopus/audit.log`:
 ## Dependencies
 
 Claude Octopus depends on:
-- **Codex CLI** (`@openai/codex-cli`)
-- **Gemini CLI** (`@anthropic-ai/gemini-cli`)
+- **Codex CLI** (`@openai/codex`)
+- **Gemini CLI** (`@google/gemini-cli`)
+- **Copilot CLI** (`@github/copilot`) — optional
+- **Ollama** (`ollama`) — optional
 - **jq** (JSON processing)
 
 Keep these dependencies updated to receive security patches.

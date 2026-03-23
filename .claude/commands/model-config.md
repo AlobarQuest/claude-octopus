@@ -10,6 +10,8 @@ updated: 2026-03-09
 
 # Model Configuration
 
+**Your first output line MUST be:** `🐙 Octopus Model Config`
+
 Configure which AI models are used by Claude Octopus workflows. This allows you to:
 - Use premium models (GPT-5.4, Claude Opus 4.6) for complex tasks
 - Use fast models (GPT-5.4, Gemini Flash) for quick feedback
@@ -119,7 +121,7 @@ export OCTOPUS_COST_MODE=standard
 
 | Mode | Codex Model | Gemini Model | Best For |
 |------|-------------|--------------|----------|
-| `budget` | gpt-5-codex-mini | gemini-3-flash-preview | Prototyping, low-cost iteration |
+| `budget` | gpt-5.4-mini | gemini-3-flash-preview | Prototyping, low-cost iteration |
 | `standard` | (config default) | (config default) | Normal development |
 | `premium` | (config default) | (config default) | Critical features, security audits |
 
@@ -137,7 +139,7 @@ export OCTOPUS_COST_MODE=standard
 
 | Model | Context | Best For | Cost |
 |-------|---------|----------|------|
-| `gpt-5-codex-mini` | 400K | Budget tasks, ~1 credit/msg | ~$0.25/$2.00 per MTok |
+| `gpt-5.4-mini` | 400K | Budget tasks, ~1 credit/msg | ~$0.25/$2.00 per MTok |
 | `gpt-5.1-codex-max` | 400K | Long-horizon agentic tasks | $1.25/$10.00 per MTok |
 
 ### Reasoning Models (via Codex CLI)
@@ -160,7 +162,7 @@ export OCTOPUS_COST_MODE=standard
 |------------|-------|---------|----------|------|
 | `openrouter-glm5` | `z-ai/glm-5` | 203K | Code review specialist | $0.80/$2.56 per MTok |
 | `openrouter-kimi` | `moonshotai/kimi-k2.5` | **262K** | Research, multimodal | $0.45/$2.25 per MTok |
-| `openrouter-deepseek` | `deepseek/deepseek-r1` | 164K | Deep reasoning | $0.70/$2.50 per MTok |
+| `openrouter-deepseek` | `deepseek/deepseek-r1-0528` | 164K | Deep reasoning | $0.70/$2.50 per MTok |
 
 Requires `OPENROUTER_API_KEY` to be set.
 
@@ -217,7 +219,7 @@ Location: `~/.claude-octopus/config/providers.json`
       "default": "gpt-5.4",
       "fallback": "gpt-5.2-codex",
       "spark": "gpt-5.4",
-      "mini": "gpt-5-codex-mini",
+      "mini": "gpt-5.4-mini",
       "reasoning": "o3",
       "large_context": "gpt-4.1"
     },

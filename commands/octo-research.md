@@ -1,8 +1,10 @@
 ---
-description: Deep research with multi-source synthesis and comprehensive analysis
+description: "Deep research with multi-source synthesis and comprehensive analysis"
 ---
 
 # Research - Deep Multi-AI Research
+
+**Your first output line MUST be:** `🐙 Octopus Research`
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
@@ -14,21 +16,51 @@ description: Deep research with multi-source synthesis and comprehensive analysi
 
 When the user invokes this command (e.g., `/octo:research <arguments>`):
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:discover", args: "<user's arguments>")
+### Step 1: Ask Research Intensity
+
+**CRITICAL: Before starting research, use the AskUserQuestion tool to select intensity:**
+
+```javascript
+AskUserQuestion({
+  questions: [
+    {
+      question: "How thorough should the research be?",
+      header: "Research Intensity",
+      multiSelect: false,
+      options: [
+        {label: "Quick (1-2 min)", description: "2 agents — fast problem space scan"},
+        {label: "Standard (2-4 min)", description: "4-5 agents — balanced multi-perspective coverage (recommended)"},
+        {label: "Deep (3-6 min)", description: "6-7 agents — exhaustive analysis with web search"}
+      ]
+    }
+  ]
+})
 ```
 
-**✗ INCORRECT - Do NOT use Task tool:**
+Map the answer to an intensity value:
+- "Quick" → `quick`
+- "Standard" → `standard`
+- "Deep" → `deep`
+
+### Step 2: Invoke Skill with Intensity
+
+**✓ CORRECT - Use the Skill tool:**
 ```
+Skill(skill: "octo:discover", args: "[intensity=quick|standard|deep] <user's arguments>")
+```
+
+Example: `Skill(skill: "octo:discover", args: "[intensity=standard] OAuth 2.0 authentication patterns")`
+
+**✗ INCORRECT - Do NOT use these:**
+```
+Skill(skill: "flow-discover", ...)   ❌ Wrong! Internal skill name, not resolvable by Skill tool
+Skill(skill: "discover", ...)        ❌ Wrong! Must use full namespaced name
 Task(subagent_type: "octo:discover", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
 
-**Why:** This command loads the `flow-discover` skill for multi-AI research. Skills use the `Skill` tool, not `Task`.
-
 ---
 
-**Auto-loads the `flow-discover` skill for comprehensive research tasks.**
+**Auto-loads the discover skill for comprehensive research tasks.**
 
 ## Quick Usage
 
@@ -46,6 +78,37 @@ An alias for the **Discover** phase of the Double Diamond methodology:
 - Comprehensive analysis of options
 - Trade-off evaluation
 - Best practice identification
+
+## Report Format (MANDATORY)
+
+All research output MUST follow this structured template:
+
+### 1. Executive Summary
+2-3 sentences summarizing the key finding. What does the reader need to know?
+
+### 2. Key Themes
+Group findings into 3-5 themes. Each theme gets a heading, a summary paragraph, and supporting evidence.
+
+### 3. Key Takeaways
+Numbered list of actionable insights. Each takeaway should be specific enough to act on.
+
+### 4. Sources & Attribution
+Every factual claim MUST cite its source. Claims without sources should be explicitly marked as **inference** or **opinion**. Format:
+- `[Source: <name/URL>]` for verified facts
+- `[Inference]` for conclusions drawn from evidence
+- `[Opinion: <provider>]` for provider-specific perspectives
+
+### 5. Methodology
+Brief note on what was researched, which providers contributed, and any gaps or limitations:
+- Providers used and their roles
+- Search queries or exploration paths taken
+- Areas not covered or needing deeper investigation
+- Cross-references checked and gaps acknowledged
+
+### Quality Rules
+- **No unsourced claims** — every assertion needs either a source or an explicit [Inference] tag
+- **Acknowledge gaps** — if a topic wasn't fully explored, say so
+- **Cross-reference** — when providers disagree, note the disagreement and which evidence is stronger
 
 ## Natural Language Examples
 

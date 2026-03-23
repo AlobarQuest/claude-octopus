@@ -1,7 +1,7 @@
 ---
 name: skill-meta-prompt
 version: 1.0.0
-description: Generate optimized prompts using proven techniques. Use when: Use PROACTIVELY when user wants to:. "create a prompt for", "write a prompt for". "optimize this prompt", "improve this prompt"
+description: "Craft better prompts using proven optimization techniques — use when your prompt needs refinement. Use when: Use PROACTIVELY when user wants to:. \"create a prompt for\", \"write a prompt for\". \"optimize this prompt\", \"improve this prompt\""
 ---
 
 # Meta-Prompt Generator Skill

@@ -1,5 +1,5 @@
 ---
-description: Write an AI-optimized PRD using multi-AI orchestration and 100-point scoring framework
+description: "Write an AI-optimized PRD using multi-AI orchestration and 100-point scoring framework"
 ---
 
 ## STOP - DO NOT INVOKE /skill OR Skill() AGAIN
@@ -32,7 +32,29 @@ To make this PRD highly targeted, please answer briefly:
 
 ## PHASE 1: QUICK RESEARCH (Max 60 seconds)
 
-If topic is unfamiliar, do MAX 2 web searches:
+**Check provider availability first:**
+
+```bash
+# Check if multi-provider research is available
+CODEX_AVAILABLE=$(command -v codex &>/dev/null && echo "true" || echo "false")
+GEMINI_AVAILABLE=$(command -v gemini &>/dev/null && echo "true" || echo "false")
+```
+
+**If multiple providers are available**, dispatch parallel research for richer context:
+
+🐙 **Multi-provider research mode:**
+- 🔴 Codex CLI — Technical implementation patterns and architecture precedents
+- 🟡 Gemini CLI — Market landscape, competitive products, industry trends
+- 🔵 Claude — Domain analysis and strategic synthesis
+
+```bash
+# Parallel research dispatch (if providers available)
+orchestrate.sh prd-research "<feature>" codex &
+orchestrate.sh prd-research "<feature>" gemini &
+wait
+```
+
+**If single-provider only**, do MAX 2 web searches:
 - One for domain/market context
 - One for technical patterns (only if needed)
 
@@ -51,6 +73,55 @@ Include these sections:
 6. Functional Requirements (FR-001 format)
 7. Implementation Phases (dependency-ordered)
 8. Risks & Mitigations
+
+---
+
+## PHASE 2.5: ADVERSARIAL PRD REVIEW (RECOMMENDED)
+
+**After drafting the PRD but BEFORE self-scoring, dispatch the draft to a second provider for adversarial review.** A single-model PRD has blind spots — cross-provider challenge surfaces wrong assumptions, uncovered scenarios, and contradictory requirements.
+
+**If Codex is available:**
+```bash
+codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+
+You are a skeptical product reviewer. Challenge this PRD:
+
+1. What ASSUMPTIONS are wrong or untested? (e.g., assumed user behavior, market conditions, technical feasibility)
+2. What USER SCENARIOS are missing? (edge cases, error states, migration paths, day-2 operations)
+3. What REQUIREMENTS CONTRADICT each other? (e.g., 'real-time' + 'offline-first', 'simple' + 'enterprise-grade')
+4. What will the FIRST user complaint be?
+5. What is the biggest RISK this PRD ignores?
+
+PRD DRAFT:
+<paste PRD content>"
+```
+
+**If Codex unavailable but Gemini available:**
+```bash
+printf '%s' "You are a skeptical product reviewer. Challenge this PRD. What assumptions are wrong? What user scenarios are missing? What requirements contradict each other? What will the first user complaint be? What risk does this ignore?
+
+PRD DRAFT:
+<paste PRD content>" | gemini -p "" -o text --approval-mode yolo
+```
+
+**If neither external provider is available**, launch Sonnet:
+```
+Agent(
+  model: "sonnet",
+  description: "Adversarial PRD review",
+  prompt: "Challenge this PRD. What assumptions are wrong? What scenarios are missing? What requirements contradict? What will the first user complaint be?
+
+PRD DRAFT:
+<PRD content>"
+)
+```
+
+**After receiving the challenge:**
+- Revise the PRD to address valid challenges (add missing scenarios, resolve contradictions, note assumptions)
+- Dismiss irrelevant challenges but note them in the Risks section if they have partial merit
+- Add to the PRD footer: `Adversarial review: applied (provider: <provider>)`
+
+**Skip with `--fast` or when user explicitly requests speed over thoroughness.**
 
 ---
 

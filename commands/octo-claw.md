@@ -1,28 +1,15 @@
 ---
-description: OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox
+description: "OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox"
 ---
 
 # Claw - OpenClaw System Administration
 
-## 🤖 INSTRUCTIONS FOR CLAUDE
+**Your first output line MUST be:** `🐙 Octopus OpenClaw Admin`
 
-When the user invokes this command (e.g., `/octo:claw <arguments>`):
+## Instructions
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:claw", args: "<user's arguments>")
-```
-
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:claw", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-claw` skill. Skills use the `Skill` tool, not `Task`.
-
----
-
-**Auto-loads the `skill-claw` skill for OpenClaw instance administration.**
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-claw.md`
 
 ## Quick Usage
 

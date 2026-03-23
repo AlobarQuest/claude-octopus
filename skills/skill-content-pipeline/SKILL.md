@@ -1,7 +1,7 @@
 ---
 name: skill-content-pipeline
 version: 1.0.0
-description: Multi-stage content analysis pipeline for external URLs. Use when: Use PROACTIVELY when user wants to:. "analyze this article", "analyze this content". "deconstruct this content", "break down this post"
+description: "Extract patterns and anatomy from URLs — use to reverse-engineer content strategies from live pages. Use when: Use PROACTIVELY when user wants to:. \"analyze this article\", \"analyze this content\". \"deconstruct this content\", \"break down this post\""
 ---
 
 # Content Pipeline Skill

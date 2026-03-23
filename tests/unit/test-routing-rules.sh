@@ -9,10 +9,14 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Agent Routing Rules"
 
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ALL_SRC=$(mktemp)
+cat "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
+
 test_load_routing_rules_function_exists() {
     test_case "load_routing_rules function exists"
 
-    if grep -q "load_routing_rules()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "load_routing_rules()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "load_routing_rules function not found"
@@ -22,7 +26,7 @@ test_load_routing_rules_function_exists() {
 test_match_routing_rule_function_exists() {
     test_case "match_routing_rule function exists"
 
-    if grep -q "match_routing_rule()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "match_routing_rule()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "match_routing_rule function not found"
@@ -32,7 +36,7 @@ test_match_routing_rule_function_exists() {
 test_create_default_routing_rules_function_exists() {
     test_case "create_default_routing_rules function exists"
 
-    if grep -q "create_default_routing_rules()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "create_default_routing_rules()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "create_default_routing_rules function not found"
@@ -43,7 +47,7 @@ test_routing_json_format() {
     test_case "Default routing rules use correct JSON format"
 
     local func_body
-    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q '"rules"' && \
        echo "$func_body" | grep -q '"match"' && \
@@ -59,7 +63,7 @@ test_routing_first_match_wins() {
     test_case "Routing uses first-match-wins evaluation"
 
     local func_body
-    func_body=$(sed -n '/^match_routing_rule()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^match_routing_rule()/,/^}/p' "$ALL_SRC")
 
     # Should return after first match
     if echo "$func_body" | grep -q "return 0"; then
@@ -73,7 +77,7 @@ test_routing_no_match_returns_1() {
     test_case "No match returns exit code 1"
 
     local func_body
-    func_body=$(sed -n '/^match_routing_rule()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^match_routing_rule()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "return 1"; then
         test_pass
@@ -86,7 +90,7 @@ test_routing_graceful_no_file() {
     test_case "Missing routing rules file handled gracefully"
 
     local func_body
-    func_body=$(sed -n '/^load_routing_rules()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^load_routing_rules()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "return 1"; then
         test_pass
@@ -99,7 +103,7 @@ test_routing_no_overwrite() {
     test_case "create_default_routing_rules doesn't overwrite existing file"
 
     local func_body
-    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "return 0\|Don't overwrite"; then
         test_pass
@@ -111,7 +115,7 @@ test_routing_no_overwrite() {
 test_routing_in_spawn_agent() {
     test_case "Routing rules checked in spawn_agent"
 
-    if grep -A 60 "spawn_agent()" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "match_routing_rule"; then
+    if grep -A 60 "spawn_agent()" "$ALL_SRC" | grep -q "match_routing_rule"; then
         test_pass
     else
         test_fail "Routing rules not checked in spawn_agent"
@@ -119,15 +123,15 @@ test_routing_in_spawn_agent() {
 }
 
 test_routing_default_security() {
-    test_case "Default routing includes security→security-auditor"
+    test_case "Default routing includes security->security-auditor"
 
     local func_body
-    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^create_default_routing_rules()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "security-auditor"; then
         test_pass
     else
-        test_fail "Security→security-auditor default not found"
+        test_fail "Security->security-auditor default not found"
     fi
 }
 
@@ -158,4 +162,5 @@ test_routing_in_spawn_agent
 test_routing_default_security
 test_dry_run_with_routing
 
+rm -f "$ALL_SRC"
 test_summary

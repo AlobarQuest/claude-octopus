@@ -1,7 +1,7 @@
 ---
 name: skill-status
 version: 1.0.0
-description: Show project progress dashboard and suggest next actions. Use when: AUTOMATICALLY ACTIVATE when user asks about:. "status" or "progress" or "where am I". "what's next" or "next step"
+description: "Show where you are in the workflow and what to do next — use for progress checks and orientation. Use when: AUTOMATICALLY ACTIVATE when user asks about:. \"status\" or \"progress\" or \"where am I\". \"what's next\" or \"next step\""
 ---
 
 # Project Status Dashboard

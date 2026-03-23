@@ -1,8 +1,12 @@
 ---
 name: flow-discover
 version: 1.0.0
-description: Multi-AI research using Codex and Gemini CLIs (Double Diamond Discover phase). Use when: AUTOMATICALLY ACTIVATE when user requests research or exploration:. "research X" or "explore Y" or "investigate Z". "what are the options for X" or "what are my choices for Y"
+description: "Multi-AI research using Codex and Gemini CLIs (Double Diamond Discover phase). Use when: AUTOMATICALLY ACTIVATE when user requests research or exploration:. \"research X\" or \"explore Y\" or \"investigate Z\". \"what are the options for X\" or \"what are my choices for Y\""
 ---
+
+> This file is generated from a template. Edit the `.tmpl` file, not this file directly.
+> Run `scripts/gen-skill-docs.sh` to regenerate after changes.
+
 
 ## Pre-Discovery: Project Initialization
 
@@ -83,7 +87,7 @@ Analyze the user's prompt and project to determine context:
 
 **Capture context_type = "Dev" or "Knowledge"**
 
-**DO NOT PROCEED TO STEP 2 until context determined.**
+**DO NOT PROCEED TO STEP 2 until context determined.** Context type (Dev vs Knowledge) determines which provider prompts to use — wrong context produces irrelevant research that wastes provider credits.
 
 ---
 
@@ -95,6 +99,12 @@ Analyze the user's prompt and project to determine context:
 command -v codex &> /dev/null && codex_status="Available ✓" || codex_status="Not installed ✗"
 command -v gemini &> /dev/null && gemini_status="Available ✓" || gemini_status="Not installed ✗"
 ```
+
+**Validation:**
+- If BOTH Codex and Gemini unavailable -> STOP, suggest: `/octo:setup`
+- If ONE unavailable -> Continue with available provider(s)
+- If BOTH available -> Proceed normally
+
 
 **Display this banner BEFORE orchestrate.sh execution:**
 
@@ -128,12 +138,7 @@ Provider Availability:
 ⏱️  Estimated Time: 2-5 minutes
 ```
 
-**Validation:**
-- If BOTH Codex and Gemini unavailable → STOP, suggest: `/octo:setup`
-- If ONE unavailable → Continue with available provider(s)
-- If BOTH available → Proceed normally
-
-**DO NOT PROCEED TO STEP 3 until banner displayed.**
+**DO NOT PROCEED TO STEP 3 until banner displayed.** The banner shows users which providers will run and what costs they'll incur — starting API calls without this visibility violates cost transparency.
 
 ---
 
@@ -165,97 +170,144 @@ fi
 - Prior workflow phases (if resuming a session)
 - Architectural decisions already made
 - User vision captured in earlier phases
+- If **claude-mem** is installed, its MCP tools (`search`, `timeline`, `get_observations`) are available — use them to check for relevant past session context before launching research agents
 
 **DO NOT PROCEED TO STEP 4 until state read.**
 
 ---
 
-### STEP 4: Execute orchestrate.sh probe (MANDATORY - Use Bash Tool)
+### STEP 3.5: Parse Intensity & Build Agent Fleet (MANDATORY)
 
-**You MUST execute this command via the Bash tool:**
+**Parse the `intensity` parameter from the skill args.** The args string may start with `[intensity=quick|standard|deep]`. If no intensity is specified, default to `"standard"` (backward compatible with `/octo:embrace` which doesn't pass intensity).
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh probe "<user's research question>"
+**Agent fleets by intensity:**
+
+| Intensity | Count | Perspectives & Agent Types |
+|-----------|-------|----------------------------|
+| **Quick** | 2 | Codex: problem analysis, Gemini: ecosystem overview |
+| **Standard** | 4-5 | + Claude Sonnet: edge cases, Codex: feasibility, [Sonnet: codebase analysis if inside git repo] |
+| **Deep** | 6-7 | + Gemini: cross-synthesis, [Perplexity: web research if PERPLEXITY_API_KEY set] |
+
+**Build the perspective list as an array of objects, each with:**
+- `agent_type`: codex, gemini, claude-sonnet, or perplexity
+- `perspective`: the angle-specific prompt (same prompts as probe_discover() in orchestrate.sh)
+- `task_id`: `probe-<timestamp>-<index>`
+- `label`: human-readable name (e.g., "Problem Analysis", "Ecosystem Overview")
+
+**Perspective prompts (use the user's research question as `$PROMPT`):**
+
+1. **Problem Analysis** (Codex): `"Analyze the problem space: $PROMPT. Focus on understanding constraints, requirements, and user needs."`
+2. **Ecosystem Overview** (Gemini): `"Research existing solutions and patterns for: $PROMPT. What has been done before? What worked, what failed?"`
+3. **Edge Cases** (Claude Sonnet): `"Explore edge cases and potential challenges for: $PROMPT. What could go wrong? What's often overlooked?"`
+4. **Feasibility** (Codex): `"Investigate technical feasibility and dependencies for: $PROMPT. What are the prerequisites?"`
+5. **Codebase Analysis** (Claude Sonnet, only if inside git repo with source files): `"Analyze the LOCAL CODEBASE in the current directory for: $PROMPT. Run: find . -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -30, then read key files. Report: tech stack, architecture patterns, file structure, coding conventions, and how they relate to the prompt. Focus on ACTUAL code, not hypotheticals."`
+6. **Cross-Synthesis** (Gemini): `"Synthesize cross-cutting concerns for: $PROMPT. What themes emerge across problem space, solutions, and feasibility?"`
+7. **Web Research** (Perplexity, only if PERPLEXITY_API_KEY set): `"Search the live web for the latest information about: $PROMPT. Find recent articles, documentation, blog posts, GitHub repos, and community discussions. Include source URLs and publication dates. Focus on information from the last 12 months that may not be in training data."`
+
+**DO NOT PROCEED TO STEP 4 until the fleet is built.**
+
+---
+
+### STEP 4: Launch Parallel Agent Subagents (MANDATORY - Use Agent Tool)
+
+**Launch each perspective as a background Agent subagent.** Each agent calls `orchestrate.sh probe-single` which handles persona application, credential isolation, and result file writing.
+
+**CRITICAL: You MUST use the Agent tool with `run_in_background: true` for each perspective.** Launch Gemini agents first (higher latency), then Codex, then Claude Sonnet, then Perplexity.
+
+For each perspective in the fleet, launch:
+
 ```
+Agent(
+  run_in_background: true,
+  description: "<label> (<agent_type>)",
+  prompt: "Run this command and return its COMPLETE stdout output, including the result file path on the last line:
+
+${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh probe-single <agent_type> '<perspective_prompt>' <task_id> '<original_prompt>'
+
+After the command completes, read the result file path that was printed and return the full file contents."
+)
+```
+
+**Launch order:** All Gemini agents first, then all Codex agents, then Claude Sonnet, then Perplexity. Within each provider group, launch simultaneously (multiple Agent calls in a single message).
 
 **CRITICAL: You are PROHIBITED from:**
-- ❌ Researching directly without calling orchestrate.sh
+- ❌ Researching directly without calling orchestrate.sh probe-single — single-model research misses perspectives that Codex (implementation depth) and Gemini (ecosystem breadth) bring
+- ❌ Using a single `Bash(orchestrate.sh probe)` call — this causes the 120s Bash timeout that this refactor fixes
 - ❌ Using web search instead of orchestrate.sh
 - ❌ Claiming you're "simulating" the workflow
-- ❌ Proceeding to Step 4 without running this command
-
-**This is NOT optional. You MUST use the Bash tool to invoke orchestrate.sh.**
-
-#### What Users See During Execution (v7.16.0+)
-
-If running in Claude Code v2.1.16+, users will see **real-time progress indicators** in the task spinner:
-
-**Phase 1 - External Provider Execution (Parallel):**
-- 🔴 Researching technical patterns (Codex)...
-- 🟡 Exploring ecosystem and options (Gemini)...
-
-**Phase 2 - Synthesis (Sequential):**
-- 🔵 Synthesizing research findings...
-
-These spinner verb updates happen automatically - orchestrate.sh calls `update_task_progress()` before each agent execution. Users see exactly which provider is working and what it's doing.
-
-**If NOT running in Claude Code v2.1.16+:** Progress indicators are silently skipped, no errors shown.
 
 ---
 
-### STEP 5: Verify Execution (MANDATORY - Validation Gate)
+### STEP 5: Collect Results (MANDATORY - Wait for Background Agents)
 
-**After orchestrate.sh completes, verify it succeeded:**
+**Wait for all background agents to complete.** You will be automatically notified as each finishes.
+
+**Minimum 2 results required** (same threshold as synthesize_probe_results()). Graceful degradation rules:
+- 0 results -> Report error, show logs, DO NOT proceed
+- 1 result -> Warn user, proceed with reduced synthesis quality
+- 2+ results -> Proceed normally
+- If some agents fail/timeout, proceed with successful results
+
+**For each completed agent, collect its output** (the result file contents returned by the agent).
+
+---
+
+### STEP 6: Synthesize In-Conversation (MANDATORY - Claude Synthesizes)
+
+**You (Claude) synthesize the collected results directly in conversation.** This replaces the previous Gemini synthesis call that frequently timed out.
+
+**Use this exact structure** (matching the format from `synthesize_probe_results()` in orchestrate.sh):
+
+1. **Key Findings** — Top 3-5 actionable insights, ranked by relevance to the original question
+2. **Patterns & Consensus** — Where multiple sources agree
+3. **Conflicts & Trade-offs** — Where sources disagree, with your reasoned resolution
+4. **Gaps** — What's still unknown and needs more research
+5. **Priority Matrix** — Rank findings by impact (High/Medium/Low) and effort (Low/Medium/High) in a table
+6. **Recommended Approach** — Specific next steps based on findings
+
+**Quality rules:**
+- Short but specific findings may be MORE valuable than lengthy general analysis
+- Minority opinions and dissenting views MUST be preserved — they often contain critical insights
+- Concrete examples (code, file paths, commands) outweigh abstract discussion
+- Attribute findings to their source provider (🔴 Codex, 🟡 Gemini, 🔵 Claude Sonnet, 🟣 Perplexity)
+
+**Write synthesis to file:**
 
 ```bash
-# Find the latest synthesis file (created within last 10 minutes)
-SYNTHESIS_FILE=$(find ~/.claude-octopus/results -name "probe-synthesis-*.md" -mmin -10 2>/dev/null | head -n1)
-
-if [[ -z "$SYNTHESIS_FILE" ]]; then
-  echo "❌ VALIDATION FAILED: No synthesis file found"
-  echo "orchestrate.sh did not execute properly"
-  exit 1
-fi
-
-echo "✅ VALIDATION PASSED: $SYNTHESIS_FILE"
-cat "$SYNTHESIS_FILE"
+SYNTHESIS_FILE="${HOME}/.claude-octopus/results/probe-synthesis-$(date +%s).md"
+mkdir -p "$(dirname "$SYNTHESIS_FILE")"
 ```
 
-**If validation fails:**
-1. Report error to user
-2. Show logs from `~/.claude-octopus/logs/`
-3. DO NOT proceed with presenting results
-4. DO NOT substitute with direct research
+Write the synthesis content to `$SYNTHESIS_FILE`. The file MUST exist for the validation gate.
 
 ---
 
-### STEP 6: Update State (MANDATORY - Post-Execution)
+### STEP 7: Verify, Update State & Present (Only After Steps 1-6 Complete)
 
-**After synthesis is verified, record findings in state:**
+**Verify synthesis file exists (probe-synthesis-*.md pattern):**
 
 ```bash
-# Extract key findings from synthesis for summary (keep it concise - 1-3 sentences)
+# Verify the synthesis file was written (matches probe-synthesis-*.md pattern)
+if [[ ! -f "$SYNTHESIS_FILE" ]]; then
+  echo "❌ VALIDATION FAILED: No synthesis file found"
+  exit 1
+fi
+echo "✅ VALIDATION PASSED: $SYNTHESIS_FILE"
+```
+
+**Update state:**
+
+```bash
 key_findings=$(head -50 "$SYNTHESIS_FILE" | grep -A 3 "## Key Findings\|## Summary" | tail -3 | tr '\n' ' ')
 
-# Update discover phase context
-"${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_context \
-  "discover" \
-  "$key_findings"
-
-# Update metrics
+"${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_context "discover" "$key_findings"
 "${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_metrics "phases_completed" "1"
 "${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_metrics "provider" "codex"
 "${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_metrics "provider" "gemini"
 "${CLAUDE_PLUGIN_ROOT}/scripts/state-manager.sh" update_metrics "provider" "claude"
 ```
 
-**DO NOT PROCEED TO STEP 7 until state updated.**
-
----
-
-### STEP 7: Present Results (Only After Steps 1-6 Complete)
-
-Read the synthesis file and format according to context:
+**Present results** formatted according to context (Dev vs Knowledge):
 
 **For Dev Context:**
 - Technical research summary
@@ -335,7 +387,15 @@ Providers:
 🔵 Claude - Strategic synthesis
 ```
 
+| Indicator | Provider | Cost Source |
+|-----------|----------|-------------|
+| 🔴 | Codex CLI | User's OPENAI_API_KEY |
+| 🟡 | Gemini CLI | User's GEMINI_API_KEY |
+| 🟣 | Perplexity Sonar | User's PERPLEXITY_API_KEY |
+| 🔵 | Claude | Included with Claude Code |
+
 **This is NOT optional.** Users need to see which AI providers are active and understand they are being charged for external API calls (🔴 🟡).
+
 
 ---
 
@@ -461,9 +521,12 @@ When this skill is invoked, follow the EXECUTION CONTRACT above exactly. The con
 
 1. **Blocking Step 1**: Detect work context (Dev vs Knowledge)
 2. **Blocking Step 2**: Check providers, display visual indicators
-3. **Blocking Step 3**: Execute orchestrate.sh probe via Bash tool
-4. **Blocking Step 4**: Verify synthesis file exists
-5. **Step 5**: Present formatted results
+3. **Blocking Step 3**: Read prior state
+4. **Blocking Step 3.5**: Parse intensity, build agent fleet
+5. **Blocking Step 4**: Launch parallel Agent subagents via orchestrate.sh probe-single
+6. **Blocking Step 5**: Collect results from background agents
+7. **Blocking Step 6**: Synthesize in-conversation (Claude synthesizes directly)
+8. **Step 7**: Verify, update state, present results
 
 Each step is **mandatory and blocking** - you cannot proceed to the next step until the current one completes successfully.
 
@@ -491,10 +554,12 @@ TaskUpdate({taskId: "...", status: "completed"})
 If any step fails:
 - **Step 1 (Context)**: Default to Dev Context if ambiguous
 - **Step 2 (Providers)**: If both unavailable, suggest `/octo:setup` and STOP
-- **Step 3 (orchestrate.sh)**: Show bash error, check logs, report to user
-- **Step 4 (Validation)**: If synthesis missing, show orchestrate.sh logs, DO NOT substitute with direct research
+- **Step 4 (Agent launch)**: If an agent fails, continue with remaining agents (graceful degradation)
+- **Step 5 (Collection)**: If fewer than 2 results, report error and let user decide
+- **Step 6 (Synthesis)**: If synthesis fails, present raw agent results without synthesis
+- **Step 7 (Validation)**: If synthesis file missing, report error
 
-Never fall back to direct research if orchestrate.sh execution fails. Report the failure and let the user decide how to proceed.
+DO NOT substitute with direct research if agent execution fails — fallback to single-model analysis defeats the purpose of multi-provider synthesis. Report the failure and let the user decide how to proceed.
 
 ### Context-Appropriate Presentation
 
@@ -526,7 +591,7 @@ After successful execution, present findings formatted for context:
    ## Next Steps
    [Technical action items]
    ```
-   
+
    **For Knowledge Context:**
    ```
    # Strategic Research: <question>
@@ -677,7 +742,7 @@ When discover workflow fetches external URLs (documentation, articles, etc.), **
    validate_external_url "$url" || { echo "Invalid URL"; return 1; }
    ```
 
-2. **Transform social media URLs** (Twitter/X → FxTwitter API):
+2. **Transform social media URLs** (Twitter/X -> FxTwitter API):
    ```bash
    url=$(transform_twitter_url "$url")
    ```

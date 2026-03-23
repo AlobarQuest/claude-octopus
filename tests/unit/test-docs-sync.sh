@@ -68,6 +68,32 @@ check_readme_version() {
   fi
 }
 
+# Check if README body text matches actual command/skill/persona counts
+check_readme_counts() {
+  local actual_commands actual_skills actual_personas
+  actual_commands=$(find .claude/commands -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+  actual_skills=$(find .claude/skills -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+  actual_personas=$(find agents/personas -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+  if grep -q "${actual_commands} commands" README.md; then
+    pass "README body shows correct command count ($actual_commands)"
+  else
+    fail "README body has wrong command count (expected $actual_commands)"
+  fi
+
+  if grep -q "${actual_skills} skills" README.md; then
+    pass "README body shows correct skill count ($actual_skills)"
+  else
+    fail "README body has wrong skill count (expected $actual_skills)"
+  fi
+
+  if grep -q "${actual_personas}.*personas\|${actual_personas} specialized" README.md; then
+    pass "README body shows correct persona count ($actual_personas)"
+  else
+    fail "README body has wrong persona count (expected $actual_personas)"
+  fi
+}
+
 # Check if version appears in CHANGELOG
 check_changelog_version() {
   local version="$1"
@@ -141,8 +167,7 @@ check_docs_files() {
   local required_docs=(
     "docs/README.md"
     "docs/COMMAND-REFERENCE.md"
-    "docs/CLI-REFERENCE.md"
-    "docs/PLUGIN-ARCHITECTURE.md"
+    "docs/ARCHITECTURE.md"
   )
 
   for doc in "${required_docs[@]}"; do
@@ -368,6 +393,7 @@ main() {
 
   # Run test suites
   check_readme_version "$VERSION"
+  check_readme_counts
   check_changelog_version "$VERSION"
   check_readme_structure
   check_docs_files

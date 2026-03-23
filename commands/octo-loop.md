@@ -1,28 +1,15 @@
 ---
-description: Execute tasks in loops with conditions, iterative improvements until goals are met
+description: "Execute tasks in loops with conditions, iterative improvements until goals are met"
 ---
 
 # Loop - Iterative Execution Skill
 
-## 🤖 INSTRUCTIONS FOR CLAUDE
+**Your first output line MUST be:** `🐙 Octopus Loop Mode`
 
-When the user invokes this command (e.g., `/octo:loop <arguments>`):
+## Instructions
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:loop", args: "<user's arguments>")
-```
-
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:loop", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-iterative-loop` skill. Skills use the `Skill` tool, not `Task`.
-
----
-
-**Auto-loads the `skill-iterative-loop` skill for systematic iterative execution.**
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-iterative-loop.md`
 
 ## Quick Usage
 
@@ -104,6 +91,41 @@ Or use the explicit command:
 "Run the optimization loop 10 times and track progress"
 "Loop around 3 times fixing linting errors until all clear"
 ```
+
+## Metric Verification Mode
+
+When you specify a `Metric:` command, the loop switches to mechanical metric verification. Each iteration makes ONE atomic change, commits it with an `experiment:` prefix, measures the metric, and automatically reverts if the metric worsens.
+
+### Metric Mode Parameters
+
+- **Metric:** `<shell command>` — must output a number (the value to optimize)
+- **Direction:** `higher` or `lower` — whether bigger or smaller numbers are better
+- **Guard:** `<shell command>` — must exit 0 for a change to be kept (run after metric)
+- **Iterations:** `N` — max iterations (default: unbounded)
+
+### Metric Mode Examples
+
+```
+/octo:loop Metric: npm test -- --coverage | grep 'All files' | awk '{print $10}' Direction: higher Guard: npm test Iterations: 20
+```
+
+```
+/octo:loop Metric: time npm run build 2>&1 | grep real | awk '{print $2}' Direction: lower Iterations: 10
+```
+
+```
+/octo:loop Metric: wc -l src/**/*.ts | tail -1 | awk '{print $1}' Direction: lower Guard: npm test Iterations: 15
+```
+
+### How It Works
+
+1. Establishes baseline by running the metric command
+2. Each iteration: one change → git commit → measure → keep or revert
+3. Results logged to `.claude-octopus/experiments/<date>.jsonl`
+4. Resumes from existing log if experiment was interrupted
+5. Reports improvement summary when complete
+
+See the full skill documentation for detailed execution contract and rules.
 
 ## Integration with Other Skills
 

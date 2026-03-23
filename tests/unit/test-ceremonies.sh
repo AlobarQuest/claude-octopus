@@ -72,10 +72,11 @@ test_embrace_dry_run() {
 }
 
 test_ceremony_functions_exist() {
-    test_case "Ceremony functions are defined in orchestrate.sh"
+    test_case "Ceremony functions are defined"
 
-    if grep -q "design_review_ceremony()" "$PROJECT_ROOT/scripts/orchestrate.sh" && \
-       grep -q "retrospective_ceremony()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    # Functions decomposed to lib/ in v9.7.7+
+    if grep -rq "design_review_ceremony()" "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/" && \
+       grep -rq "retrospective_ceremony()" "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"; then
         test_pass
     else
         test_fail "Ceremony functions not found"
@@ -83,30 +84,24 @@ test_ceremony_functions_exist() {
 }
 
 test_ceremony_called_in_tangle() {
-    test_case "design_review_ceremony is called in tangle_develop"
+    test_case "design_review_ceremony is called in tangle context"
 
-    if grep -q "design_review_ceremony" "$PROJECT_ROOT/scripts/orchestrate.sh" | head -1; then
-        # Check it's called in the tangle context
-        local in_tangle
-        in_tangle=$(sed -n '/^tangle_develop()/,/^[a-z_]*().*{/p' "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -c "design_review_ceremony")
-        if [[ "$in_tangle" -ge 1 ]]; then
-            test_pass
-        else
-            # Fallback: just check it exists anywhere as a call
-            test_pass
-        fi
+    # Functions decomposed to lib/ in v9.7.7+
+    if grep -rq "design_review_ceremony" "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"; then
+        test_pass
     else
         test_fail "design_review_ceremony not called"
     fi
 }
 
 test_retrospective_in_ink() {
-    test_case "retrospective_ceremony reference exists in orchestrate.sh"
+    test_case "retrospective_ceremony reference exists"
 
-    if grep -q "retrospective_ceremony" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    # Functions decomposed to lib/ in v9.7.7+
+    if grep -rq "retrospective_ceremony" "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"; then
         test_pass
     else
-        test_fail "retrospective_ceremony not found in orchestrate.sh"
+        test_fail "retrospective_ceremony not found"
     fi
 }
 

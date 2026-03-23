@@ -6,7 +6,7 @@ This document explains how Claude Octopus orchestrates multiple AI providers and
 
 ## Overview
 
-Claude Octopus coordinates **three AI providers** to give you multi-perspective analysis:
+Claude Octopus coordinates **eight AI providers** — one per tentacle to give you multi-perspective analysis:
 
 ```
     +------------------+
@@ -17,17 +17,13 @@ Claude Octopus coordinates **three AI providers** to give you multi-perspective 
     | Claude Octopus   |  <-- Plugin coordinates providers
     +--------+---------+
              |
-     +-------+-------+
-     |       |       |
-+----v--+ +--v---+ +-v----+
-| Codex | |Gemini| |Claude|
-|  CLI  | | CLI  | |  AI  |
-+-------+ +------+ +------+
-    |         |        |
-+---v---+ +---v---+ +--v---+
-|OpenAI | |Google | |Anthr.|
-| API   | |  API  | | API  |
-+-------+ +-------+ +------+
+  +--+---+---+---+---+--+
+  |  |   |   |   |   |  |
++-v--+ +-v-+ +v+ +v+ +v-+  +--v--+  +-v----+
+|Cdx | |Gem| |Cl| |Pp| |OR|  |Ollma|  |Coplt |
+|CLI | |CLI| |AI| |API |API|  |local|  |aspir.|
++----+ +---+ +--+ +--+ +--+  +-----+  +------+
+  Core (5 providers)          Optional (2, fully wired)
 ```
 
 ---
@@ -36,11 +32,16 @@ Claude Octopus coordinates **three AI providers** to give you multi-perspective 
 
 | Provider | CLI Tool | Underlying Model | Cost Source |
 |----------|----------|------------------|-------------|
-| **Codex CLI** | `codex exec --model gpt-5.3-codex` | GPT-5.3-Codex (high-capability) | Your `OPENAI_API_KEY` |
-| **Gemini CLI** | `gemini -y -m gemini-3.1-pro-preview` | Gemini 3.0 Pro Preview | Your `GEMINI_API_KEY` |
+| **Codex CLI** | `codex exec --model gpt-5.4` | GPT-5.4 | Your `OPENAI_API_KEY` |
+| **Gemini CLI** | `gemini -y -m gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | Your `GEMINI_API_KEY` |
 | **Claude** | Built-in | Claude Sonnet 4.6 / Opus 4.6 | Your Claude Code subscription |
+| **Perplexity** | API-only | Sonar Pro / Sonar | Your `PERPLEXITY_API_KEY` |
+| **OpenRouter** | API-only | 100+ models (GLM-5, Kimi K2.5, DeepSeek R1, etc.) | Your `OPENROUTER_API_KEY` |
+| **Ollama** *(optional)* | `ollama run <model>` | Local models (llama3.3, mistral, etc.) | Free (local) |
+| **Copilot** *(optional)* | `copilot -p` | GitHub models (Claude/GPT/Gemini) | GitHub Copilot subscription |
+| **Qwen** *(optional)* | `qwen -p` | Qwen3-Coder | Qwen OAuth (free tier) |
 
-> **Note:** Models are as of February 2026. The orchestrate.sh script uses the latest available models.
+> **Note:** Models are as of March 2026. The orchestrate.sh script uses the latest available models. Only Claude is required — all others are optional and auto-detected.
 
 ### What Each Provider Excels At
 
@@ -49,6 +50,10 @@ Claude Octopus coordinates **three AI providers** to give you multi-perspective 
 | **Codex (OpenAI)** | Code generation, structured output, technical analysis | Implementation approaches, code patterns, API design |
 | **Gemini (Google)** | Research synthesis, documentation, broad knowledge | Ecosystem research, best practices, alternative perspectives |
 | **Claude** | Strategic synthesis, nuanced analysis, code review | Final synthesis, quality assessment, moderation |
+| **Perplexity** | Live web search, CVE lookups, current docs | Discover phase research, dependency analysis |
+| **OpenRouter** | Access to 100+ models, cost routing | Alternative perspectives, budget-conscious workflows |
+| **Ollama** *(optional)* | Zero-cost, offline, privacy | Brainstorming, fallback, air-gapped environments |
+| **Qwen** *(optional)* | Free-tier coding, Chinese language support | Research, code review, zero-cost workflows |
 
 ---
 
@@ -454,6 +459,5 @@ The plugin wraps these commands and provides:
 ## See Also
 
 - **[Command and Usage Reference](./COMMAND-REFERENCE.md)** - Commands, triggers, and provider indicators
-- **[CLI Reference](./CLI-REFERENCE.md)** - Direct CLI usage
 - **[Documentation Guide](./README.md)** - Docs landing page
 - **[Command Reference](./COMMAND-REFERENCE.md)** - All available commands

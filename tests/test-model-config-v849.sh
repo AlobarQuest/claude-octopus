@@ -7,6 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCHESTRATE="${SCRIPT_DIR}/../scripts/orchestrate.sh"
+# v9.3.0: Support grepping across orchestrate.sh + lib/ for extracted functions
+_ORCH_ALL_TMP=$(mktemp)
+cat "$ORCHESTRATE" "${SCRIPT_DIR}/../scripts/lib/"*.sh 2>/dev/null > "$_ORCH_ALL_TMP"
+trap 'rm -f "$_ORCH_ALL_TMP"' EXIT
 
 PASSED=0
 FAILED=0
@@ -292,8 +296,8 @@ echo ""
 echo "Test Group 8: Model Catalog"
 echo "----------------------------"
 
-# Verify get_model_catalog function exists
-if grep -q '^get_model_catalog()' "$ORCHESTRATE"; then
+# Verify get_model_catalog function exists (may be in lib/models.sh)
+if grep -q '^get_model_catalog()' "$_ORCH_ALL_TMP"; then
     pass "get_model_catalog() function defined"
 else
     fail "get_model_catalog() function missing"
@@ -301,7 +305,7 @@ fi
 
 # Verify catalog covers key models
 for model in gpt-5.4 gpt-5.4 gemini-3.1-pro-preview claude-sonnet-4.6 sonar-pro o3; do
-    if grep -A 60 'get_model_catalog()' "$ORCHESTRATE" | grep -q "$model"; then
+    if grep -A 60 'get_model_catalog()' "$_ORCH_ALL_TMP" | grep -q "$model"; then
         pass "Catalog includes $model"
     else
         fail "Catalog missing $model"
@@ -309,27 +313,27 @@ for model in gpt-5.4 gpt-5.4 gemini-3.1-pro-preview claude-sonnet-4.6 sonar-pro 
 done
 
 # Verify is_known_model function exists
-if grep -q '^is_known_model()' "$ORCHESTRATE"; then
+if grep -q '^is_known_model()' "$_ORCH_ALL_TMP"; then
     pass "is_known_model() function defined"
 else
     fail "is_known_model() function missing"
 fi
 
 # Verify get_model_capability function exists
-if grep -q '^get_model_capability()' "$ORCHESTRATE"; then
+if grep -q '^get_model_capability()' "$_ORCH_ALL_TMP"; then
     pass "get_model_capability() function defined"
 else
     fail "get_model_capability() function missing"
 fi
 
 # Verify list_models function exists with filters
-if grep -q '^list_models()' "$ORCHESTRATE"; then
+if grep -q '^list_models()' "$_ORCH_ALL_TMP"; then
     pass "list_models() function defined"
 else
     fail "list_models() function missing"
 fi
 
-if grep -A 20 'list_models()' "$ORCHESTRATE" | grep -q '\-\-tools\|\-\-images\|\-\-reasoning'; then
+if grep -A 20 'list_models()' "$_ORCH_ALL_TMP" | grep -q '\-\-tools\|\-\-images\|\-\-reasoning'; then
     pass "list_models() supports capability filters"
 else
     fail "list_models() missing capability filters"

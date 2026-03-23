@@ -26,7 +26,11 @@ fi
 # Read tool output from stdin
 HOOK_DATA=""
 if [[ ! -t 0 ]]; then
-    HOOK_DATA="$(cat)"
+    if command -v timeout &>/dev/null; then
+        HOOK_DATA="$(timeout 3 cat 2>/dev/null || true)"
+    else
+        HOOK_DATA="$(cat 2>/dev/null || true)"
+    fi
 fi
 
 SESSION_ID="${CLAUDE_SESSION_ID:-}"

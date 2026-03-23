@@ -16,7 +16,21 @@ validation_gates:
 
 # Code Review Skill
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - Multi-LLM Code Review`
+
 Invokes the code-reviewer persona for thorough code analysis during the `ink` (deliver) phase.
+
+## Quick Mode
+
+For fast sanity checks (staged changes, small PRs), skip the full review pipeline and run just two phases:
+
+```bash
+# Quick: grasp (consensus on scope) → tangle (parallel review)
+${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh grasp "[review request]"
+${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh tangle "[synthesized scope]"
+```
+
+Use quick mode when user says "check this PR", "quick review", "sanity check my changes", or for pre-commit checks. Use the full review for PRs with security/architecture impact.
 
 ## Usage
 

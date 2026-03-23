@@ -1,5 +1,5 @@
 ---
-description: "Team of Teams - Decompose compound tasks across independent claude instances"
+description: "\"Team of Teams - Decompose compound tasks across independent claude instances\""
 ---
 
 # Parallel - Team of Teams
@@ -13,16 +13,15 @@ When the user invokes this command (e.g., `/octo:parallel <arguments>`):
 Skill(skill: "octo:parallel", args: "<user's arguments>")
 ```
 
-**INCORRECT - Do NOT use Task tool:**
+**INCORRECT:**
 ```
-Task(subagent_type: "octo:parallel", ...)  -- Wrong! This is a skill, not an agent type
+Skill(skill: "flow-parallel", ...)  ❌ Wrong! Internal skill name, not resolvable by Skill tool
+Task(subagent_type: "octo:parallel", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
-
-**Why:** This command loads the `flow-parallel` skill. Skills use the `Skill` tool, not `Task`.
 
 ---
 
-**Auto-loads the `flow-parallel` skill for Team of Teams orchestration.**
+**Auto-loads the parallel skill for Team of Teams orchestration.**
 
 ## Quick Usage
 
@@ -42,6 +41,7 @@ Key architectural distinction: Task tool subagents don't load plugins. Independe
 ## What You Get
 
 - Work Breakdown Structure (WBS) decomposition
+- Adversarial WBS cross-check to catch missed dependencies and scope overlaps before agents launch
 - Independent `claude -p` processes per work package
 - Full plugin capabilities in each worker
 - Parallel execution with staggered launch

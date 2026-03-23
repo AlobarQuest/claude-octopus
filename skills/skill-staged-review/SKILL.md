@@ -1,7 +1,7 @@
 ---
 name: skill-staged-review
 version: 1.0.0
-description: Two-stage spec-then-quality review pipeline. Use when: Use when completing a major feature, preparing a PR, or when user says. "staged review", "full review", "review against spec", or "two-stage review".
+description: "Review code in two passes: spec compliance then quality — use for thorough PR or feature reviews. Use when: Use when completing a major feature, preparing a PR, or when user says. \"staged review\", \"full review\", \"review against spec\", or \"two-stage review\"."
 ---
 
 # Two-Stage Review Pipeline
@@ -151,9 +151,52 @@ done
 echo "Stub detection complete: $STUB_ISSUES issues found"
 ```
 
-### Step 2: Full Quality Review
+### Step 2: Multi-LLM Quality Review (RECOMMENDED)
 
-After stub detection, perform a comprehensive code quality review:
+**After stub detection, dispatch code to multiple providers for parallel quality review.** A Claude-only review pipeline misses what external models catch — Codex excels at logic errors and correctness, Gemini excels at security and edge case analysis. Using both produces higher-confidence findings.
+
+**Check provider availability and dispatch in parallel:**
+
+```bash
+# Get the diff for review
+DIFF_CONTENT=$(git diff --cached 2>/dev/null || git diff HEAD~1..HEAD 2>/dev/null || git diff)
+```
+
+**If Codex is available — dispatch logic review:**
+```bash
+codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+
+Review this code diff for LOGIC and CORRECTNESS issues only. Focus on:
+1. Logic bugs and off-by-one errors
+2. Unhandled error paths
+3. Race conditions or concurrency issues
+4. Incorrect type handling or implicit coercions
+5. Functions that can return unexpected values
+
+Report ONLY high-confidence issues. Do NOT flag style preferences.
+
+DIFF:
+${DIFF_CONTENT}" > /tmp/octopus-review-codex.md 2>/dev/null &
+```
+
+**If Gemini is available — dispatch security review:**
+```bash
+printf '%s' "Review this code diff for SECURITY issues only. Focus on:
+1. Injection vulnerabilities (SQL, XSS, command injection)
+2. Authentication and authorization gaps
+3. Data exposure or logging of sensitive values
+4. Missing input validation at trust boundaries
+5. Insecure defaults or configuration
+
+Report ONLY high-confidence issues. Do NOT flag style preferences.
+
+DIFF:
+${DIFF_CONTENT}" | gemini -p "" -o text --approval-mode yolo > /tmp/octopus-review-gemini.md 2>/dev/null &
+```
+
+**Wait for external reviews to complete, then synthesize all findings (Claude + Codex + Gemini) into a unified quality assessment.** If external providers are unavailable, fall back to the Claude-only review below.
+
+**Claude (you) performs the full quality review regardless:**
 
 1. **Architecture alignment** — Does the code follow project patterns?
 2. **Error handling** — Are errors caught and handled appropriately?
@@ -161,6 +204,8 @@ After stub detection, perform a comprehensive code quality review:
 4. **Performance** — Any obvious bottlenecks or N+1 queries?
 5. **Readability** — Clear naming, reasonable complexity?
 6. **Test coverage** — Are new behaviors tested?
+
+**Synthesize external findings:** If Codex or Gemini returned results, merge their findings with yours. Where providers disagree on severity, note the divergence. Where multiple providers flag the same issue, mark it as high-confidence.
 
 ### Step 3: Present Stage 2 Results
 
@@ -245,3 +290,37 @@ Stage 1 gates Stage 2. Both must pass for overall PASS.
 ```
 
 **Build the right thing, then build it right.**
+
+---
+
+## Post Results to PR (v8.44.0)
+
+After the combined report is generated, check for an open PR and post findings.
+
+```bash
+# Detect open PR on current branch
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+PR_NUM=""
+
+if [[ -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
+    if command -v gh &>/dev/null; then
+        PR_NUM=$(gh pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    fi
+fi
+
+if [[ -n "$PR_NUM" ]]; then
+    # Post combined report as PR comment
+    gh pr comment "$PR_NUM" --body "## Staged Review — Claude Octopus
+
+${COMBINED_REPORT}
+
+---
+*Staged review by Claude Octopus (/octo:staged-review)*"
+
+    echo "Staged review posted to PR #${PR_NUM}"
+fi
+```
+
+**Behavior:**
+- Auto-posts when running inside `/octo:deliver` or `/octo:embrace` workflows
+- Asks user first when invoked standalone via `/octo:staged-review`

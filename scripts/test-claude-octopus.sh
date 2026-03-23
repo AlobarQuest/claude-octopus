@@ -12,6 +12,8 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/orchestrate.sh"
+# v9.7.8: Search orchestrate.sh + all lib/ modules for extracted functions
+SCRIPTS_ALL="$SCRIPT_DIR/orchestrate.sh $SCRIPT_DIR/lib/*.sh"
 PASS=0
 FAIL=0
 SKIP=0
@@ -175,7 +177,7 @@ echo -e "${YELLOW}7. Cost Tracking${NC}"
 test_cmd "Cost report (table)" "'$SCRIPT' cost"
 test_cmd "Cost report (JSON)" "'$SCRIPT' cost-json"
 test_cmd "Cost report (CSV)" "'$SCRIPT' cost-csv"
-# Note: cost-clear and cost-archive modify state, skipping in automated tests
+# Note: cost-clear modifies state, skipping in automated tests
 
 echo ""
 
@@ -712,7 +714,7 @@ echo -e "${YELLOW}18. Security Tests${NC}"
 
 # --- Path Validation Tests ---
 echo -n "  Path validation function exists... "
-if grep -q 'validate_workspace_path()' "$SCRIPT"; then
+if grep -rq 'validate_workspace_path()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -721,7 +723,7 @@ else
 fi
 
 echo -n "  Path traversal blocked... "
-if grep -q '\.\..*path traversal\|traversal.*\.\.' "$SCRIPT"; then
+if grep -rq '\.\..*path traversal\|traversal.*\.\.' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -730,7 +732,7 @@ else
 fi
 
 echo -n "  Workspace restricted to safe paths... "
-if grep -q 'HOME.*tmp.*var/tmp\|safe_prefix\|allowed_prefix' "$SCRIPT"; then
+if grep -rq 'HOME.*tmp.*var/tmp\|safe_prefix\|allowed_prefix' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -740,7 +742,7 @@ fi
 
 # --- Command Execution Safety ---
 echo -n "  Array-based command execution... "
-if grep -q 'cmd_array\|read -ra.*cmd\|\${cmd_array\[@\]}' "$SCRIPT"; then
+if grep -rq 'cmd_array\|read -ra.*cmd\|\${cmd_array\[@\]}' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -759,7 +761,7 @@ fi
 
 # --- JSON Validation ---
 echo -n "  JSON extraction validation exists... "
-if grep -q 'extract_json_field()' "$SCRIPT"; then
+if grep -rq 'extract_json_field()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -768,7 +770,7 @@ else
 fi
 
 echo -n "  Agent type validation exists... "
-if grep -q 'validate_agent_type()' "$SCRIPT"; then
+if grep -rq 'validate_agent_type()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -853,7 +855,7 @@ test_output "Routes 'cross-model review' to grapple" "'$SCRIPT' -n auto 'cross-m
 
 # --- Function Definitions ---
 echo -n "  grapple_debate() function exists... "
-if grep -q 'grapple_debate()' "$SCRIPT"; then
+if grep -rq 'grapple_debate()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -862,7 +864,7 @@ else
 fi
 
 echo -n "  squeeze_test() function exists... "
-if grep -q 'squeeze_test()' "$SCRIPT"; then
+if grep -rq 'squeeze_test()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -871,7 +873,7 @@ else
 fi
 
 echo -n "  No-explore constraint in grapple... "
-if grep -A 80 'grapple_debate()' "$SCRIPT" | grep -q 'no_explore_constraint\|Do NOT read.*explore'; then
+if grep -rA 80 'grapple_debate()' $SCRIPTS_ALL | grep -q 'no_explore_constraint\|Do NOT read.*explore'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -958,7 +960,7 @@ echo -e "${YELLOW}20. Multi-Provider Routing (v4.8)${NC}"
 
 # --- Provider Configuration ---
 echo -n "  Provider config file path defined... "
-if grep -q 'PROVIDERS_CONFIG_FILE=' "$SCRIPT"; then
+if grep -rq 'PROVIDERS_CONFIG_FILE=' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -967,7 +969,7 @@ else
 fi
 
 echo -n "  load_providers_config() function exists... "
-if grep -q 'load_providers_config()' "$SCRIPT"; then
+if grep -rq 'load_providers_config()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -976,7 +978,7 @@ else
 fi
 
 echo -n "  save_providers_config() function exists... "
-if grep -q 'save_providers_config()' "$SCRIPT"; then
+if grep -rq 'save_providers_config()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -995,7 +997,7 @@ else
 fi
 
 echo -n "  auto_detect_provider_config() function exists... "
-if grep -q 'auto_detect_provider_config()' "$SCRIPT"; then
+if grep -rq 'auto_detect_provider_config()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1005,7 +1007,7 @@ fi
 
 # --- Scoring Engine ---
 echo -n "  score_provider() function exists... "
-if grep -q 'score_provider()' "$SCRIPT"; then
+if grep -rq 'score_provider()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1014,7 +1016,7 @@ else
 fi
 
 echo -n "  select_provider() function exists... "
-if grep -q 'select_provider()' "$SCRIPT"; then
+if grep -rq 'select_provider()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1060,7 +1062,7 @@ else
 fi
 
 echo -n "  openrouter agent type defined... "
-if grep -q 'openrouter).*openrouter_execute' "$SCRIPT"; then
+if grep -rq 'openrouter).*openrouter_execute' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1116,7 +1118,7 @@ fi
 
 # --- Provider Status Display ---
 echo -n "  show_provider_status() function exists... "
-if grep -q 'show_provider_status()' "$SCRIPT"; then
+if grep -rq 'show_provider_status()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1135,7 +1137,7 @@ fi
 
 # --- Provider Capabilities ---
 echo -n "  get_provider_capabilities() function exists... "
-if grep -q 'get_provider_capabilities()' "$SCRIPT"; then
+if grep -rq 'get_provider_capabilities()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1144,7 +1146,7 @@ else
 fi
 
 echo -n "  get_provider_context_limit() function exists... "
-if grep -q 'get_provider_context_limit()' "$SCRIPT"; then
+if grep -rq 'get_provider_context_limit()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1153,7 +1155,7 @@ else
 fi
 
 echo -n "  get_cost_tier_value() function exists... "
-if grep -q 'get_cost_tier_value()' "$SCRIPT"; then
+if grep -rq 'get_cost_tier_value()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1163,7 +1165,7 @@ fi
 
 # --- Setup Wizard Steps ---
 echo -n "  Setup wizard has 10 steps... "
-if grep -q 'total_steps=10' "$SCRIPT"; then
+if grep -rq 'total_steps=10' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1172,7 +1174,7 @@ else
 fi
 
 echo -n "  Setup wizard includes Codex tier step... "
-if grep -q 'Codex/OpenAI Subscription Tier' "$SCRIPT"; then
+if grep -rq 'Codex/OpenAI Subscription Tier' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1181,7 +1183,7 @@ else
 fi
 
 echo -n "  Setup wizard includes Gemini tier step... "
-if grep -q 'Gemini Subscription Tier' "$SCRIPT"; then
+if grep -rq 'Gemini Subscription Tier' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1190,7 +1192,7 @@ else
 fi
 
 echo -n "  Setup wizard includes OpenRouter step... "
-if grep -q 'OpenRouter.*Universal Fallback\|OpenRouter Fallback Configuration' "$SCRIPT"; then
+if grep -rq 'OpenRouter.*Universal Fallback\|OpenRouter Fallback Configuration' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1255,9 +1257,11 @@ echo ""
 # ============================================
 echo -e "${YELLOW}21. Performance Optimizations (v4.8.1)${NC}"
 
-# JSON parsing optimization
-echo -n "  json_extract() function exists... "
-if grep -q '^json_extract()' "$SCRIPT"; then
+# JSON parsing optimization (extracted to lib/utils.sh in v8.x, sourced by orchestrate.sh)
+UTILS_SCRIPT="$SCRIPT_DIR/lib/utils.sh"
+
+echo -n "  json_extract() function exists in lib/utils.sh... "
+if grep -q '^json_extract()' "$UTILS_SCRIPT"; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1265,8 +1269,8 @@ else
     ((FAIL++))
 fi
 
-echo -n "  json_extract_multi() function exists... "
-if grep -q '^json_extract_multi()' "$SCRIPT"; then
+echo -n "  json_extract_multi() function exists in lib/utils.sh... "
+if grep -q '^json_extract_multi()' "$UTILS_SCRIPT"; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1275,7 +1279,7 @@ else
 fi
 
 echo -n "  json_extract uses bash regex (no subprocess)... "
-if grep -A10 '^json_extract()' "$SCRIPT" | grep -q 'BASH_REMATCH'; then
+if grep -A50 '^json_extract()' "$UTILS_SCRIPT" | grep -q 'BASH_REMATCH'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1284,7 +1288,7 @@ else
 fi
 
 echo -n "  format_audit_entry uses json_extract_multi... "
-if grep -A5 '^format_audit_entry()' "$SCRIPT" | grep -q 'json_extract_multi'; then
+if grep -rA5 '^format_audit_entry()' $SCRIPTS_ALL | grep -q 'json_extract_multi'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1294,7 +1298,7 @@ fi
 
 # Config parsing optimization
 echo -n "  load_providers_config uses single-pass parsing... "
-if grep -A20 '^load_providers_config()' "$SCRIPT" | grep -q 'while IFS= read'; then
+if grep -rA20 '^load_providers_config()' $SCRIPTS_ALL | grep -q 'while IFS= read'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1304,7 +1308,7 @@ fi
 
 echo -n "  load_providers_config has no grep|sed chains... "
 # Old pattern was: grep "^  codex:" -A5 | grep | sed
-old_pattern_count=$(grep -A80 '^load_providers_config()' "$SCRIPT" | grep -c 'grep.*-A5.*PROVIDERS_CONFIG_FILE.*|.*grep.*|.*sed' || true)
+old_pattern_count=$(grep -rA80 '^load_providers_config()' $SCRIPTS_ALL | grep -c 'grep.*-A5.*PROVIDERS_CONFIG_FILE.*|.*grep.*|.*sed' || true)
 if [[ "$old_pattern_count" -eq 0 ]]; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
@@ -1333,7 +1337,7 @@ else
 fi
 
 echo -n "  preflight_cache_valid() function exists... "
-if grep -q '^preflight_cache_valid()' "$SCRIPT"; then
+if grep -rq '^preflight_cache_valid()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1342,7 +1346,7 @@ else
 fi
 
 echo -n "  preflight_cache_write() function exists... "
-if grep -q '^preflight_cache_write()' "$SCRIPT"; then
+if grep -rq '^preflight_cache_write()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1351,7 +1355,7 @@ else
 fi
 
 echo -n "  preflight_cache_invalidate() function exists... "
-if grep -q '^preflight_cache_invalidate()' "$SCRIPT"; then
+if grep -rq '^preflight_cache_invalidate()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1360,7 +1364,7 @@ else
 fi
 
 echo -n "  preflight_check uses cache... "
-if grep -A15 '^preflight_check()' "$SCRIPT" | grep -q 'preflight_cache_valid'; then
+if grep -rA15 '^preflight_check()' $SCRIPTS_ALL | grep -q 'preflight_cache_valid'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1369,7 +1373,7 @@ else
 fi
 
 echo -n "  setup_wizard invalidates preflight cache... "
-if grep -q 'preflight_cache_invalidate.*# Invalidate cache after config' "$SCRIPT"; then
+if grep -rq 'preflight_cache_invalidate.*# Invalidate cache after config' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1456,7 +1460,7 @@ fi
 
 # Setup wizard Step 10
 echo -n "  Setup wizard has Essential Developer Tools step... "
-if grep -q 'Essential Developer Tools' "$SCRIPT"; then
+if grep -rq 'Essential Developer Tools' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1515,7 +1519,7 @@ echo "========================================"
 
 # Test: TIER_CACHE_FILE defined
 echo -n "  TIER_CACHE_FILE defined... "
-if grep -q 'TIER_CACHE_FILE=' "$SCRIPT"; then
+if grep -rq 'TIER_CACHE_FILE=' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1525,7 +1529,7 @@ fi
 
 # Test: TIER_CACHE_TTL defined
 echo -n "  TIER_CACHE_TTL defined... "
-if grep -q 'TIER_CACHE_TTL=' "$SCRIPT"; then
+if grep -rq 'TIER_CACHE_TTL=' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1535,7 +1539,7 @@ fi
 
 # Test: tier_cache_valid() function exists
 echo -n "  tier_cache_valid() function exists... "
-if grep -q 'tier_cache_valid()' "$SCRIPT"; then
+if grep -rq 'tier_cache_valid()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1545,7 +1549,7 @@ fi
 
 # Test: tier_cache_read() function exists
 echo -n "  tier_cache_read() function exists... "
-if grep -q 'tier_cache_read()' "$SCRIPT"; then
+if grep -rq 'tier_cache_read()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1555,7 +1559,7 @@ fi
 
 # Test: tier_cache_write() function exists
 echo -n "  tier_cache_write() function exists... "
-if grep -q 'tier_cache_write()' "$SCRIPT"; then
+if grep -rq 'tier_cache_write()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1565,7 +1569,7 @@ fi
 
 # Test: tier_cache_invalidate() function exists
 echo -n "  tier_cache_invalidate() function exists... "
-if grep -q 'tier_cache_invalidate()' "$SCRIPT"; then
+if grep -rq 'tier_cache_invalidate()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1575,7 +1579,7 @@ fi
 
 # Test: detect_tier_openai() function exists
 echo -n "  detect_tier_openai() function exists... "
-if grep -q 'detect_tier_openai()' "$SCRIPT"; then
+if grep -rq 'detect_tier_openai()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1585,7 +1589,7 @@ fi
 
 # Test: detect_tier_gemini() function exists
 echo -n "  detect_tier_gemini() function exists... "
-if grep -q 'detect_tier_gemini()' "$SCRIPT"; then
+if grep -rq 'detect_tier_gemini()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1595,7 +1599,7 @@ fi
 
 # Test: detect_tier_claude() function exists
 echo -n "  detect_tier_claude() function exists... "
-if grep -q 'detect_tier_claude()' "$SCRIPT"; then
+if grep -rq 'detect_tier_claude()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1605,7 +1609,7 @@ fi
 
 # Test: get_cost_tier_for_subscription() function exists
 echo -n "  get_cost_tier_for_subscription() function exists... "
-if grep -q 'get_cost_tier_for_subscription()' "$SCRIPT"; then
+if grep -rq 'get_cost_tier_for_subscription()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1615,7 +1619,7 @@ fi
 
 # Test: show_config_summary() function exists
 echo -n "  show_config_summary() function exists... "
-if grep -q 'show_config_summary()' "$SCRIPT"; then
+if grep -rq 'show_config_summary()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1625,7 +1629,7 @@ fi
 
 # Test: auto_detect_provider_config calls detect_tier functions
 echo -n "  auto_detect_provider_config uses tier detection... "
-if grep -q 'detect_tier_openai' "$SCRIPT" && grep -q 'detect_tier_gemini' "$SCRIPT" && grep -q 'detect_tier_claude' "$SCRIPT"; then
+if grep -rq 'detect_tier_openai' $SCRIPTS_ALL && grep -rq 'detect_tier_gemini' $SCRIPTS_ALL && grep -rq 'detect_tier_claude' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1635,7 +1639,7 @@ fi
 
 # Test: save_providers_config calls tier_cache_invalidate
 echo -n "  save_providers_config invalidates tier cache... "
-if grep -A 50 'save_providers_config()' "$SCRIPT" | grep -q 'tier_cache_invalidate'; then
+if grep -rA 50 'save_providers_config()' $SCRIPTS_ALL | grep -q 'tier_cache_invalidate'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1646,8 +1650,8 @@ fi
 # Test: setup_wizard calls show_config_summary
 echo -n "  setup_wizard calls show_config_summary... "
 # Extract setup_wizard function and check if it contains show_config_summary
-# Using sed to extract from setup_wizard() to the next top-level function
-if sed -n '/^setup_wizard()/,/^[a-z_]*() {/p' "$SCRIPT" | grep -q 'show_config_summary'; then
+# setup_wizard() extracted to lib/config-display.sh — search all modules
+if grep -rA 600 '^setup_wizard()' $SCRIPTS_ALL | grep -q 'show_config_summary'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1657,7 +1661,7 @@ fi
 
 # Test: tier cache has 24-hour TTL
 echo -n "  Tier cache TTL is 24 hours (86400s)... "
-if grep -q 'TIER_CACHE_TTL=86400' "$SCRIPT"; then
+if grep -rq 'TIER_CACHE_TTL=86400' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1692,12 +1696,13 @@ else
     ((FAIL++))
 fi
 
-echo -n "  docs/monthly-agent-review.md exists... "
-if [[ -f "$SCRIPT_DIR/../docs/monthly-agent-review.md" ]]; then
+# monthly-agent-review.md relocated to octopus-dev workspace (not in public plugin repo)
+echo -n "  docs/monthly-agent-review.md relocated (not in plugin)... "
+if [[ ! -f "$SCRIPT_DIR/../docs/monthly-agent-review.md" ]]; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
-    echo -e "${RED}FAIL${NC}"
+    echo -e "${RED}FAIL${NC} (should not be in plugin — belongs in octopus-dev workspace)"
     ((FAIL++))
 fi
 
@@ -1805,7 +1810,7 @@ fi
 
 # --- Agent Recommendation Function ---
 echo -n "  recommend_persona_agent() function exists... "
-if grep -q 'recommend_persona_agent()' "$SCRIPT"; then
+if grep -rq 'recommend_persona_agent()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1815,7 +1820,7 @@ fi
 
 # --- Analytics Functions ---
 echo -n "  log_agent_usage() function exists... "
-if grep -q 'log_agent_usage()' "$SCRIPT"; then
+if grep -rq 'log_agent_usage()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1824,7 +1829,7 @@ else
 fi
 
 echo -n "  generate_analytics_report() function exists... "
-if grep -q 'generate_analytics_report()' "$SCRIPT"; then
+if grep -rq 'generate_analytics_report()' $SCRIPTS_ALL; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else
@@ -1857,7 +1862,7 @@ fi
 # --- Privacy-Preserving Logging ---
 echo -n "  Analytics log is privacy-preserving... "
 # Check that the log_agent_usage function doesn't log full prompts
-if grep -A 20 'log_agent_usage()' "$SCRIPT" | grep -q 'prompt_hash\|prompt_length'; then
+if grep -rA 20 'log_agent_usage()' $SCRIPTS_ALL | grep -q 'prompt_hash\|prompt_length'; then
     echo -e "${GREEN}PASS${NC}"
     ((PASS++))
 else

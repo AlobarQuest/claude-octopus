@@ -1,8 +1,10 @@
 ---
-description: Test-driven development with red-green-refactor discipline
+description: "Test-driven development with red-green-refactor discipline"
 ---
 
 # TDD - Test-Driven Development Skill
+
+**Your first output line MUST be:** `🐙 Octopus TDD Mode`
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
@@ -54,21 +56,16 @@ AskUserQuestion({
 })
 ```
 
+**WAIT for the user's answers before proceeding.**
+
 **After receiving answers, incorporate them into the TDD approach and test depth.**
 
-### Step 2: Execute TDD with Skill Tool
+### Step 2: Execute TDD
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:tdd", args: "<user's arguments + context>")
-```
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-tdd.md`
 
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:tdd", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-tdd` skill. Skills use the `Skill` tool, not `Task`.
+Apply the user's answers from Step 1 as the TDD scope and test depth.
 
 ---
 
@@ -86,9 +83,10 @@ Just use natural language:
 ## TDD Workflow
 
 1. **Red**: Write a failing test
-2. **Green**: Write minimal code to pass
-3. **Refactor**: Improve code quality
-4. **Repeat**: Continue cycle
+2. **Adversarial Review**: Challenge test design with a second provider — surfaces missing scenarios, boundary conditions, and tests that could pass with a stub (skip with `--fast`)
+3. **Green**: Write minimal code to pass
+4. **Refactor**: Improve code quality
+5. **Repeat**: Continue cycle
 
 ## What You Get
 

@@ -30,6 +30,8 @@ validation_gates:
 
 # Systematic Debugging
 
+**Your first output line MUST be:** `🐙 **CLAUDE OCTOPUS ACTIVATED** - Systematic Debugging`
+
 ## The Iron Law
 
 <HARD-GATE>
@@ -206,12 +208,18 @@ When error is deep in call stack:
 - No other tests broken?
 - Issue actually resolved?
 
-### 4. If Fix Doesn't Work
+### 4. If Fix Doesn't Work — 3-Strike Rule
 
 | Attempts | Action |
 |----------|--------|
 | < 3 | Return to Phase 1, re-analyze with new information |
-| ≥ 3 | **STOP.** Question the architecture. |
+| ≥ 3 | **STOP.** Show your work. Ask the user. |
+
+**Anti-rationalization rules:**
+- "Should work now" → **RUN IT.** Confidence is not evidence.
+- "I already tested earlier" → Code changed since then. **Test again.**
+- "It's a trivial change" → Trivial changes break production. **Verify.**
+- "I'm pretty sure this fixes it" → Pretty sure is not verified. **Run the test.**
 
 ### 5. After 3+ Failed Fixes: Question Architecture
 
@@ -225,7 +233,13 @@ When error is deep in call stack:
 - Are we sticking with it through inertia?
 - Should we refactor architecture vs. continue fixing symptoms?
 
-**Discuss with user before attempting more fixes.**
+**Discuss with user before attempting more fixes. Do not attempt a 4th fix without explicit user approval.**
+
+---
+
+## Strategy Rotation
+
+After 2 failed fix attempts, stop and reconsider the root cause before trying another fix. If the strategy-rotation hook fires, it means you have been repeating a failing approach. Do not continue down the same path — return to Phase 1 and investigate from a different angle.
 
 ---
 
@@ -261,6 +275,36 @@ If you suspect the issue is with the Claude Code environment itself (e.g., netwo
 
 - **Run `/debug`**: This native command generates a debug bundle to help troubleshoot platform issues.
 - **Check `/debug` output**: Look for "Context limit", "API error", or "Tool execution failed".
+
+## Auto-Freeze on Debug
+
+When debugging a specific module, automatically activate freeze mode to prevent accidental edits outside the investigated area. This is a safety measure that keeps your debugging focused.
+
+### How It Works
+
+At the start of Phase 1 (Root Cause Investigation), identify the primary module directory being debugged and activate freeze mode:
+
+```bash
+# Determine the module directory from the error location or user-specified target
+# Example: if debugging src/auth/login.ts, freeze to src/auth/
+freeze_dir="$(cd "<module-directory>" 2>/dev/null && pwd)"
+echo "${freeze_dir}" > "/tmp/octopus-freeze-${CLAUDE_SESSION_ID:-$$}.txt"
+```
+
+This ensures that during investigation (Phases 1-3), you cannot accidentally modify files outside the module under investigation. When you reach Phase 4 (Implementation), the freeze boundary keeps your fix scoped to the right module.
+
+**Auto-freeze activates when:**
+- The bug is localized to a specific directory (e.g., `src/auth/`, `lib/database/`)
+- The user specifies a file or module to debug
+
+**Auto-freeze does NOT activate when:**
+- The bug spans multiple modules
+- The root cause location is unknown at investigation start
+- The user explicitly opts out
+
+After debugging completes, remind the user to run `/octo:unfreeze` if needed, or remove the state file automatically.
+
+---
 
 ## Integration with Claude Octopus
 

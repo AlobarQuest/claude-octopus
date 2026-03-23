@@ -35,73 +35,52 @@ suite() {
 # ─────────────────────────────────────────────────────────────────────
 suite "1. v8.40.0 Flag Declarations"
 
+# v2.1.70/v2.1.71 flags pruned in v9.5 (banner-only, no runtime behavior)
+# Suite 1 now validates that pruned flags are gone
+suite "1. v8.40.0 Flag Pruning (v9.5)"
+
 for flag in SUPPORTS_VSCODE_PLAN_VIEW SUPPORTS_IMAGE_CACHE_COMPACTION \
             SUPPORTS_RENAME_WHILE_PROCESSING SUPPORTS_NATIVE_LOOP \
             SUPPORTS_RUNTIME_DEBUG SUPPORTS_FAST_BRIDGE_RECONNECT; do
   if grep -q "^${flag}=false" "$ORCH"; then
-    pass "$flag declared"
+    fail "$flag should have been pruned but still declared"
   else
-    fail "$flag not declared"
+    pass "$flag correctly pruned"
   fi
 done
 
 # ─────────────────────────────────────────────────────────────────────
-# Suite 2: Detection blocks for v2.1.70 and v2.1.71
+# Suite 2: v2.1.70/v2.1.71 detection blocks removed
 # ─────────────────────────────────────────────────────────────────────
-suite "2. Version Detection Blocks"
+suite "2. Version Detection Blocks Pruned"
 
-if grep -q 'version_compare.*2\.1\.70' "$ORCH"; then
-  pass "v2.1.70 detection block exists"
+if grep -q 'version_compare.*"2\.1\.70"' "$ORCH"; then
+  fail "v2.1.70 detection block should have been removed"
 else
-  fail "v2.1.70 detection block missing"
+  pass "v2.1.70 detection block correctly removed"
 fi
 
-if grep -q 'version_compare.*2\.1\.71' "$ORCH"; then
-  pass "v2.1.71 detection block exists"
+if grep -q 'version_compare.*"2\.1\.71"' "$ORCH"; then
+  fail "v2.1.71 detection block should have been removed"
 else
-  fail "v2.1.71 detection block missing"
-fi
-
-# Verify flags are set in the right version blocks
-if grep -A5 '2\.1\.70' "$ORCH" | grep -q 'SUPPORTS_VSCODE_PLAN_VIEW=true'; then
-  pass "SUPPORTS_VSCODE_PLAN_VIEW set in v2.1.70 block"
-else
-  fail "SUPPORTS_VSCODE_PLAN_VIEW not in v2.1.70 block"
-fi
-
-if grep -A5 '2\.1\.71' "$ORCH" | grep -q 'SUPPORTS_NATIVE_LOOP=true'; then
-  pass "SUPPORTS_NATIVE_LOOP set in v2.1.71 block"
-else
-  fail "SUPPORTS_NATIVE_LOOP not in v2.1.71 block"
-fi
-
-if grep -A5 '2\.1\.71' "$ORCH" | grep -q 'SUPPORTS_RUNTIME_DEBUG=true'; then
-  pass "SUPPORTS_RUNTIME_DEBUG set in v2.1.71 block"
-else
-  fail "SUPPORTS_RUNTIME_DEBUG not in v2.1.71 block"
-fi
-
-if grep -A5 '2\.1\.71' "$ORCH" | grep -q 'SUPPORTS_FAST_BRIDGE_RECONNECT=true'; then
-  pass "SUPPORTS_FAST_BRIDGE_RECONNECT set in v2.1.71 block"
-else
-  fail "SUPPORTS_FAST_BRIDGE_RECONNECT not in v2.1.71 block"
+  pass "v2.1.71 detection block correctly removed"
 fi
 
 # ─────────────────────────────────────────────────────────────────────
-# Suite 3: Logging for new flags
+# Suite 3: Pruned flag logging removed
 # ─────────────────────────────────────────────────────────────────────
-suite "3. Flag Logging"
+suite "3. Flag Logging Pruned"
 
 if grep -q 'VSCode Plan:.*SUPPORTS_VSCODE_PLAN_VIEW' "$ORCH"; then
-  pass "New flags logged in detection output"
+  fail "Pruned VSCode Plan flag still in logging"
 else
-  fail "New flags not logged"
+  pass "VSCode Plan logging correctly removed"
 fi
 
 if grep -q 'Native Loop:.*SUPPORTS_NATIVE_LOOP' "$ORCH"; then
-  pass "Native Loop flag logged"
+  fail "Pruned Native Loop flag still in logging"
 else
-  fail "Native Loop flag not logged"
+  pass "Native Loop logging correctly removed"
 fi
 
 # ─────────────────────────────────────────────────────────────────────

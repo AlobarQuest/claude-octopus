@@ -1,7 +1,7 @@
 ---
 name: skill-audit
 version: 1.0.0
-description: Systematic codebase auditing with comprehensive checklists. Use when: AUTOMATICALLY ACTIVATE when user requests auditing:. "audit and check the entire app". "audit X for Y" or "check for broken features"
+description: "Audit codebases for quality, consistency, and broken patterns — use for pre-release or tech debt review. Use when: AUTOMATICALLY ACTIVATE when user requests auditing:. \"audit and check the entire app\". \"audit X for Y\" or \"check for broken features\""
 ---
 
 # Systematic Audit Process

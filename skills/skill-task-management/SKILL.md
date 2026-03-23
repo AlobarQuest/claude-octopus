@@ -1,7 +1,7 @@
 ---
 name: skill-task-management
 version: 1.0.0
-description: Task management using native Claude Code TaskCreate/TaskUpdate tools. Use when: AUTOMATICALLY ACTIVATE when user requests task management:. "add to the todo's" or "add this to todos". "resume tasks" or "continue tasks" or "pick up where we left off"
+description: "Manage tasks with Claude Code native tools — use to track TODOs, delegate work, and monitor progress. Use when: AUTOMATICALLY ACTIVATE when user requests task management:. \"add to the todo's\" or \"add this to todos\". \"resume tasks\" or \"continue tasks\" or \"pick up where we left off\""
 ---
 
 # Task Management & Orchestration (v7.23.0+)

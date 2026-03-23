@@ -1,7 +1,7 @@
 ---
 name: skill-resume
 version: 1.0.0
-description: Restore context from previous session and continue workflow. Use when: AUTOMATICALLY ACTIVATE when user mentions:. "resume" or "continue" or "pick up where I left off". "what was I doing" or "restore session"
+description: "Pick up where you left off from a previous session — use after context resets, compaction, or new conversations. Use when: AUTOMATICALLY ACTIVATE when user mentions:. \"resume\" or \"continue\" or \"pick up where I left off\". \"what was I doing\" or \"restore session\""
 ---
 
 # Session Restoration
@@ -32,6 +32,23 @@ Restore context from a previous session and seamlessly continue the workflow whe
 
 ## The Process
 
+### Phase 0: Check Session Handoff File (v9.6.0)
+
+#### Step 0: Check for .octo-continue.md
+
+Before checking `.octo/`, look for a session handoff file. This is written automatically
+by PreCompact and SessionEnd hooks and contains a human-readable summary of the last session.
+
+```bash
+if [[ -f ".octo-continue.md" ]]; then
+    cat ".octo-continue.md"
+fi
+```
+
+**If `.octo-continue.md` exists**, read it and display its contents to the user as
+context. Then continue to Phase 1 to load the full state. The handoff file provides a
+quick overview; `.octo/STATE.md` provides the authoritative state.
+
 ### Phase 1: Check Project Initialization
 
 #### Step 1: Verify .octo/ Directory Exists
@@ -43,7 +60,10 @@ if [[ ! -d ".octo" ]]; then
 fi
 ```
 
-**If .octo/ does not exist, display:**
+**If .octo/ does not exist but `.octo-continue.md` exists**, display the handoff file
+contents and offer to start a new session based on that context.
+
+**If neither exists, display:**
 
 ```markdown
 ## Session Restoration Failed
@@ -469,3 +489,28 @@ Otherwise → User loses previous context and wastes time re-discovering where t
 ```
 
 **Never restart from beginning if state exists. Restore context, show history, route intelligently.**
+
+---
+
+## Context Recovery After Compaction
+
+When context is cleared (compaction, plan mode exit, new session), detect and reload automatically:
+
+```bash
+# Auto-detect context loss
+if [[ -f .claude-octopus/state.json ]] && [[ -z "${WORKFLOW_CONTEXT_LOADED}" ]]; then
+    echo "⚠️  Context was cleared — reloading from persistent state..."
+    NEEDS_RESUME=true
+fi
+```
+
+**What survives context clearing:**
+- `.claude-octopus/state.json` (decisions, context, metrics)
+- `.claude-octopus/context/*.md` (phase outputs)
+- Native tasks (TaskList still works)
+- Git commits and WIP checkpoints
+- Multi-AI synthesis files in `~/.claude-octopus/results/`
+
+After resume completes, set `export WORKFLOW_CONTEXT_LOADED=true` to prevent duplicate reloads.
+
+**State persists in files. Context clearing is not a problem. Files outlive memory.**

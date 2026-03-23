@@ -198,6 +198,10 @@ Before running workflows, check provider availability:
 - Codex CLI: `command -v codex` or check for OPENAI_API_KEY
 - Gemini CLI: `command -v gemini` or check for GEMINI_API_KEY
 - Perplexity: check for PERPLEXITY_API_KEY (API-only, no CLI needed)
+- OpenRouter: check for OPENROUTER_API_KEY
+- Ollama: `command -v ollama` + server health at http://localhost:11434
+- Copilot CLI: `command -v copilot` + auth (COPILOT_GITHUB_TOKEN or gh CLI)
+- Qwen CLI: `command -v qwen` + auth (~/.qwen/oauth_creds.json or QWEN_API_KEY)
 
 If a provider is unavailable, note it in the banner:
 ```
@@ -309,7 +313,9 @@ claude-octopus/
 │   ├── providers/
 │   │   ├── codex/CLAUDE.md     # Codex-specific instructions
 │   │   ├── gemini/CLAUDE.md    # Gemini-specific instructions
-│   │   └── claude/CLAUDE.md    # Claude-specific instructions
+│   │   ├── claude/CLAUDE.md    # Claude-specific instructions
+│   │   ├── ollama/CLAUDE.md    # Ollama local LLM instructions
+│   │   └── copilot/CLAUDE.md   # GitHub Copilot CLI instructions
 │   └── workflows/CLAUDE.md      # Double Diamond methodology
 ```
 
@@ -350,6 +356,8 @@ claude \
 | `providers/codex` | Working specifically with Codex CLI integration |
 | `providers/gemini` | Working specifically with Gemini CLI integration |
 | `providers/claude` | Understanding Claude's orchestrator role |
+| `providers/ollama` | Working with Ollama local LLM integration |
+| `providers/copilot` | Working with GitHub Copilot CLI integration |
 | `workflows` | Learning about Double Diamond methodology |
 
 ### Note

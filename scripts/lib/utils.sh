@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# lib/utils.sh — Pure utility functions extracted from orchestrate.sh (Wave 1)
+# All functions are parameter-in, echo-out with zero or minimal global dependencies.
+# Sourced by orchestrate.sh at startup.
+
+[[ -n "${_OCTOPUS_UTILS_LOADED:-}" ]] && return 0
+_OCTOPUS_UTILS_LOADED=true
+
+# Internal log helper — uses orchestrate.sh's log() if available, falls back to stderr
+_utils_log() {
+    if type log &>/dev/null 2>&1; then
+        log "$@"
+    else
+        echo "[$1] ${*:2}" >&2
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JSON UTILITIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract a single JSON field value from a JSON string.
+# Tries jq first (most reliable), then python3, then an improved bash regex.
+# Usage: json_extract "$json_string" "fieldname" -> sets REPLY variable
+# Returns 0 if found, 1 if not found
+json_extract() {
+    local json="$1"
+    local field="$2"
+    REPLY=""
+
+    # Strategy 1: jq (most reliable — handles all edge cases)
+    if command -v jq &>/dev/null; then
+        local jq_out
+        jq_out=$(printf '%s' "$json" | jq -re --arg f "$field" '.[$f] // empty' 2>/dev/null) && {
+            REPLY="$jq_out"
+            return 0
+        }
+        # jq available but field not found — authoritative miss, no fallback
+        return 1
+    fi
+
+    # Strategy 2: python3 one-liner (available on macOS and most Linux)
+    if command -v python3 &>/dev/null; then
+        local py_out
+        py_out=$(python3 -c "
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+    v=d[sys.argv[1]]
+    print(v if isinstance(v,str) else json.dumps(v))
+except Exception:
+    sys.exit(1)
+" "$field" <<< "$json" 2>/dev/null) && {
+            REPLY="$py_out"
+            return 0
+        }
+        return 1
+    fi
+
+    # Strategy 3: Improved bash regex fallback (handles whitespace around colon
+    # and escaped quotes inside values). BASH_REMATCH used for static-analysis compat.
+    # Try quoted string value first (handles escaped quotes via negative lookbehind approx)
+    local pattern="\"${field}\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\""
+    if [[ "$json" =~ $pattern ]]; then
+        REPLY="${BASH_REMATCH[1]}"
+        return 0
+    fi
+    # Try numeric / boolean / null value
+    local num_pattern="\"${field}\"[[:space:]]*:[[:space:]]*([0-9eE.+-]+|true|false|null)"
+    if [[ "$json" =~ $num_pattern ]]; then
+        REPLY="${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+# Extract multiple JSON fields at once (single pass, no subprocesses)
+# Usage: json_extract_multi "$json_string" field1 field2 field3
+# Sets variables: _field1, _field2, _field3
+# Uses bash nameref (4.3+) to avoid command injection via eval
+json_extract_multi() {
+    local json="$1"
+    shift
+
+    for field in "$@"; do
+        local -n ref="_$field"
+        if [[ "$json" =~ \"$field\":\"([^\"]+)\" ]]; then
+            ref="${BASH_REMATCH[1]}"
+        else
+            ref=""
+        fi
+    done
+}
+
+# Properly escape string for JSON
+# Handles all special characters per JSON spec
+json_escape() {
+    local str="$1"
+
+    # Escape in order: backslash first, then other special chars
+    str="${str//\\/\\\\}"     # backslash
+    str="${str//\"/\\\"}"     # double quote
+    str="${str//$'\t'/\\t}"   # tab
+    str="${str//$'\n'/\\n}"   # newline
+    str="${str//$'\r'/\\r}"   # carriage return
+    str="${str//$'\b'/\\b}"   # backspace
+    str="${str//$'\f'/\\f}"   # form feed
+
+    echo "$str"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VALIDATION & SANITIZATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Validate output file path to prevent path traversal attacks
+# Returns resolved path on success, exits with error on failure
+validate_output_file() {
+    local file="$1"
+    local resolved
+
+    # RESULTS_DIR must be set for path validation to be meaningful
+    if [[ -z "${RESULTS_DIR:-}" ]]; then
+        _utils_log ERROR "RESULTS_DIR is not set — cannot validate output file"
+        return 1
+    fi
+
+    # Resolve to absolute path
+    resolved=$(realpath "$file" 2>/dev/null) || {
+        _utils_log ERROR "Invalid file path: $file"
+        return 1
+    }
+
+    # Must be under RESULTS_DIR
+    if [[ "$resolved" != "${RESULTS_DIR}"/* ]]; then
+        _utils_log ERROR "File path outside results directory: $file"
+        return 1
+    fi
+
+    # File must exist
+    if [[ ! -f "$resolved" ]]; then
+        _utils_log ERROR "File not found: $file"
+        return 1
+    fi
+
+    echo "$resolved"
+    return 0
+}
+
+# Sanitize review ID to prevent sed injection
+# Only allows alphanumeric, hyphen, and underscore characters
+sanitize_review_id() {
+    local id="$1"
+
+    # Only allow alphanumeric, hyphen, underscore
+    if [[ ! "$id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        _utils_log ERROR "Invalid review ID format: $id"
+        return 1
+    fi
+
+    echo "$id"
+    return 0
+}
+
+# Validate agent command to prevent command injection
+# Only allows whitelisted command prefixes
+validate_agent_command() {
+    local cmd="$1"
+
+    # Whitelist of allowed command prefixes (v7.19.0: tightened to exact patterns)
+    case "$cmd" in
+        "codex "*|"codex")
+            return 0 ;;
+        "gemini "*|"gemini")
+            return 0 ;;
+        "claude "*|"claude")
+            return 0 ;;
+        "openrouter_execute"*) # openrouter_execute and openrouter_execute_model
+            return 0 ;;
+        "perplexity_execute"*) # v8.24.0: Perplexity Sonar API (Issue #22)
+            return 0 ;;
+        "copilot "*|"copilot")   # GitHub Copilot CLI
+            return 0 ;;
+        "env NODE_NO_WARNINGS="*) # only allow env with NODE_NO_WARNINGS prefix
+            return 0 ;;
+        *)
+            _utils_log ERROR "Invalid agent command: $cmd"
+            return 1
+            ;;
+    esac
+}
+
+
+# [EXTRACTED to lib/secure.sh] sanitize_external_content, secure_tempfile, guard_output

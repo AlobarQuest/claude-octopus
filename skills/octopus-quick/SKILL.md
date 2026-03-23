@@ -1,7 +1,7 @@
 ---
 name: octopus-quick
 version: 1.0.0
-description: Quick execution for ad-hoc tasks without workflow overhead. Use when: Use this skill when user says "quick fix", "ad-hoc task", or explicitly. requests fast execution without full workflow overhead.
+description: "Quick execution for ad-hoc tasks without workflow overhead. Use when: Use this skill when user says \"quick fix\", \"ad-hoc task\", or explicitly. requests fast execution without full workflow overhead."
 ---
 
 # Quick Mode - Lightweight Task Execution ⚡

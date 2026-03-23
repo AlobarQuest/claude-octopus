@@ -129,7 +129,7 @@ done
 suite "4. Human-Only Invocation Flag"
 
 # 4.1-4.5 Check each skill for human_only
-for skill in skill-factory skill-deep-research skill-adversarial-security flow-parallel skill-ship; do
+for skill in skill-factory skill-deep-research skill-security-audit flow-parallel skill-ship; do
   SKILL_FILE="$PLUGIN_DIR/.claude/skills/${skill}.md"
   if grep -q 'invocation: human_only' "$SKILL_FILE"; then
     pass "${skill} has invocation: human_only"

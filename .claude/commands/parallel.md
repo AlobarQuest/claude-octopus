@@ -45,6 +45,7 @@ Key architectural distinction: Task tool subagents don't load plugins. Independe
 ## What You Get
 
 - Work Breakdown Structure (WBS) decomposition
+- Adversarial WBS cross-check to catch missed dependencies and scope overlaps before agents launch
 - Independent `claude -p` processes per work package
 - Full plugin capabilities in each worker
 - Parallel execution with staggered launch

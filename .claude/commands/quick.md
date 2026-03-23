@@ -6,6 +6,8 @@ skill: octopus-quick
 
 # Quick Mode Command
 
+**Your first output line MUST be:** `🐙 Octopus Quick Mode`
+
 Execute ad-hoc tasks without multi-AI orchestration overhead.
 
 ## Usage

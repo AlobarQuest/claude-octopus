@@ -1,7 +1,7 @@
 ---
 name: skill-knowledge-work
 version: 1.0.0
-description: Override context auto-detection (Dev vs Knowledge mode)
+description: "Switch to Knowledge Work mode for research and writing — use when task is non-code focused"
 ---
 
 # Knowledge Work Mode - Context Override Skill
@@ -181,9 +181,44 @@ Just say: "Export this to Word" or "Create a PowerPoint presentation"
 - Correcting persistent misdetection
 - Specific use cases where you know better than auto-detect
 
+## Cross-Task Learnings
+
+At the end of significant work sessions, extract learnings:
+1. What task type was this? (debugging, implementation, research, review)
+2. What approach worked? What failed?
+3. What would you do differently next time?
+
+Store learnings in `.claude-octopus/learnings/<date>-<summary>.json`:
+```json
+{
+  "date": "2026-03-21",
+  "task_type": "debugging",
+  "approach": "Traced the error from the test failure back to the API handler",
+  "outcome": "success",
+  "lesson": "Always check middleware ordering before investigating handler logic"
+}
+```
+
+Each learning file captures: `task_type`, `approach`, `outcome`, and `lesson`.
+
+### Session Start: Relevance Matching
+
+At session start, check for relevant learnings:
+- Read `.claude-octopus/learnings/` directory
+- Match by task type and file patterns relevant to the current work
+- Inject top 3 most relevant learnings as context (within ~5% token budget)
+- Prefer recent learnings; deprioritize those older than 30 days
+
+### Budget Controls
+
+- Maximum 5 learnings extracted per session (prevents runaway writes)
+- Maximum 50 learning files retained (oldest pruned automatically)
+- Relevance injection capped at 3 learnings and ~5% of available token budget
+- Learning files are lightweight JSON (~200 bytes each)
+
 ## Related Skills
 
 - `/octo:discover` - Research workflow (auto-detects context)
-- `/octo:develop` - Build workflow (auto-detects context)  
+- `/octo:develop` - Build workflow (auto-detects context)
 - `/octo:deliver` - Review workflow (auto-detects context)
 - `/octo:docs` - Document export (works in both contexts)

@@ -1,7 +1,7 @@
 ---
 name: sys-configure
 version: 1.0.0
-description: Configure Claude Octopus providers and preferences. Use when: Use this skill when the user wants to "configure Claude Octopus", "setup octopus",. "configure providers", "set up API keys for octopus", or mentions octopus configuration.
+description: "Configure Claude Octopus providers and preferences. Use when: Use this skill when the user wants to \"configure Claude Octopus\", \"setup octopus\",. \"configure providers\", \"set up API keys for octopus\", or mentions octopus configuration."
 ---
 
 # 🐙 Claude Octopus Configuration

@@ -19,22 +19,32 @@ Thanks for your interest in contributing to Claude Octopus! This document provid
 
 ### Prerequisites
 
-- Bash 4.0+ (`bash --version`)
-- Python 3.8+
+- Bash 3.2+ (bash 3.x compatible — no associative arrays)
 - jq (for JSON processing)
-- Codex CLI and Gemini CLI (for full testing)
+- Codex CLI, Gemini CLI, Copilot CLI, Ollama (all optional — for multi-provider testing)
 
 ### Validate Your Changes
 
 ```bash
+# Regenerate shipped plugin artifacts
+bash scripts/build-factory-skills.sh
+
+# Validate plugin against the local Claude CLI
+claude plugin validate .claude-plugin/plugin.json
+
 # Check shell script syntax
 bash -n scripts/orchestrate.sh
+bash -n scripts/lib/*.sh
 
-# Check Python syntax
-python3 -m py_compile scripts/coordinator.py
+# Run test suite
+bash tests/unit/test-openclaw-compat.sh
+bash tests/unit/test-adapter-flags.sh
 
-# Dry-run test
-./scripts/orchestrate.sh -n auto "test prompt"
+# Verify OpenClaw registry in sync
+scripts/build-openclaw.sh --check
+
+# Run full pre-push suite
+bash tests/run-pre-push.sh
 ```
 
 ## Making Changes
@@ -68,11 +78,6 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 - Use functions for reusable logic
 - Add comments for complex sections
 
-**Python:**
-- Follow PEP 8
-- Use type hints
-- Document functions with docstrings
-
 ## Pull Request Process
 
 1. **Create a feature branch** from `main`
@@ -83,8 +88,9 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 ### PR Checklist
 
-- [ ] Code passes syntax validation
-- [ ] Dry-run tests pass
+- [ ] Shell scripts pass `bash -n` check
+- [ ] Tests pass: `bash tests/run-pre-push.sh`
+- [ ] Generated plugin-root skills/commands refreshed and `claude plugin validate .claude-plugin/plugin.json` passes
 - [ ] Documentation updated (if applicable)
 - [ ] CHANGELOG.md updated (for features/fixes)
 - [ ] Commit messages follow conventions

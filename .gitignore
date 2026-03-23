@@ -34,6 +34,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!scripts/lib/
 lib64/
 parts/
 sdist/
@@ -106,3 +107,9 @@ test-results*.xml
 coverage-report.txt
 coverage-report.html
 *.bak
+
+# Environment & secrets
+.env.local
+.env.*.local
+*.key
+*.pem

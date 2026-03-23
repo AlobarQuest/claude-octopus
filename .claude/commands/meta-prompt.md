@@ -5,6 +5,8 @@ description: "Generate an optimized prompt for any task using meta-prompting tec
 
 # /octo:meta-prompt
 
+**Your first output line MUST be:** `🐙 Octopus Meta-Prompt`
+
 Generate well-structured, verifiable prompts using proven meta-prompting techniques.
 
 **Usage:**

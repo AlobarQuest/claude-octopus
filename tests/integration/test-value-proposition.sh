@@ -18,6 +18,11 @@ if [[ ! -f "$ORCHESTRATE" ]]; then
     exit 1
 fi
 
+# Build combined source for searching (orchestrate.sh + lib modules)
+ALL_SRC=$(mktemp)
+cat "$ORCHESTRATE" "${PROJECT_ROOT}/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
+trap 'rm -f "$ALL_SRC"' EXIT
+
 # Test counters
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -98,8 +103,8 @@ test_multi_agent_parallel_execution() {
 
     # Check probe function code directly to avoid dry-run hang
     local probe_code=""
-    if [[ -f "$ORCHESTRATE" ]]; then
-        probe_code=$(grep -A 80 "probe_discover()" "$ORCHESTRATE" 2>/dev/null) || probe_code=""
+    if [[ -f "$ALL_SRC" ]]; then
+        probe_code=$(grep -A 80 "probe_discover()" "$ALL_SRC" 2>/dev/null) || probe_code=""
     fi
 
     ((TESTS_RUN++))
@@ -129,8 +134,8 @@ test_quality_gates_validation() {
 
     # Check tangle function code directly
     local tangle_code=""
-    if [[ -f "$ORCHESTRATE" ]]; then
-        tangle_code=$(grep -A 80 "tangle_develop()" "$ORCHESTRATE" 2>/dev/null) || tangle_code=""
+    if [[ -f "$ALL_SRC" ]]; then
+        tangle_code=$(grep -A 80 "tangle_develop()" "$ALL_SRC" 2>/dev/null) || tangle_code=""
     fi
 
     ((TESTS_RUN++))
@@ -160,8 +165,8 @@ test_multi_perspective_research() {
 
     # Check probe function for multi-perspective logic
     local probe_code=""
-    if [[ -f "$ORCHESTRATE" ]]; then
-        probe_code=$(grep -A 100 "probe_discover()" "$ORCHESTRATE" 2>/dev/null) || probe_code=""
+    if [[ -f "$ALL_SRC" ]]; then
+        probe_code=$(grep -A 100 "probe_discover()" "$ALL_SRC" 2>/dev/null) || probe_code=""
     fi
 
     ((TESTS_RUN++))
@@ -175,7 +180,7 @@ test_multi_perspective_research() {
 
     ((TESTS_RUN++))
     # synthesize_probe_results is defined later in the file; search full file
-    if grep -qE "synthesize_probe_results" "$ORCHESTRATE"; then
+    if grep -qE "synthesize_probe_results" "$ALL_SRC"; then
         echo -e "${GREEN}✓${NC} Probe synthesizes findings from multiple agents"
         ((TESTS_PASSED++))
     else
@@ -192,8 +197,8 @@ test_consensus_building() {
 
     # Check grasp function code directly
     local grasp_code=""
-    if [[ -f "$ORCHESTRATE" ]]; then
-        grasp_code=$(grep -A 80 "grasp_define()" "$ORCHESTRATE" 2>/dev/null) || grasp_code=""
+    if [[ -f "$ALL_SRC" ]]; then
+        grasp_code=$(grep -A 80 "grasp_define()" "$ALL_SRC" 2>/dev/null) || grasp_code=""
     fi
 
     ((TESTS_RUN++))
@@ -223,7 +228,7 @@ test_cost_tracking() {
 
     # Check for cost tracking functions
     local has_cost_tracking=false
-    if grep -q "record_agent_call\|track_usage\|cost" "$ORCHESTRATE"; then
+    if grep -q "record_agent_call\|track_usage\|cost" "$ALL_SRC"; then
         has_cost_tracking=true
     fi
 
@@ -239,8 +244,8 @@ test_workflow_automation() {
 
     # Check embrace function code directly
     local embrace_code=""
-    if [[ -f "$ORCHESTRATE" ]]; then
-        embrace_code=$(grep -A 100 "embrace_full_workflow()" "$ORCHESTRATE" 2>/dev/null) || embrace_code=""
+    if [[ -f "$ALL_SRC" ]]; then
+        embrace_code=$(grep -A 100 "embrace_full_workflow()" "$ALL_SRC" 2>/dev/null) || embrace_code=""
     fi
 
     ((TESTS_RUN++))

@@ -34,14 +34,24 @@ suite() {
 # ─────────────────────────────────────────────────────────────────────
 suite "1. v8.48.0 Flag Declarations"
 
-for flag in SUPPORTS_EXIT_WORKTREE SUPPORTS_AGENT_MODEL_OVERRIDE \
-            SUPPORTS_EFFORT_REDESIGN SUPPORTS_DISABLE_CRON_ENV \
-            SUPPORTS_HIDDEN_HTML_COMMENTS SUPPORTS_BASH_ALLOWLIST_V2 \
-            SUPPORTS_CLEAR_PRESERVES_BG SUPPORTS_TEAM_MODEL_INHERIT_FIX; do
+# 6 of original 8 flags pruned in v9.5 (banner-only). Only AGENT_MODEL_OVERRIDE, EFFORT_REDESIGN, DISABLE_CRON_ENV kept.
+for flag in SUPPORTS_AGENT_MODEL_OVERRIDE \
+            SUPPORTS_EFFORT_REDESIGN SUPPORTS_DISABLE_CRON_ENV; do
   if grep -q "^${flag}=false" "$ORCH"; then
     pass "$flag declared"
   else
     fail "$flag not declared in orchestrate.sh"
+  fi
+done
+
+# Pruned flags should be gone
+for flag in SUPPORTS_EXIT_WORKTREE \
+            SUPPORTS_HIDDEN_HTML_COMMENTS SUPPORTS_BASH_ALLOWLIST_V2 \
+            SUPPORTS_CLEAR_PRESERVES_BG SUPPORTS_TEAM_MODEL_INHERIT_FIX; do
+  if grep -q "^${flag}=false" "$ORCH"; then
+    fail "$flag should have been pruned but still declared"
+  else
+    pass "$flag correctly pruned"
   fi
 done
 
@@ -56,11 +66,10 @@ else
   fail "v2.1.72 version_compare block missing"
 fi
 
-# All 8 flags should be set in the v2.1.72 block
-for flag in SUPPORTS_EXIT_WORKTREE SUPPORTS_AGENT_MODEL_OVERRIDE \
+# Remaining flags should be set in the v2.1.72 block (6 pruned in v9.5, 4 kept + PARALLEL_TOOL_RESILIENCE)
+for flag in SUPPORTS_AGENT_MODEL_OVERRIDE \
             SUPPORTS_EFFORT_REDESIGN SUPPORTS_DISABLE_CRON_ENV \
-            SUPPORTS_HIDDEN_HTML_COMMENTS SUPPORTS_BASH_ALLOWLIST_V2 \
-            SUPPORTS_CLEAR_PRESERVES_BG SUPPORTS_TEAM_MODEL_INHERIT_FIX; do
+            SUPPORTS_PARALLEL_TOOL_RESILIENCE; do
   if grep -A 15 'version_compare.*2\.1\.72' "$ORCH" | grep -q "${flag}=true"; then
     pass "$flag set in v2.1.72 block"
   else
@@ -73,22 +82,24 @@ done
 # ─────────────────────────────────────────────────────────────────────
 suite "3. Log Lines"
 
-if grep -q 'Exit Worktree.*Agent Model Override.*Effort Redesign' "$ORCH"; then
-  pass "v2.1.72 flags logged (line 1)"
+# After v9.5 pruning, banner line consolidated: Agent Model Override | Effort Redesign | Disable Cron Env
+if grep -q 'Agent Model Override.*Effort Redesign.*Disable Cron Env' "$ORCH"; then
+  pass "v2.1.72 remaining flags logged"
 else
-  fail "v2.1.72 flags not logged"
+  fail "v2.1.72 remaining flags not logged"
 fi
 
-if grep -q 'Disable Cron Env.*Hidden HTML Comments.*Bash Allowlist V2' "$ORCH"; then
-  pass "v2.1.72 flags logged (line 2)"
+# Pruned flags should NOT be in log lines
+if grep -q 'Exit Worktree:.*SUPPORTS_EXIT_WORKTREE' "$ORCH"; then
+  fail "Pruned Exit Worktree still in log lines"
 else
-  fail "v2.1.72 flags not logged"
+  pass "Pruned Exit Worktree removed from log lines"
 fi
 
-if grep -q 'Clear Preserves BG.*Team Model Inherit Fix' "$ORCH"; then
-  pass "v2.1.72 flags logged (line 3)"
+if grep -q 'Clear Preserves BG:.*SUPPORTS_CLEAR_PRESERVES_BG' "$ORCH"; then
+  fail "Pruned Clear Preserves BG still in log lines"
 else
-  fail "v2.1.72 flags not logged"
+  pass "Pruned Clear Preserves BG removed from log lines"
 fi
 
 # ─────────────────────────────────────────────────────────────────────

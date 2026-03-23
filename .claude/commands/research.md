@@ -5,6 +5,8 @@ description: Deep research with multi-source synthesis and comprehensive analysi
 
 # Research - Deep Multi-AI Research
 
+**Your first output line MUST be:** `🐙 Octopus Research`
+
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
 ### MANDATORY COMPLIANCE — DO NOT SKIP
@@ -77,6 +79,37 @@ An alias for the **Discover** phase of the Double Diamond methodology:
 - Comprehensive analysis of options
 - Trade-off evaluation
 - Best practice identification
+
+## Report Format (MANDATORY)
+
+All research output MUST follow this structured template:
+
+### 1. Executive Summary
+2-3 sentences summarizing the key finding. What does the reader need to know?
+
+### 2. Key Themes
+Group findings into 3-5 themes. Each theme gets a heading, a summary paragraph, and supporting evidence.
+
+### 3. Key Takeaways
+Numbered list of actionable insights. Each takeaway should be specific enough to act on.
+
+### 4. Sources & Attribution
+Every factual claim MUST cite its source. Claims without sources should be explicitly marked as **inference** or **opinion**. Format:
+- `[Source: <name/URL>]` for verified facts
+- `[Inference]` for conclusions drawn from evidence
+- `[Opinion: <provider>]` for provider-specific perspectives
+
+### 5. Methodology
+Brief note on what was researched, which providers contributed, and any gaps or limitations:
+- Providers used and their roles
+- Search queries or exploration paths taken
+- Areas not covered or needing deeper investigation
+- Cross-references checked and gaps acknowledged
+
+### Quality Rules
+- **No unsourced claims** — every assertion needs either a source or an explicit [Inference] tag
+- **Acknowledge gaps** — if a topic wasn't fully explored, say so
+- **Cross-reference** — when providers disagree, note the disagreement and which evidence is stronger
 
 ## Natural Language Examples
 

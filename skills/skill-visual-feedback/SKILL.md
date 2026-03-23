@@ -1,7 +1,7 @@
 ---
 name: skill-visual-feedback
 version: 1.0.0
-description: Process screenshot-based UI/UX feedback to fix visual issues. Use when: AUTOMATICALLY ACTIVATE when user provides visual feedback:. "[Image X] The /settings should be Y". "[Image X] these button styles need to be fixed"
+description: "Process screenshot-based UI/UX feedback to fix visual issues. Use when: AUTOMATICALLY ACTIVATE when user provides visual feedback:. \"[Image X] The /settings should be Y\". \"[Image X] these button styles need to be fixed\""
 ---
 
 # Visual Feedback Processing

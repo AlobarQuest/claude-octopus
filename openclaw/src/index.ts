@@ -78,11 +78,12 @@ const VALID_AUTONOMY = new Set(["supervised", "semi-autonomous", "autonomous"]);
 async function executeOrchestrate(
   command: string,
   prompt: string,
-  flags: string[] = []
+  flags: string[] = [],
+  postFlags: string[] = []
 ): Promise<string> {
   const orchestrateSh = resolve(PLUGIN_ROOT, "scripts/orchestrate.sh");
-  // Flags MUST come before the command per orchestrate.sh's argument parser
-  const args = [...flags, command, prompt];
+  // Global flags MUST come before the command; subcommand flags go after
+  const args = [...flags, command, ...postFlags, prompt];
 
   try {
     const { stdout, stderr } = await execFileAsync(orchestrateSh, args, {
@@ -100,6 +101,14 @@ async function executeOrchestrate(
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
         GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+        PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
+        // Ollama Anthropic-compatible path (ANTHROPIC_BASE_URL=http://localhost:11434)
+        ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+        ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
+        // GitHub Copilot CLI auth (checked in precedence order by copilot CLI)
+        COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
+        GH_TOKEN: process.env.GH_TOKEN,
+        GITHUB_TOKEN: process.env.GITHUB_TOKEN,
         // Octopus config
         ...Object.fromEntries(
           Object.entries(process.env).filter(([k]) =>
@@ -159,8 +168,11 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
         Type.Number({ description: "Minimum quality score (0-100)", default: 75 })
       ),
     }),
-    run: async (params) =>
-      executeOrchestrate("tangle", params.prompt as string),
+    run: async (params) => {
+      const qt = params.quality_threshold as number | undefined;
+      const flags = qt !== undefined && qt !== 75 ? ["-q", `${qt}`] : [];
+      return executeOrchestrate("tangle", params.prompt as string, flags);
+    },
   },
   {
     name: "octopus_deliver",
@@ -204,30 +216,29 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
     name: "octopus_debate",
     label: "Octopus Debate",
     description:
-      "Three-way AI debate between Claude, Gemini, and Codex on any topic.",
+      "Four-way AI debate between Claude, Sonnet, Gemini, and Codex on any topic.",
     parameters: Type.Object({
       question: Type.String({ description: "Question to debate" }),
       rounds: Type.Optional(
         Type.Number({ default: 1, description: "Debate rounds" })
       ),
-      style: Type.Optional(
+      mode: Type.Optional(
         Type.Union(
           [
-            Type.Literal("quick"),
-            Type.Literal("thorough"),
-            Type.Literal("adversarial"),
-            Type.Literal("collaborative"),
+            Type.Literal("cross-critique"),
+            Type.Literal("blinded"),
           ],
-          { default: "quick" }
+          { default: "cross-critique", description: "Evaluation mode: cross-critique (ACH falsification) or blinded (independent)" }
         )
       ),
     }),
+    // orchestrate.sh grapple parses -r/--mode AFTER the subcommand, not as global flags
     run: async (params) =>
-      executeOrchestrate("grapple", params.question as string, [
+      executeOrchestrate("grapple", params.question as string, [], [
         "-r",
         `${params.rounds ?? 1}`,
-        "-d",
-        (params.style as string) ?? "quick",
+        "--mode",
+        (params.mode as string) ?? "cross-critique",
       ]),
   },
   {

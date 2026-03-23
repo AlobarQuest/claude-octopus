@@ -29,9 +29,25 @@ Skill(skill: "flow-deliver", ...)  ❌ Wrong! Internal skill name, not resolvabl
 Task(subagent_type: "octo:deliver", ...)  ❌ Wrong! This is a skill, not an agent type
 ```
 
+### Auto Code Review & E2E Verification (MANDATORY)
+
+**Before presenting results, launch two verification agents in parallel:**
+
+```
+Agent(model: "sonnet", subagent_type: "feature-dev:code-reviewer", run_in_background: true,
+  description: "Code review: deliver phase",
+  prompt: "Review code changes from this session. Check git diff. Report only high-confidence bugs, security issues, and convention violations.")
+
+Agent(model: "sonnet", run_in_background: true,
+  description: "E2E test: deliver phase",
+  prompt: "Run the project's test suite. Report tests passed/failed and any regressions.")
+```
+
+Include findings in the results below. Flag test failures or HIGH-confidence issues prominently.
+
 ### Post-Completion — Interactive Next Steps
 
-**CRITICAL: After the skill completes, you MUST ask the user what to do next. Do NOT end the session silently.**
+**CRITICAL: After the skill completes, you MUST present review/test findings AND ask the user what to do next. Do NOT end the session silently.**
 
 ```javascript
 AskUserQuestion({

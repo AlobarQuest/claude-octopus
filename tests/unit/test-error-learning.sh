@@ -9,10 +9,14 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Error Learning Loop"
 
-test_record_error_function_exists() {
-    test_case "record_error function exists in orchestrate.sh"
+# Combined search target (functions decomposed to lib/ in v9.7.7+)
+ALL_SRC=$(mktemp)
+cat "$PROJECT_ROOT/scripts/orchestrate.sh" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 
-    if grep -q "record_error()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+test_record_error_function_exists() {
+    test_case "record_error function exists"
+
+    if grep -q "record_error()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "record_error function not found"
@@ -20,9 +24,9 @@ test_record_error_function_exists() {
 }
 
 test_search_similar_errors_function_exists() {
-    test_case "search_similar_errors function exists in orchestrate.sh"
+    test_case "search_similar_errors function exists"
 
-    if grep -q "search_similar_errors()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "search_similar_errors()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "search_similar_errors function not found"
@@ -30,9 +34,9 @@ test_search_similar_errors_function_exists() {
 }
 
 test_flag_repeat_error_function_exists() {
-    test_case "flag_repeat_error function exists in orchestrate.sh"
+    test_case "flag_repeat_error function exists"
 
-    if grep -q "flag_repeat_error()" "$PROJECT_ROOT/scripts/orchestrate.sh"; then
+    if grep -q "flag_repeat_error()" "$ALL_SRC"; then
         test_pass
     else
         test_fail "flag_repeat_error function not found"
@@ -43,7 +47,7 @@ test_error_format() {
     test_case "Error format includes required fields"
 
     local func_body
-    func_body=$(sed -n '/^record_error()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^record_error()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "### ERROR |" && \
        echo "$func_body" | grep -q "Task:" && \
@@ -60,7 +64,7 @@ test_error_cap_100() {
     test_case "Error log capped at 100 entries"
 
     local func_body
-    func_body=$(sed -n '/^record_error()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^record_error()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "100"; then
         test_pass
@@ -72,7 +76,7 @@ test_error_cap_100() {
 test_error_recording_in_spawn_agent() {
     test_case "record_error called in spawn_agent failure path"
 
-    if grep -B 2 -A 2 "record_error.*spawn_agent" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "record_error"; then
+    if grep -B 2 -A 2 "record_error.*spawn_agent" "$ALL_SRC" | grep -q "record_error"; then
         test_pass
     else
         test_fail "record_error not called in spawn_agent failure"
@@ -82,7 +86,7 @@ test_error_recording_in_spawn_agent() {
 test_error_context_in_retries() {
     test_case "Error context injected into retry prompts"
 
-    if grep -A 60 "retry_failed_subtasks()" "$PROJECT_ROOT/scripts/orchestrate.sh" | grep -q "search_similar_errors\|RETRY CONTEXT"; then
+    if grep -A 60 "retry_failed_subtasks()" "$ALL_SRC" | grep -q "search_similar_errors\|RETRY CONTEXT"; then
         test_pass
     else
         test_fail "Error context not injected into retries"
@@ -93,7 +97,7 @@ test_repeat_detection() {
     test_case "Repeat error detection triggers structured decision"
 
     local func_body
-    func_body=$(sed -n '/^flag_repeat_error()/,/^}/p' "$PROJECT_ROOT/scripts/orchestrate.sh")
+    func_body=$(sed -n '/^flag_repeat_error()/,/^}/p' "$ALL_SRC")
 
     if echo "$func_body" | grep -q "write_structured_decision" && echo "$func_body" | grep -q "ge 2"; then
         test_pass
@@ -127,4 +131,5 @@ test_error_context_in_retries
 test_repeat_detection
 test_dry_run_with_error_learning
 
+rm -f "$ALL_SRC"
 test_summary

@@ -117,18 +117,22 @@ test_orchestrate_can_source_deps() {
         return 1
     fi
 
-    # Extract just the source lines and try to execute them in a subshell
-    # This validates that all source targets resolve correctly
-    local result
-    result=$(SCRIPT_DIR="$(dirname "$ORCHESTRATE")" bash -c '
-        set -euo pipefail
-        SCRIPT_DIR="'"$(dirname "$ORCHESTRATE")"'"
-        # Source each dependency
-        while IFS= read -r line; do
-            eval "$line" 2>/dev/null || echo "FAIL: $line"
-        done < <(grep "^source " "'"$ORCHESTRATE"'" 2>/dev/null)
-        echo "OK"
-    ' 2>&1 | tail -1)
+    # Extract source lines and verify each target file exists
+    # Note: we check file existence rather than eval-sourcing because sourced
+    # scripts may reference variables only set during orchestrate.sh runtime
+    local result="OK"
+    local script_dir
+    script_dir=$(dirname "$ORCHESTRATE")
+    while IFS= read -r line; do
+        # Extract the path from 'source "$SCRIPT_DIR/lib/foo.sh" 2>/dev/null || true' etc.
+        # Strip 'source ', quotes, and any trailing redirects/error handling
+        local src_path
+        src_path=$(echo "$line" | sed 's/^source //' | sed 's/"//g' | sed 's/ *2>.*//' | sed "s|\\\$SCRIPT_DIR|$script_dir|g" | sed "s|\${SCRIPT_DIR}|$script_dir|g")
+        if [[ ! -f "$src_path" ]]; then
+            result="FAIL: $line (resolved to $src_path)"
+            break
+        fi
+    done < <(grep "^source " "$ORCHESTRATE" 2>/dev/null)
 
     if [[ "$result" == "OK" ]]; then
         test_pass

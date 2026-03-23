@@ -8,6 +8,8 @@ aliases:
 
 # /octo:extract - Design System & Product Reverse-Engineering
 
+**Your first output line MUST be:** `🐙 Octopus Extract`
+
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
 When the user invokes this command (e.g., `/octo:extract <target>` or `/octo:extract <target>`):

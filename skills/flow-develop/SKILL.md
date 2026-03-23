@@ -1,8 +1,12 @@
 ---
 name: flow-develop
 version: 1.0.0
-description: Multi-AI implementation using Codex and Gemini CLIs (Double Diamond Develop phase). Use when: AUTOMATICALLY ACTIVATE when user requests building or implementation:. "build X" or "implement Y" or "create Z". "develop a feature for X"
+description: "Multi-AI implementation using Codex and Gemini CLIs (Double Diamond Develop phase). Use when: AUTOMATICALLY ACTIVATE when user requests building or implementation:. \"build X\" or \"implement Y\" or \"create Z\". \"develop a feature for X\""
 ---
+
+> This file is generated from a template. Edit the `.tmpl` file, not this file directly.
+> Run `scripts/gen-skill-docs.sh` to regenerate after changes.
+
 
 ## Pre-Development: State Check
 
@@ -51,7 +55,57 @@ Analyze the user's prompt and project to determine context:
 
 **Capture context_type = "Dev" or "Knowledge"**
 
-**DO NOT PROCEED TO STEP 2 until context determined.**
+#### Step 1b: Detect Dev Subtype (if Dev context)
+
+When context_type is Dev, determine the **subtype** to inject domain-appropriate quality guidance into the prompt sent to providers. Append the matching supplement text after the user's prompt.
+
+| Subtype | Trigger keywords | Quality supplement |
+|---------|-----------------|-------------------|
+| `frontend-ui` | "page", "widget", "component", "UI", "HTML", "CSS", "form", "dashboard", "layout" | See **frontend-ui enrichment** below. |
+| `cli-tool` | "CLI", "command-line", "terminal", "script", "flag", "argument" | Help text via --help flag. Meaningful exit codes (0 success, 1 user error, 2 system error). Stdin/stdout/stderr used correctly. Argument validation with clear error messages. |
+| `api-service` | "API", "endpoint", "REST", "GraphQL", "gRPC", "server", "route" | Input validation at boundaries. Consistent error response format. Auth/authz on every endpoint. Rate limiting consideration. OpenAPI/schema documentation. |
+| `infra` | "deploy", "terraform", "docker", "CI", "pipeline", "Kubernetes", "helm" | Idempotent operations. Secrets never hardcoded. Rollback path documented. Health checks included. |
+| `data` | "ETL", "pipeline", "migration", "schema", "database", "SQL" | Idempotent migrations. Backup/rollback strategy. Data validation at ingestion. |
+| `general` | Default if no subtype matches | No supplement — use base implementer persona only. |
+
+#### frontend-ui enrichment
+
+When `frontend-ui` subtype is detected, do TWO things:
+
+**A. Inject quality supplement into the prompt:**
+Self-contained files preferred. Accessibility: ARIA labels, keyboard nav, 44px touch targets (WCAG 2.5.5). Safe DOM: createElement over innerHTML. Progressive enhancement: feature-detect APIs (navigator.share, localStorage) with fallbacks. Persist user prefs via localStorage.
+
+**B. Pull design intelligence from BM25 (if available):**
+
+Before calling orchestrate.sh, check if the design intelligence engine exists and query it for relevant design context:
+
+```bash
+SEARCH_PY="${CLAUDE_PLUGIN_ROOT}/vendors/ui-ux-pro-max-skill/src/ui-ux-pro-max/scripts/search.py"
+if [[ -f "$SEARCH_PY" ]]; then
+    # Detect relevant domains from the prompt
+    design_context=""
+    # Style query — what visual style fits this task?
+    style_hit=$(python3 "$SEARCH_PY" "<user's task description>" --domain style --top 1 2>/dev/null || true)
+    [[ -n "$style_hit" ]] && design_context+="Design style suggestion: $style_hit\n"
+    # UX query — relevant UX patterns
+    ux_hit=$(python3 "$SEARCH_PY" "<user's task description>" --domain ux --top 1 2>/dev/null || true)
+    [[ -n "$ux_hit" ]] && design_context+="UX pattern: $ux_hit\n"
+    # Append to prompt if hits found
+    if [[ -n "$design_context" ]]; then
+        # Append design intelligence to the orchestrate.sh prompt
+        prompt="${prompt}\n\nDesign intelligence (from BM25 search):\n${design_context}"
+    fi
+fi
+```
+
+This gives providers concrete design guidance (style direction, UX patterns) without requiring the user to run `/octo:design-ui-ux` separately. If the search engine isn't installed, implementation proceeds with the quality supplement only.
+
+**How to apply:** When calling orchestrate.sh in Step 4, append the quality supplement (and design intelligence if available) to the prompt:
+```
+orchestrate.sh develop "<user prompt>\n\nQuality requirements for this deliverable:\n<supplement text>\n<design intelligence if found>"
+```
+
+**DO NOT PROCEED TO STEP 2 until context determined.** Context type (Dev vs Knowledge) and dev subtype determine which quality supplements and design intelligence to inject — wrong context wastes provider credits on irrelevant analysis.
 
 ---
 
@@ -63,6 +117,12 @@ Analyze the user's prompt and project to determine context:
 command -v codex &> /dev/null && codex_status="Available ✓" || codex_status="Not installed ✗"
 command -v gemini &> /dev/null && gemini_status="Available ✓" || gemini_status="Not installed ✗"
 ```
+
+**Validation:**
+- If BOTH Codex and Gemini unavailable -> STOP, suggest: `/octo:setup`
+- If ONE unavailable -> Continue with available provider(s)
+- If BOTH available -> Proceed normally
+
 
 **Display this banner BEFORE orchestrate.sh execution:**
 
@@ -94,12 +154,7 @@ Provider Availability:
 ⏱️  Estimated Time: 3-7 minutes
 ```
 
-**Validation:**
-- If BOTH Codex and Gemini unavailable → STOP, suggest: `/octo:setup`
-- If ONE unavailable → Continue with available provider(s)
-- If BOTH available → Proceed normally
-
-**DO NOT PROCEED TO STEP 3 until banner displayed.**
+**DO NOT PROCEED TO STEP 3 until banner displayed.** The banner shows users which providers will run and what costs they'll incur — starting API calls without this visibility violates cost transparency.
 
 ---
 
@@ -142,6 +197,7 @@ fi
 - Technology stack and patterns decided
 - Scope and requirements defined
 - Research findings to inform implementation
+- If **claude-mem** is installed, its MCP tools (`search`, `timeline`, `get_observations`) are available — use them to check for related past implementation patterns
 
 **DO NOT PROCEED TO STEP 4 until state read.**
 
@@ -156,12 +212,12 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.sh develop "<user's implementation req
 ```
 
 **CRITICAL: You are PROHIBITED from:**
-- ❌ Implementing directly without calling orchestrate.sh
+- ❌ Implementing directly without calling orchestrate.sh — single-model implementation misses alternative approaches and edge cases that Codex and Gemini surface through independent analysis
 - ❌ Writing code without multi-provider perspectives
 - ❌ Claiming you're "simulating" the workflow
 - ❌ Proceeding to Step 4 without running this command
 
-**This is NOT optional. You MUST use the Bash tool to invoke orchestrate.sh.**
+**You MUST use the Bash tool to invoke orchestrate.sh.**
 
 #### What Users See During Execution (v7.16.0+)
 
@@ -202,7 +258,7 @@ cat "$SYNTHESIS_FILE"
 1. Report error to user
 2. Show logs from `~/.claude-octopus/logs/`
 3. DO NOT proceed with presenting results
-4. DO NOT substitute with direct implementation
+4. DO NOT substitute with direct implementation — fallback to single-model implementation skips the multi-provider synthesis that catches design flaws early
 
 ---
 
@@ -281,6 +337,8 @@ Analyze the user's prompt and project to determine context:
 
 **Also check**: Does the project have `package.json`, `Cargo.toml`, etc.? (suggests Dev Context)
 
+**Step 1b: Detect Dev Subtype** — see EXECUTION CONTRACT Step 1b above for subtype table and quality supplements. Append the matching supplement to the prompt before calling orchestrate.sh.
+
 ### Step 2: Output Context-Aware Banner
 
 **For Dev Context:**
@@ -307,7 +365,15 @@ Providers:
 🔵 Claude - Integration and quality review
 ```
 
+| Indicator | Provider | Cost Source |
+|-----------|----------|-------------|
+| 🔴 | Codex CLI | User's OPENAI_API_KEY |
+| 🟡 | Gemini CLI | User's GEMINI_API_KEY |
+| 🟣 | Perplexity Sonar | User's PERPLEXITY_API_KEY |
+| 🔵 | Claude | Included with Claude Code |
+
 **This is NOT optional.** Users need to see which AI providers are active and understand they are being charged for external API calls (🔴 🟡).
+
 
 ---
 
@@ -405,16 +471,16 @@ The tangle phase includes automatic quality validation:
 - Best practice validation
 - Implementation completeness
 
-### Step 3b: Handle Agent Continuation (v8.30)
+### Step 3b: Handle Agent Continuation (v9.5 / CC v2.1.77+)
 
 When orchestrate.sh output contains `AGENT_TEAMS_RESUME:${agent_id}:${task_id}:${role}:${phase}`:
 
-1. Use the Agent tool with `resume=${agent_id}` parameter instead of spawning a new agent
-2. Pass the iteration prompt from the resume instruction JSON at `~/.claude-octopus/agent-teams/${task_id}.json`
-3. If resume fails (agent not found or GC'd), fall back to creating a new agent with the full prompt from the instruction file
-4. After the Agent tool returns, store the new agentId via: `bridge_store_agent_id(task_id, returned_agent_id)` in the bridge ledger
+1. Send a message to the existing agent using `SendMessage({to: "${agent_id}", message: "<iteration prompt>"})` — this auto-resumes a stopped agent automatically (CC v2.1.77+)
+2. Read the iteration prompt from the resume instruction JSON at `~/.claude-octopus/agent-teams/${task_id}.json`
+3. If SendMessage returns an error (agent GC'd or not found), fall back to creating a new agent with the full prompt from the instruction file
+4. After the agent responds, store its agentId via: `bridge_store_agent_id(task_id, agent_id)` in the bridge ledger
 
-This enables iterative refinement during tangle retries without losing the agent's prior reasoning context.
+Note: The `Agent(resume: ...)` parameter was removed in CC v2.1.77. Always use `SendMessage` for agent continuation.
 
 ### Step 4: Read Results
 
@@ -604,16 +670,21 @@ The tangle phase automatically runs quality checks via `.claude/hooks/quality-ga
 ./hooks/quality-gate.sh
 ```
 
-**Quality Metrics:**
-- **Security**: SQL injection, XSS, authentication issues
-- **Best Practices**: Error handling, logging, validation
-- **Code Quality**: Complexity, maintainability, documentation
-- **Test Coverage**: Are tests included?
+**Quality Dimensions**:
 
-**Thresholds:**
-- **Score >= 80**: Proceed with implementation
-- **Score 60-79**: Proceed with warnings (address issues)
-- **Score < 60**: Review required before implementation
+| Dimension | Weight | Criteria |
+|-----------|--------|----------|
+| **Code Quality** | 25% | Complexity, maintainability, documentation |
+| **Security** | 35% | OWASP compliance, auth, input validation |
+| **Best Practices** | 20% | Error handling, logging, testing |
+| **Completeness** | 20% | Feature completeness, edge cases |
+
+**Scoring Thresholds**:
+- **90-100**: Excellent - Ready for production
+- **75-89**: Good - Minor improvements recommended
+- **60-74**: Acceptable - Address warnings before deploy
+- **< 60**: Poor - Critical issues must be fixed
+
 
 ---
 
@@ -645,17 +716,70 @@ Before writing code, ensure:
 
 ---
 
+## After Implementation: Auto Code Review & E2E Verification (MANDATORY)
+
+**After implementation completes and before presenting results to the user, you MUST launch two verification agents in parallel.** Do NOT skip this step or ask the user whether to run it — it is automatic.
+
+### Launch both agents simultaneously:
+
+**Agent 1 — Code Review (Sonnet):**
+```
+Agent(
+  model: "sonnet",
+  subagent_type: "feature-dev:code-reviewer",
+  run_in_background: true,
+  description: "Code review: post-develop",
+  prompt: "Review the code changes from this development session. Focus on:
+1. Bugs, logic errors, security vulnerabilities
+2. Hidden dependencies or coupling issues
+3. Whether error handling covers failure modes
+4. Adherence to project conventions (check CLAUDE.md)
+
+Check git diff for the changed files. Report only high-confidence issues."
+)
+```
+
+**Agent 2 — E2E Verification (Sonnet):**
+```
+Agent(
+  model: "sonnet",
+  run_in_background: true,
+  description: "E2E test: post-develop",
+  prompt: "Run end-to-end verification of the development changes:
+1. Run the project's test suite (detect from package.json scripts, Makefile, or pyproject.toml)
+2. Verify no regressions in existing tests
+3. Check that new files are properly integrated (imported, registered, sourced)
+4. Verify the implementation matches the original task requirements
+
+Report: tests passed/failed, any integration issues found."
+)
+```
+
+**After both agents complete:**
+- Present their findings to the user as part of the results
+- If the code reviewer found HIGH-confidence issues, flag them prominently
+- If tests failed, flag before the "what next?" prompt
+- Do NOT block on the review — present findings alongside results
+
+WHY: The user should never have to manually request a code review after development work. Fresh-eyes review from a different model (Sonnet vs Opus) catches issues the implementer is blind to. Running tests automatically catches regressions before the user discovers them.
+
+---
+
 ## After Implementation Checklist
 
 After writing code, ensure:
 
 - [ ] All files created/updated
 - [ ] Code follows recommended patterns from synthesis
+- [ ] Code follows the project's existing commenting conventions (do not add comments unless asked or required by project style)
 - [ ] Security concerns addressed
 - [ ] Error handling implemented
 - [ ] Tests written (if applicable)
-- [ ] Documentation added
-- [ ] User notified of completion
+- [ ] Lint/typecheck commands run (detect from package.json, pyproject.toml, Cargo.toml, Makefile; if not found, ask the user)
+- [ ] If lint/test commands were discovered and not documented in CLAUDE.md, suggest adding them
+- [ ] **Auto code review completed** (Sonnet agent)
+- [ ] **E2E verification completed** (Sonnet agent)
+- [ ] User notified of completion with review findings
 - [ ] Suggest running ink-workflow for validation
 
 ---

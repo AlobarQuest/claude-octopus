@@ -17,6 +17,18 @@ SKILLS_OUT="$PLUGIN_ROOT/skills"
 COMMANDS_SRC="$PLUGIN_ROOT/.claude/commands"
 COMMANDS_OUT="$PLUGIN_ROOT/commands"
 
+normalize_single_line() {
+  printf '%s' "$1" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+yaml_quote() {
+  local value
+  value="$(normalize_single_line "$1")"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '"%s"' "$value"
+}
+
 # Octopus-only frontmatter keys to strip (Factory doesn't understand these)
 STRIP_KEYS="agent|aliases|category|context|cost_optimization|created|execution_mode|invocation|pattern|pre_execution_contract|providers|tags|task_dependencies|task_management|trigger|updated|use_native_tasks|validation_gates|version"
 
@@ -58,6 +70,7 @@ for src in "$SKILLS_SRC"/*.md; do
 
   # Extract description (may be multiline — take first line only for Factory)
   description="$(echo "$frontmatter" | grep "^description:" | head -1 | sed 's/^description: *//' | sed 's/^"//' | sed 's/"$//')"
+  description="$(normalize_single_line "$description")"
 
   # Extract trigger content to enrich description
   trigger=""
@@ -75,6 +88,7 @@ for src in "$SKILLS_SRC"/*.md; do
       factory_desc="$description. Use when: $trigger_hints"
     fi
   fi
+  factory_desc="$(normalize_single_line "$factory_desc")"
 
   # Extract body (everything after second ---)
   body="$(awk 'BEGIN{c=0} /^---$/{c++; if(c==2){found=1; next}} found{print}' "$src")"
@@ -84,14 +98,14 @@ for src in "$SKILLS_SRC"/*.md; do
   mkdir -p "$out_dir"
 
   # Write Factory-compatible SKILL.md
-  cat > "$out_dir/SKILL.md" << SKILLEOF
----
-name: $skill_name
-version: 1.0.0
-description: $factory_desc
----
-$body
-SKILLEOF
+  {
+    echo "---"
+    echo "name: $skill_name"
+    echo "version: 1.0.0"
+    printf 'description: %s\n' "$(yaml_quote "$factory_desc")"
+    echo "---"
+    printf '%s\n' "$body"
+  } > "$out_dir/SKILL.md"
 
   echo "  GEN: $skill_name ($filename)"
   generated=$((generated + 1))
@@ -135,6 +149,7 @@ if [[ -d "$COMMANDS_SRC" ]]; then
 
     # Extract description
     cmd_desc="$(echo "$frontmatter" | grep "^description:" | head -1 | sed 's/^description: *//')"
+    cmd_desc="$(normalize_single_line "$cmd_desc")"
     if [[ -z "$cmd_desc" ]]; then
       echo "  SKIP (no description): $filename"
       cmd_skipped=$((cmd_skipped + 1))
@@ -143,6 +158,7 @@ if [[ -d "$COMMANDS_SRC" ]]; then
 
     # Extract optional Factory-compatible fields (|| true to avoid exit on no-match)
     arg_hint="$(echo "$frontmatter" | grep "^argument-hint:" | head -1 | sed 's/^argument-hint: *//' || true)"
+    arg_hint="$(normalize_single_line "$arg_hint")"
     disable_model="$(echo "$frontmatter" | grep "^disable-model-invocation:" | head -1 | sed 's/^disable-model-invocation: *//' || true)"
     allowed_tools="$(echo "$frontmatter" | grep "^allowed-tools:" | head -1 | sed 's/^allowed-tools: *//' || true)"
 
@@ -152,8 +168,8 @@ if [[ -d "$COMMANDS_SRC" ]]; then
     # Build Factory-compatible command file
     {
       echo "---"
-      echo "description: $cmd_desc"
-      [[ -n "$arg_hint" ]] && echo "argument-hint: $arg_hint"
+      printf 'description: %s\n' "$(yaml_quote "$cmd_desc")"
+      [[ -n "$arg_hint" ]] && printf 'argument-hint: %s\n' "$(yaml_quote "$arg_hint")"
       [[ -n "$disable_model" ]] && echo "disable-model-invocation: $disable_model"
       [[ -n "$allowed_tools" ]] && echo "allowed-tools: $allowed_tools"
       echo "---"
@@ -200,20 +216,21 @@ if [[ -d "$AGENTS_SRC" ]]; then
 
     # Extract key fields
     desc="$(echo "$frontmatter" | grep "^description:" | head -1 | sed 's/^description: *//')"
+    desc="$(normalize_single_line "$desc")"
     model="$(echo "$frontmatter" | grep "^model:" | head -1 | sed 's/^model: *//')"
 
     # Extract body
     body="$(awk 'BEGIN{c=0} /^---$/{c++; if(c==2){found=1; next}} found{print}' "$src")"
 
     # Write Factory-compatible droid definition
-    cat > "$DROIDS_OUT/$out_filename" << DROIDEOF
----
-name: $out_name
-description: $desc
-model: ${model:-inherit}
----
-$body
-DROIDEOF
+    {
+      echo "---"
+      echo "name: $out_name"
+      printf 'description: %s\n' "$(yaml_quote "$desc")"
+      echo "model: ${model:-inherit}"
+      echo "---"
+      printf '%s\n' "$body"
+    } > "$DROIDS_OUT/$out_filename"
 
     echo "  GEN droid: $out_name"
     droid_count=$((droid_count + 1))

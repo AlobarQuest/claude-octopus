@@ -1,28 +1,15 @@
 ---
-description: Systematic debugging with methodical problem investigation
+description: "Systematic debugging with methodical problem investigation"
 ---
 
 # Debug - Systematic Debugging Skill
 
-## 🤖 INSTRUCTIONS FOR CLAUDE
+**Your first output line MUST be:** `🐙 Octopus Debug Mode`
 
-When the user invokes this command (e.g., `/octo:debug <arguments>`):
+## Instructions
 
-**✓ CORRECT - Use the Skill tool:**
-```
-Skill(skill: "octo:debug", args: "<user's arguments>")
-```
-
-**✗ INCORRECT - Do NOT use Task tool:**
-```
-Task(subagent_type: "octo:debug", ...)  ❌ Wrong! This is a skill, not an agent type
-```
-
-**Why:** This command loads the `skill-debug` skill. Skills use the `Skill` tool, not `Task`.
-
----
-
-**Auto-loads the `skill-debug` skill for methodical bug investigation.**
+Read and follow the full skill instructions from:
+`${CLAUDE_PLUGIN_ROOT}/.claude/skills/skill-debug.md`
 
 ## Quick Usage
 

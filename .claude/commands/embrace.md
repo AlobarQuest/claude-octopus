@@ -214,12 +214,42 @@ Use: `--rounds 1 --debate-style collaborative --max-words 200`
 
 3. **Present any non-trivial findings** to user before proceeding to Deliver.
 
+### Step 3d: Auto Code Review & E2E Verification (MANDATORY)
+
+**After the Develop phase completes (and any debate gates), BEFORE presenting results, launch two verification agents in parallel:**
+
+**Agent 1 — Code Review (Sonnet):**
+```
+Agent(
+  model: "sonnet",
+  subagent_type: "feature-dev:code-reviewer",
+  run_in_background: true,
+  description: "Code review: embrace deliver",
+  prompt: "Review all code changes from this embrace workflow session. Check git diff for changed files. Focus on bugs, security, logic errors, and adherence to project conventions. Report only high-confidence issues."
+)
+```
+
+**Agent 2 — E2E Verification (Sonnet):**
+```
+Agent(
+  model: "sonnet",
+  run_in_background: true,
+  description: "E2E test: embrace deliver",
+  prompt: "Run the project's test suite and verify no regressions. Check that new files are properly integrated. Report tests passed/failed and any integration issues."
+)
+```
+
+**After both agents complete**, include their findings in the results presentation below. Flag any HIGH-confidence review issues or test failures prominently.
+
+WHY: Every embrace workflow produces code changes. Automated review by a different model (Sonnet) catches issues the implementation agents missed. Running tests catches regressions before the user ships.
+
 ### Step 4: Present Results & Interactive Next Steps
 
 **CRITICAL: After orchestrate.sh completes, you MUST present results AND ask the user what to do next. Do NOT end the session silently.**
 
 1. Read the result files from `~/.claude-octopus/results/` and present a concise synthesis
-2. **Always ask what to do next using AskUserQuestion:**
+2. Include code review and E2E verification findings from Step 3d
+3. **Always ask what to do next using AskUserQuestion:**
 
 ```javascript
 AskUserQuestion({
