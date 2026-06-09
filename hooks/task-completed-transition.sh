@@ -35,7 +35,9 @@ TOTAL=$(jq -r '.phase_tasks.total // 0' "$SESSION_FILE" 2>/dev/null)
 AUTONOMY=$(jq -r '.autonomy // "supervised"' "$SESSION_FILE" 2>/dev/null)
 COMPLETED=$((COMPLETED + 1))
 
-jq ".phase_tasks.completed = $COMPLETED" "$SESSION_FILE" > "${SESSION_FILE}.tmp" \
+# harden: atomic write — prevents concurrent session corruption
+
+(flock -x 9; jq ".phase_tasks.completed = $COMPLETED" "$SESSION_FILE" > "${SESSION_FILE}") 9>"${SESSION_FILE}.lock".tmp" \
     && mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
 
 # Record metrics
