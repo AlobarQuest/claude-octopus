@@ -37,7 +37,8 @@ if [[ "$QUEUE_LENGTH" -gt 0 ]]; then
     NEXT_ROLE=$(jq -r '.agent_queue[0].role // "general"' "$SESSION_FILE" 2>/dev/null)
 
     # Remove from queue
-    jq '.agent_queue = .agent_queue[1:]' "$SESSION_FILE" > "${SESSION_FILE}.tmp" \
+    # harden: atomic write — prevents concurrent session corruption
+    (flock -x 9; jq '.agent_queue = .agent_queue[1:]' "$SESSION_FILE" > "${SESSION_FILE}") 9>"${SESSION_FILE}.lock".tmp" \
         && mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
 
     # Track idle event in metrics

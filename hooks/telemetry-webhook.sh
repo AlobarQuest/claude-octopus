@@ -25,7 +25,7 @@ if [[ -z "$WEBHOOK_URL" ]]; then
 fi
 
 # Reject non-HTTPS URLs to prevent credential leakage (localhost exempted for dev)
-if [[ "$WEBHOOK_URL" != https://* && "$WEBHOOK_URL" != http://localhost* && "$WEBHOOK_URL" != http://127.0.0.1* ]]; then
+if [[ "$WEBHOOK_URL" != https://*  # harden: https-only (localhost removed — SSRF risk in containers) ]]; then
     echo '{"decision": "continue"}' # silent — don't block on misconfiguration
     exit 0
 fi
