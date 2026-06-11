@@ -181,9 +181,25 @@ display_rich_progress() {
     # Progress bar function
     local bar_width=20
 
+    # Watchdog: every agent already runs under run_with_timeout, so the fleet
+    # should finish within TIMEOUT plus dispatch overhead. A straggler PID that
+    # never reaps (zombie, stuck watcher child) would otherwise block this loop
+    # forever and the synthesis step downstream would never run (bug 260609).
+    local watchdog_limit=$(( ${TIMEOUT:-300} + ${OCTOPUS_PROGRESS_GRACE:-120} ))
+
     while true; do
         local all_done=true
         local completed=0
+
+        if (( $(date +%s) - start_time > watchdog_limit )); then
+            echo ""
+            echo -e "${YELLOW}⚠ Progress watchdog: agents still reported running after ${watchdog_limit}s (timeout ${TIMEOUT:-300}s + grace). Terminating stragglers and continuing to synthesis with completed results.${NC}"
+            local straggler_pid
+            for straggler_pid in "${pids[@]}"; do
+                kill -0 "$straggler_pid" 2>/dev/null && kill -TERM "$straggler_pid" 2>/dev/null || true
+            done
+            break
+        fi
 
         # Clear previous output (move cursor up and clear)
         [[ $completed -gt 0 ]] && printf "\033[%dA" $((total_agents + 4))

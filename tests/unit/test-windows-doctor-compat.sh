@@ -23,7 +23,7 @@ fi
 test_case "doctor commands use portable plugin-root discovery"
 doctor_generated="$(< "$PROJECT_ROOT/.cursor-plugin/commands/octo-doctor.md")"
 if assert_contains "$doctor_generated" 'find "${HOME}/.claude/plugins"' "generated command searches Claude plugin installs" &&
-   assert_contains "$doctor_generated" 'cd "$OCTO_PLUGIN_ROOT" && bash scripts/orchestrate.sh doctor --verbose' "generated command runs doctor from resolved root"; then
+   assert_contains "$doctor_generated" 'bash "$OCTO_PLUGIN_ROOT/scripts/orchestrate.sh" doctor --verbose' "generated command runs doctor from resolved root"; then
     test_pass
 fi
 

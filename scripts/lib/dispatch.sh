@@ -37,6 +37,18 @@ get_agent_command() {
 
     local sandbox_flag="--sandbox ${codex_sandbox}"
 
+    # Spawned `claude --print` subprocesses have no interactive approver, so any
+    # tool that would prompt is silently denied ("Read is blocked in the current
+    # permission mode"). Pre-approve read tools for every role; write-capable
+    # roles additionally accept edits (bug 260609). Comma-joined, no spaces —
+    # downstream `read -ra` word-splits the command string.
+    local claude_perm="--allowed-tools Read,Glob,Grep"
+    case "$role" in
+        implementer|developer)
+            claude_perm="--permission-mode acceptEdits --allowed-tools Read,Glob,Grep,Edit,Write"
+            ;;
+    esac
+
     case "$agent_type" in
         codex|codex-standard|codex-max|codex-mini|codex-general)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
@@ -74,11 +86,17 @@ get_agent_command() {
             case "${OCTOPUS_GEMINI_SANDBOX:-headless}" in
                 interactive|prompt-mode) gemini_flags="" ;;
             esac
+            # Gemini confines reads to its cwd workspace; prompts that reference
+            # files outside PROJECT_ROOT (e.g. /tmp staging dirs) need those dirs
+            # whitelisted. Comma-separated, no spaces (read -ra word-splitting).
+            if [[ -n "${OCTOPUS_GEMINI_INCLUDE_DIRS:-}" ]]; then
+                gemini_flags="${gemini_flags} --include-directories ${OCTOPUS_GEMINI_INCLUDE_DIRS}"
+            fi
             echo "${gemini_env} ${gemini_exec} ${model} ${gemini_flags}"
             ;;
         codex-review) echo "codex exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
-        claude) echo "claude${_BARE_OPT} --print" ;;                         # Claude Sonnet 4.6
-        claude-sonnet) echo "claude${_BARE_OPT} --print --model sonnet" ;;        # Claude Sonnet explicit
+        claude) echo "claude${_BARE_OPT} --print ${claude_perm}" ;;                         # Claude Sonnet 4.6
+        claude-sonnet) echo "claude${_BARE_OPT} --print --model sonnet ${claude_perm}" ;;        # Claude Sonnet explicit
         claude-opus)
             # v9.42: Opus alias — resolves to 4.8 on Claude Code v2.1.154+,
             # then 4.7/4.6 on older hosts or enterprise backends.
@@ -96,19 +114,19 @@ get_agent_command() {
                 opus_effort="$OCTOPUS_EFFORT_OVERRIDE"
             fi
             if [[ "${SUPPORTS_EFFORT_COMMAND:-false}" == "true" || "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" ]]; then
-                echo "env CLAUDE_CODE_EFFORT_LEVEL=${opus_effort} claude${_BARE_OPT} --print --model opus"
+                echo "env CLAUDE_CODE_EFFORT_LEVEL=${opus_effort} claude${_BARE_OPT} --print --model opus ${claude_perm}"
             else
-                echo "claude${_BARE_OPT} --print --model opus"
+                echo "claude${_BARE_OPT} --print --model opus ${claude_perm}"
             fi
             ;;
         claude-opus-fast)
             if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" && "${OCTOPUS_OPUS_MODEL:-}" != "claude-opus-4.6" ]]; then
-                echo "claude${_BARE_OPT} --print --model claude-opus-4-8 --fast"
+                echo "claude${_BARE_OPT} --print --model claude-opus-4-8 --fast ${claude_perm}"
             else
-                echo "claude${_BARE_OPT} --print --model claude-opus-4-6 --fast"
+                echo "claude${_BARE_OPT} --print --model claude-opus-4-6 --fast ${claude_perm}"
             fi
             ;;
-        claude-opus-legacy) echo "claude${_BARE_OPT} --print --model claude-opus-4-6" ;; # v9.23: explicit 4.6 opt-in
+        claude-opus-legacy) echo "claude${_BARE_OPT} --print --model claude-opus-4-6 ${claude_perm}" ;; # v9.23: explicit 4.6 opt-in
         openrouter) echo "openrouter_execute" ;;                 # OpenRouter API (v4.8)
         openrouter-glm5) echo "openrouter_execute_model z-ai/glm-5" ;;           # v8.11.0: GLM-5 via OpenRouter
         openrouter-kimi) echo "openrouter_execute_model moonshotai/kimi-k2.5" ;; # v8.11.0: Kimi K2.5 via OpenRouter

@@ -84,7 +84,6 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "discipline", description: "Toggle discipline mode — auto-invoke verification, brainstorming-before-coding, and review checks", type: "command", file: "discipline.md" },
   { name: "discover", description: "Discovery phase - Multi-AI research and exploration", type: "command", file: "discover.md" },
   { name: "docs", description: "Document delivery with export to PPTX, DOCX, PDF formats", type: "command", file: "docs.md" },
-  { name: "doctor", description: "Run diagnostic checks on the Octopus plugin and environment", type: "command", file: "doctor.md" },
   { name: "embrace", description: "Full Double Diamond workflow - Research → Define → Develop → Deliver", type: "command", file: "embrace.md" },
   { name: "extract", description: "Design System & Product Reverse-Engineering - Extract tokens, components, architecture, and PRDs from codebases or live products", type: "command", file: "extract.md" },
   { name: "factory", description: "[advanced] Dark Factory Mode - Spec-in, software-out autonomous pipeline", type: "command", file: "factory.md" },
@@ -119,4 +118,4 @@ export const SKILL_REGISTRY: SkillRegistryEntry[] = [
   { name: "unfreeze", description: "[advanced] Remove freeze mode edit restriction", type: "command", file: "unfreeze.md" },
 ];
 
-export const REGISTRY_COUNT = 102;
+export const REGISTRY_COUNT = 101;

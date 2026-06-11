@@ -90,4 +90,13 @@ done
 
 echo ""
 echo "================================================================"
+echo "Passed: $PASSED  Failed: $FAILED"
+
+# v9.44: propagate failures — this test previously always exited 0 because it
+# tracks its own counters instead of the shared harness's (bug: doctor.md
+# regression in 6e0cb4a shipped despite three red ✗ assertions above).
+if [ "$FAILED" -gt 0 ]; then
+    echo "RESULT: FAIL ($FAILED check(s) failed)"
+    exit 1
+fi
 test_summary

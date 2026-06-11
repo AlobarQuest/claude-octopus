@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [9.44.0] - 2026-06-10
+
+
+### Added
+
+- **Claude Fable 5 (Mythos-class) as opt-in premium Claude model.** `claude-fable-5` added to the model catalog and pricing tables ($10/$50 per MTok, 1M context, 128K output). Opt in by pinning `OCTOPUS_OPUS_MODEL=claude-fable-5`; never auto-selected because it costs 2x Opus 4.8 and Anthropic retains prompts/outputs up to 30 days for safety classifiers.
+- **GPT-5.5 and GPT-5.5 Pro in the model catalog** with June 2026 pricing ($5/$30 and $30/$180 per MTok).
+
+### Changed
+
+- **GPT-5.5 is the new Codex premium default.** Hard-coded resolver fallbacks, role-to-agent mappings (architect, reviewer, implementer), provider-routing defaults, and config templates move from `gpt-5.4` to `gpt-5.5`. `gpt-5.4` remains in the catalog and is still selectable.
+
+### Fixed
+
+- **Duplicate case arms made pricing/catalog entries unreachable.** `gpt-5.4-mini` was listed twice in `models.sh` and `cost.sh`; `cost.sh` also had a duplicate `o3` arm with a conflicting price and a stray duplicate `gpt-5.4` arm. Dead arms removed.
+- **`test-command-frontmatter.sh` always exited 0.** It tracked failures in its own counter but never propagated them, so three red assertions (doctor.md registration) shipped unnoticed. The test now exits 1 when any check fails.
+- **Native `/doctor` was shadowed again.** `.claude/commands/doctor.md` and its plugin.json registration (regressed in 6e0cb4a) are removed, restoring the v9.41.0 decision to keep diagnostics in `skills/skill-doctor` and `orchestrate.sh doctor`. OpenClaw registry rebuilt; README command count updated.
+
+## [9.43.0] - 2026-06-09
+
+
+### Fixed
+
+- **Providers dispatched from the plugin directory instead of the user's project** (bug report 260609). Command docs instructed `cd "${HOME}/.claude-octopus/plugin"` before `orchestrate.sh`, so `PROJECT_ROOT=$PWD` pointed at the plugin checkout and every provider sandbox (codex workdir, gemini workspace, copilot, claude subagents) could not read project files. Docs now invoke `orchestrate.sh` by absolute path from the project directory; `orchestrate.sh` falls back to `CLAUDE_PROJECT_DIR` (or warns) when invoked from inside the plugin install; `OCTOPUS_PROJECT_DIR` added as an explicit override; `probe-single` now cds to `PROJECT_ROOT` before dispatch.
+- **Bare provider names in `routing.roles`/`routing.phases` leaked as model names.** `"researcher": "perplexity"` produced `codex exec --model perplexity` (400 on ChatGPT accounts) and a gemini model 404 plus fallback retry. The model resolver now treats bare provider names as provider routes and falls through to the provider's own default model.
+- **Spawned `claude --print` subagents could not Read files** ("Read is blocked in the current permission mode"). Claude dispatch commands now pre-approve `Read,Glob,Grep`; implementer/developer roles additionally run with `--permission-mode acceptEdits` and `Edit,Write`.
+- **`probe-synthesis-*.md` never written when a straggler stream blocked the wait loop.** `display_rich_progress` now has a watchdog (`TIMEOUT` + `OCTOPUS_PROGRESS_GRACE`, default 120s grace) that terminates stragglers and proceeds to synthesis with completed results.
+- **Perplexity failures were silent** (empty result file, "(no output captured)", no error). Curl failures, timeouts, and empty or contentless responses now log errors and fail the agent; the empty-output placeholder names the provider and points at `doctor`.
+
+### Added
+
+- `OCTOPUS_GEMINI_INCLUDE_DIRS` — comma-separated directories appended to gemini dispatch as `--include-directories`, for prompts referencing files outside `PROJECT_ROOT` (e.g. `/tmp` staging dirs).
+- `tests/unit/test-orchestrate-cwd-routing.sh` — behavioral coverage for cwd resolution, role-routing model leaks, claude permission flags, gemini include dirs, and the docs cd-pattern regression.
+
 ## [9.42.3] - 2026-06-03
 
 ### Changed

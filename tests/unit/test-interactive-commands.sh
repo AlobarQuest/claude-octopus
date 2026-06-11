@@ -22,7 +22,9 @@ fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # CC-facing files (.claude/commands/) are what the agent actually reads.
 # These are the authoritative versions that must have interactive UX.
-INTERACTIVE_CC_COMMANDS="setup model-config doctor"
+# v9.44: doctor removed — /octo:doctor was retired in v9.41.0 to preserve
+# Claude Code's native /doctor (diagnostics live in skills/skill-doctor).
+INTERACTIVE_CC_COMMANDS="setup model-config"
 
 echo "=== Interactive Command Requirements ==="
 

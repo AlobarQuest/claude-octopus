@@ -203,12 +203,24 @@ perplexity_execute() {
 EOF
 )
 
-    local response
-    response=$(curl -s -X POST "https://api.perplexity.ai/chat/completions" \
+    local response curl_exit=0
+    # -sS: silent progress but keep curl errors on stderr so the spawn error log
+    # captures them; --max-time bounds hung connections. A failed or empty
+    # request previously fell through silently and produced an empty result
+    # file with "(no output captured)" and no actionable error (bug 260609).
+    response=$(curl -sS --max-time "${OCTOPUS_PERPLEXITY_TIMEOUT:-120}" -X POST "https://api.perplexity.ai/chat/completions" \
         -H "Authorization: Bearer ${PERPLEXITY_API_KEY}" \
         -H "Content-Type: application/json" \
         -H "Connection: keep-alive" \
-        -d "$payload")
+        -d "$payload") || curl_exit=$?
+    if [[ $curl_exit -ne 0 ]]; then
+        log ERROR "Perplexity request failed (curl exit ${curl_exit}, model=$model)"
+        return 1
+    fi
+    if [[ -z "$response" ]]; then
+        log ERROR "Perplexity returned an empty response body (model=$model)"
+        return 1
+    fi
 
     # Extract content from OpenAI-compatible nested path .choices[0].message.content.
     # See openrouter_execute_model above — same bug, same fix (issue #307).
@@ -228,8 +240,11 @@ EOF
             log ERROR "Perplexity error: ${BASH_REMATCH[1]}"
             return 1
         fi
-        log WARN "Empty response from Perplexity ($model)"
+        # Content missing but no parseable error — surface the raw body and fail
+        # so the agent is marked FAILED instead of "succeeding" with JSON noise.
+        log ERROR "Perplexity response had no message content ($model)"
         echo "$response"
+        return 1
     else
         local result
         result=$(echo "$content" | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g')

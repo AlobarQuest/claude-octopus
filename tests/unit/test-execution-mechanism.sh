@@ -99,7 +99,10 @@ EMBRACE="$PROJECT_ROOT/.claude/commands/embrace.md"
 if [[ -f "$EMBRACE" ]]; then
     missing_dispatches=()
     for workflow in probe grasp tangle ink; do
-        if ! grep -q "orchestrate.sh ${workflow}" "$EMBRACE" 2>/dev/null; then
+        # Accept both the legacy bare form (`orchestrate.sh probe`) and the
+        # quoted absolute-path form (`orchestrate.sh" probe`) introduced when
+        # the docs stopped cd-ing into the plugin (bug 260609).
+        if ! grep -qE "orchestrate\.sh\"? ${workflow}" "$EMBRACE" 2>/dev/null; then
             missing_dispatches+=("$workflow")
         fi
     done

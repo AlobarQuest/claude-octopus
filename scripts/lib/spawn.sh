@@ -832,7 +832,7 @@ ${heuristic_ctx}"
             elif [[ -s "$raw_output" ]]; then
                 cat "$raw_output" >> "$result_file"
             else
-                echo "(no output captured)" >> "$result_file"
+                echo "(no output captured — ${agent_type} produced no stdout; check provider auth/config with 'orchestrate.sh doctor')" >> "$result_file"
             fi
             echo '```' >> "$result_file"
             echo "" >> "$result_file"

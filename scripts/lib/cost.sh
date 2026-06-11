@@ -831,15 +831,16 @@ get_cost_tier_for_subscription() {
 get_model_pricing() {
     local model="$1"
     case "$model" in
-        # OpenAI GPT-5.x models (v8.39.0: updated to Mar 2026 pricing)
+        # OpenAI GPT-5.x models (v9.44: updated to Jun 2026 pricing)
+        gpt-5.5)                echo "5.00:30.00" ;;   # v9.44: GPT-5.5 (OAuth + API) — new premium default
+        gpt-5.5-pro)            echo "30.00:180.00" ;; # v9.44: GPT-5.5 Pro (API-key only)
         gpt-5.4)                echo "2.50:15.00" ;;   # v8.39.0: GPT-5.4 (OAuth + API)
         gpt-5.4-pro)            echo "30.00:180.00" ;; # v8.39.0: GPT-5.4 Pro (API-key only)
         gpt-5.3-codex)          echo "1.75:14.00" ;;
         gpt-5.3-codex-spark)    echo "1.75:14.00" ;;   # Spark - same API price, Pro-only
         gpt-5.2-codex)          echo "1.75:14.00" ;;
         gpt-5.1-codex-max)      echo "1.25:10.00" ;;
-        gpt-5.4-mini)       echo "0.25:2.00" ;;    # v8.39.0: Budget (renamed from gpt-5.4-mini)
-        gpt-5.4-mini)     echo "0.25:2.00" ;;    # v8.39.0: Fixed pricing ($0.30/$1.25 → $0.25/$2.00), alias
+        gpt-5.4-mini)           echo "0.25:2.00" ;;    # v8.39.0: Budget tier
         gpt-5)                  echo "1.25:10.00" ;;   # v8.39.0: GPT-5 base
         gpt-5.2)                echo "1.75:14.00" ;;
         gpt-5.1)                echo "1.25:10.00" ;;
@@ -847,9 +848,7 @@ get_model_pricing() {
         # OpenAI Reasoning models (v8.9.0; v8.39.0: added o3-pro, o3-mini — all API-key only)
         o3)                     echo "2.00:8.00" ;;
         o3-pro)                 echo "20.00:80.00" ;;  # v8.39.0: API-key only
-        o3)                echo "1.10:4.40" ;;
         o3-mini)                echo "1.10:4.40" ;;    # v8.39.0: API-key only
-        gpt-5.4)           echo "2.50:15.00" ;;
         # Google Gemini 3.0 models
         gemini-3.1-pro-preview)   echo "2.50:10.00" ;;
         gemini-3-flash-preview) echo "0.25:1.00" ;;
@@ -857,6 +856,7 @@ get_model_pricing() {
         # Claude models
         claude-sonnet-4.5)      echo "3.00:15.00" ;;
         claude-sonnet-4.6)      echo "3.00:15.00" ;;   # v8.17: Sonnet 4.6 (same pricing as 4.5)
+        claude-fable-5)         echo "10.00:50.00" ;;  # v9.44: Fable 5 (Mythos-class) — opt-in, 1M ctx, 128K output
         claude-opus-4.8)        echo "5.00:25.00" ;;   # v9.42: Opus 4.8 — same standard price as 4.7
         claude-opus-4.8-fast)   echo "10.00:50.00" ;;  # v9.42: Fast mode - 2x cost for ~2.5x output speed
         claude-opus-4.7)        echo "5.00:25.00" ;;   # legacy current-minus-one

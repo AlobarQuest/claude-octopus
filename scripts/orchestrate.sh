@@ -61,8 +61,28 @@ fi
 # Keep debug flag defined even when nounset is enabled by sourced scripts.
 OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
 
-# Workspace location - uses home directory for global installation
+# Workspace location — the directory whose files dispatched providers must read.
+# Callers historically `cd` into the plugin install before invoking orchestrate.sh,
+# which sandboxed every provider (codex workdir, gemini workspace) to the plugin
+# checkout instead of the user's project, so no provider could read project files.
+# Resolution order: OCTOPUS_PROJECT_DIR > CLAUDE_PROJECT_DIR (when PWD is inside
+# the plugin install) > PWD. The -d/--dir flag still overrides at arg parse.
 PROJECT_ROOT="${PWD}"
+if [[ -n "${OCTOPUS_PROJECT_DIR:-}" ]]; then
+    PROJECT_ROOT="${OCTOPUS_PROJECT_DIR}"
+else
+    _octo_pwd_phys="$(pwd -P)"
+    if [[ "${_octo_pwd_phys}" == "${PLUGIN_DIR}" || "${_octo_pwd_phys}" == "${PLUGIN_DIR}/"* ]]; then
+        if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
+            PROJECT_ROOT="${CLAUDE_PROJECT_DIR}"
+        else
+            printf 'WARN: orchestrate.sh invoked from inside the plugin install (%s).\n' "${_octo_pwd_phys}" >&2
+            printf 'WARN: dispatched providers will be sandboxed here and cannot read your project files.\n' >&2
+            printf 'WARN: run from your project directory, or pass -d <project-dir> / set OCTOPUS_PROJECT_DIR.\n' >&2
+        fi
+    fi
+    unset _octo_pwd_phys
+fi
 
 # Source state manager utilities
 source "${SCRIPT_DIR}/state-manager.sh"

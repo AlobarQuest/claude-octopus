@@ -30,6 +30,13 @@ probe_single_agent() {
 
     mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
 
+    # Dispatch from the user's project so provider sandboxes (codex workdir,
+    # gemini workspace) can read project files (bug 260609). probe-single runs
+    # in its own orchestrate.sh process, so cd here cannot leak to other work.
+    if [[ -n "${PROJECT_ROOT:-}" && -d "$PROJECT_ROOT" ]]; then
+        cd "$PROJECT_ROOT" || log "WARN" "probe_single_agent: cannot cd to PROJECT_ROOT=$PROJECT_ROOT"
+    fi
+
     # Determine role and phase
     local role="researcher"
     local phase="probe"

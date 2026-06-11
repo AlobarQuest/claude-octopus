@@ -15,7 +15,7 @@
 
 # Agent configurations
 # Models (Mar 2026) - Premium defaults for Design Thinking workflows:
-# - OpenAI GPT-5.x: gpt-5.4 (premium, OAuth+API), gpt-5.4-pro (API-key only), gpt-5.3-codex, gpt-5.3-codex-spark (fast),
+# - OpenAI GPT-5.x: gpt-5.5 (premium, OAuth+API), gpt-5.4-pro (API-key only), gpt-5.3-codex, gpt-5.3-codex-spark (fast),
 # [EXTRACTED to lib/dispatch.sh in v9.7.7]
 
 # NOTE: get_agent_command_array() removed in v9.7.7 — was dead code with broken
@@ -161,7 +161,7 @@ migrate_provider_config() {
         
         # Extract existing model preferences to seed v3.0
         local codex_model gemini_model
-        codex_model=$(jq -r '.providers.codex.model // .providers.codex.default // "gpt-5.4"' "$config_file")
+        codex_model=$(jq -r '.providers.codex.model // .providers.codex.default // "gpt-5.5"' "$config_file")
         gemini_model=$(jq -r '.providers.gemini.model // .providers.gemini.default // "gemini-3.1-pro-preview"' "$config_file")
         
         cat > "$tmp_file" << EOF
@@ -170,11 +170,11 @@ migrate_provider_config() {
   "providers": {
     "codex": {
       "default": "$codex_model",
-      "fallback": "gpt-5.4",
-      "spark": "gpt-5.4",
+      "fallback": "gpt-5.5",
+      "spark": "gpt-5.5",
       "mini": "gpt-5.4-mini",
       "reasoning": "o3",
-      "large_context": "gpt-5.4"
+      "large_context": "gpt-5.5"
     },
     "gemini": {
       "default": "$gemini_model",
@@ -236,13 +236,13 @@ EOF
         local replacement=""
         case "$current_val" in
             claude-sonnet-4-5|claude-sonnet-4-5-20250514|claude-3-5-sonnet*|claude-sonnet-4*)
-                if [[ "$path" == *codex* ]]; then replacement="gpt-5.4"; fi ;;
+                if [[ "$path" == *codex* ]]; then replacement="gpt-5.5"; fi ;;
             gemini-2.0-flash-thinking*|gemini-2.0-flash-exp*|gemini-exp-*)
                 replacement="gemini-3-flash-preview" ;;
             gemini-2.0-pro*|gemini-1.5-pro*|gemini-pro)
                 replacement="gemini-3.1-pro-preview" ;;
             gpt-4o*|gpt-4-turbo*|gpt-4-*|o1-*|chatgpt-*)
-                replacement="gpt-5.4" ;;
+                replacement="gpt-5.5" ;;
         esac
 
         if [[ -n "$replacement" ]]; then
@@ -290,7 +290,7 @@ set_provider_model() {
     if ! validate_model_name "$model"; then
         echo "ERROR: Invalid model name: '$model'" >&2
         echo "  Model names must not contain shell metacharacters (spaces, ;, |, &, \$, \`, quotes)" >&2
-        echo "  Examples: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4.6" >&2
+        echo "  Examples: gpt-5.5, gemini-3.1-pro-preview, claude-opus-4.6" >&2
         return 1
     fi
 
@@ -302,12 +302,12 @@ set_provider_model() {
   "version": "3.0",
   "providers": {
     "codex": {
-      "default": "gpt-5.4",
-      "fallback": "gpt-5.4",
-      "spark": "gpt-5.4",
+      "default": "gpt-5.5",
+      "fallback": "gpt-5.5",
+      "spark": "gpt-5.5",
       "mini": "gpt-5.4-mini",
       "reasoning": "o3",
-      "large_context": "gpt-5.4"
+      "large_context": "gpt-5.5"
     },
     "gemini": {
       "default": "gemini-3.1-pro-preview",
