@@ -38,7 +38,7 @@ if [[ "$QUEUE_LENGTH" -gt 0 ]]; then
 
     # Remove from queue
     # harden: atomic write — prevents concurrent session corruption
-    (flock -x 9; jq '.agent_queue = .agent_queue[1:]' "$SESSION_FILE" > "${SESSION_FILE}") 9>"${SESSION_FILE}.lock".tmp" \
+    (flock -x 9; jq '.agent_queue = .agent_queue[1:]' "$SESSION_FILE" > "${SESSION_FILE}.tmp") 9>"${SESSION_FILE}.lock" \
         && mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
 
     # Track idle event in metrics
