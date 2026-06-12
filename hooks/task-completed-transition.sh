@@ -37,7 +37,7 @@ COMPLETED=$((COMPLETED + 1))
 
 # harden: atomic write — prevents concurrent session corruption
 
-(flock -x 9; jq ".phase_tasks.completed = $COMPLETED" "$SESSION_FILE" > "${SESSION_FILE}") 9>"${SESSION_FILE}.lock".tmp" \
+(flock -x 9; jq ".phase_tasks.completed = $COMPLETED" "$SESSION_FILE" > "${SESSION_FILE}.tmp") 9>"${SESSION_FILE}.lock" \
     && mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
 
 # Record metrics

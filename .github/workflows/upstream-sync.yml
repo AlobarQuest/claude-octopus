@@ -60,6 +60,28 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python3 .github/scripts/security-harden.py
 
+      # Guard: the hardening pass rewrites shell scripts textually. If any rewrite
+      # produces invalid bash, fail loudly here instead of opening a clean PR that
+      # silently ships broken hooks (regression: harden bot emitted unbalanced
+      # quotes / a comment inside [[ ]], breaking 3 hooks — caught only post-merge).
+      - name: Validate shell syntax after hardening
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          status=0
+          while IFS= read -r -d '' f; do
+            if ! bash -n "$f" 2>/tmp/synerr; then
+              echo "::error file=$f::invalid bash syntax after hardening"
+              sed 's/^/    /' /tmp/synerr
+              status=1
+            fi
+          done < <(find hooks .claude-plugin/hooks .claude/hooks bin scripts \
+                     -type f \( -name '*.sh' -o -name '*.bash' \) -print0 2>/dev/null)
+          if [ "$status" -ne 0 ]; then
+            echo "Shell syntax validation failed — see errors above. Not opening PR."
+            exit 1
+          fi
+          echo "All shell scripts pass bash -n."
+
       - name: Open or update PR
         if: steps.check.outputs.has_changes == 'true'
         env:
