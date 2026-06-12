@@ -112,10 +112,13 @@ _127_COND = re.compile(
     r'\s*&&\s*"\$\{?(?:OCTOPUS_)?WEBHOOK_URL\}?"\s+!=\s+["\']?http://127\.0\.0\.1[^\s\]]*["\']?',
     re.IGNORECASE,
 )
-# Locates the if-line that starts the webhook validation block
+# Locates the if-line that starts the webhook validation block.
+# Anchored at line start with a captured indent (group 1) so the annotation can be
+# placed on its own line above the `if` — appending it inline would land the comment
+# inside the `[[ ]]`, where `#` is not a comment and breaks the conditional.
 _WEBHOOK_GUARD_LINE = re.compile(
-    r'if\s+\[\[\s+"\$\{?(?:OCTOPUS_)?WEBHOOK_URL\}?"\s+!=\s+https://\*',
-    re.IGNORECASE,
+    r'^([ \t]*)(if\s+\[\[\s+"\$\{?(?:OCTOPUS_)?WEBHOOK_URL\}?"\s+!=\s+https://\*)',
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -143,9 +146,12 @@ def fix2_webhook_https_only():
             did_change = True
 
         if did_change:
-            # Annotate the surviving guard line so the intent is clear
+            # Annotate the surviving guard on its own line above the `if` so intent
+            # is clear without injecting a comment into the `[[ ]]` conditional.
             def annotate_guard(m):
-                return m.group(0).rstrip() + '  # harden: https-only (localhost removed — SSRF risk in containers)'
+                indent = m.group(1)
+                return (indent + '# harden: https-only (localhost removed — SSRF risk in containers)\n'
+                        + indent + m.group(2))
             new_content = _WEBHOOK_GUARD_LINE.sub(annotate_guard, new_content, count=1)
             save(path, new_content)
             patched.append(path)
@@ -166,9 +172,13 @@ def fix2_webhook_https_only():
 # ---------------------------------------------------------------------------
 
 # Matches simple single-line writes:  cmd > "$SESSION_FILE"  or  cmd > "...session.json"
+# The (?:\.[A-Za-z0-9_]+)* tail captures any extension on the redirect target (e.g.
+# "${SESSION_FILE}.tmp") as part of group 4. Without it the match stopped at the
+# closing brace, orphaning the `.tmp"` fragment and producing unbalanced quotes
+# (`9>"${SESSION_FILE}.lock".tmp"`).
 _SESSION_WRITE = re.compile(
     r'^(\s*)((?:(?:echo|printf)\s+[^|>\n]+|jq\s+[^|>\n]+))\s*(>>?)\s*'
-    r'("?\$\{?[A-Za-z_]*(?:SESSION|session)[A-Za-z_]*(?:FILE|PATH|JSON)?\}?"?'
+    r'("?\$\{?[A-Za-z_]*(?:SESSION|session)[A-Za-z_]*(?:FILE|PATH|JSON)?\}?(?:\.[A-Za-z0-9_]+)*"?'
     r'|"[^"]*session\.json")',
     re.MULTILINE,
 )
@@ -229,6 +239,33 @@ def fix3_session_locking():
         ))
 
     return patched
+
+
+# ---------------------------------------------------------------------------
+# Validation gate
+# ---------------------------------------------------------------------------
+
+def validate_shell_syntax():
+    """`bash -n` every shell file we rewrote; abort before committing if any is broken.
+
+    Fail closed: the hardening fixes rewrite shell textually, so a regex bug can
+    emit invalid bash. A broken rewrite must never reach git — exit non-zero so the
+    workflow step fails loudly instead of opening a PR that silently ships broken hooks.
+    """
+    broken = []
+    for path in changed_files:
+        if not path.endswith(('.sh', '.bash')):
+            continue
+        result = subprocess.run(['bash', '-n', path], capture_output=True, text=True)
+        if result.returncode != 0:
+            broken.append((path, result.stderr.strip()))
+
+    if broken:
+        print('\n❌ Hardening produced invalid bash — aborting without commit:\n',
+              file=sys.stderr)
+        for path, err in broken:
+            print('  ' + path + ':\n    ' + err.replace('\n', '\n    '), file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +333,7 @@ f3 = fix3_session_locking()
 write_report(f1, f2, f3)
 
 if changed_files:
+    validate_shell_syntax()   # fail closed: never commit/push invalid bash
     commit_and_push()
     print('\nHardening committed and pushed to upstream-sync.')
 else:
