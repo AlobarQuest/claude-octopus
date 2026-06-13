@@ -28,13 +28,18 @@ jobs:
       - name: Check for upstream changes
         id: check
         run: |
-          UPSTREAM=$(git rev-parse upstream/main)
-          LOCAL=$(git rev-parse origin/main)
-          if [ "$UPSTREAM" = "$LOCAL" ]; then
+          # Gate on real upstream commits the fork is MISSING, not on SHA
+          # inequality. Fork main is permanently diverged from upstream (it
+          # carries fork-owned CI commits upstream will never have), so the
+          # SHAs are never equal — comparing them fired a "phantom" sync PR
+          # every night even when upstream shipped nothing. rev-list counts
+          # only commits in upstream/main not reachable from origin/main, so
+          # it is 0 once a real sync has been merged.
+          COUNT=$(git rev-list origin/main..upstream/main --count)
+          if [ "$COUNT" -eq 0 ]; then
             echo "No new upstream commits — nothing to do."
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
-            COUNT=$(git rev-list origin/main..upstream/main --count)
             echo "Found $COUNT new upstream commit(s)."
             echo "has_changes=true" >> $GITHUB_OUTPUT
           fi
