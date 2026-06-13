@@ -1,0 +1,29 @@
+name: Harden Bot Self-Test
+
+# Runs the security-harden.py unit tests whenever the hardener or its tests
+# change. The hardener rewrites trust-critical shell (hooks/, scripts/) during
+# every upstream sync; a regex regression has shipped broken output twice and
+# was caught only at PR review. This gives that feedback at edit time instead.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/security-harden.py'
+      - '.github/scripts/test_security_harden.py'
+      - '.github/workflows/harden-selftest.yml'
+  pull_request:
+    paths:
+      - '.github/scripts/security-harden.py'
+      - '.github/scripts/test_security_harden.py'
+      - '.github/workflows/harden-selftest.yml'
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run hardener unit tests
+        run: python3 .github/scripts/test_security_harden.py

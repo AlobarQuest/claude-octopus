@@ -54,6 +54,13 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python3 .github/scripts/ai_security_review.py
 
+      # Gate the hardener's own logic before it rewrites real hooks. The unit
+      # tests pin invariants (e.g. session flock keys off the canonical file,
+      # never the .tmp staging path) that have silently regressed twice before.
+      - name: Self-test hardening logic
+        if: steps.check.outputs.has_changes == 'true'
+        run: python3 .github/scripts/test_security_harden.py
+
       - name: Apply security hardening patches
         if: steps.check.outputs.has_changes == 'true'
         env:

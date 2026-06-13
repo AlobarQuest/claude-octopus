@@ -336,15 +336,22 @@ def write_report(f1, f2, f3):
 # Main
 # ---------------------------------------------------------------------------
 
-f1 = fix1_setx_guards()
-f2 = fix2_webhook_https_only()
-f3 = fix3_session_locking()
+def main():
+    f1 = fix1_setx_guards()
+    f2 = fix2_webhook_https_only()
+    f3 = fix3_session_locking()
 
-write_report(f1, f2, f3)
+    write_report(f1, f2, f3)
 
-if changed_files:
-    validate_shell_syntax()   # fail closed: never commit/push invalid bash
-    commit_and_push()
-    print('\nHardening committed and pushed to upstream-sync.')
-else:
-    print('\nNo changes needed.')
+    if changed_files:
+        validate_shell_syntax()   # fail closed: never commit/push invalid bash
+        commit_and_push()
+        print('\nHardening committed and pushed to upstream-sync.')
+    else:
+        print('\nNo changes needed.')
+
+
+# Guarded so the fix functions can be imported by test_security_harden.py
+# without triggering the git operations in commit_and_push().
+if __name__ == '__main__':
+    main()
