@@ -175,7 +175,9 @@ def fix2_webhook_https_only():
 # The (?:\.[A-Za-z0-9_]+)* tail captures any extension on the redirect target (e.g.
 # "${SESSION_FILE}.tmp") as part of group 4. Without it the match stopped at the
 # closing brace, orphaning the `.tmp"` fragment and producing unbalanced quotes
-# (`9>"${SESSION_FILE}.lock".tmp"`).
+# (`9>"${SESSION_FILE}.lock".tmp"`). NOTE: the write target may thus be a staging
+# path; the lock name is derived separately (trailing .tmp stripped) so all writers
+# of one session file share a single lock — see fix3_session_locking.
 _SESSION_WRITE = re.compile(
     r'^(\s*)((?:(?:echo|printf)\s+[^|>\n]+|jq\s+[^|>\n]+))\s*(>>?)\s*'
     r'("?\$\{?[A-Za-z_]*(?:SESSION|session)[A-Za-z_]*(?:FILE|PATH|JSON)?\}?(?:\.[A-Za-z0-9_]+)*"?'
@@ -218,9 +220,17 @@ def fix3_session_locking():
             redir = m.group(3)
             target = m.group(4).strip('"')
 
+            # The lock must key off the *canonical* session file, not the write
+            # target. Atomic-write hooks stage to "$SESSION_FILE.tmp" before mv'ing
+            # into place; keying the lock on the staging path (".tmp.lock") gives
+            # each such hook a different lock from hooks that write the session file
+            # directly ("$SESSION_FILE.lock"), so flock stops serializing them at all.
+            # Strip a trailing .tmp so every writer of a given session file shares one lock.
+            lock_base = re.sub(r'\.tmp$', '', target)
+
             replacement = (
                 indent + '# harden: atomic write — prevents concurrent session corruption\n'
-                + indent + '(flock -x 9; ' + cmd + ' ' + redir + ' "' + target + '") 9>"' + target + '.lock"'
+                + indent + '(flock -x 9; ' + cmd + ' ' + redir + ' "' + target + '") 9>"' + lock_base + '.lock"'
             )
             new_content = new_content[:m.start()] + replacement + new_content[m.end():]
             did_patch = True
