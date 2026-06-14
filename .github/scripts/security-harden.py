@@ -121,6 +121,27 @@ _WEBHOOK_GUARD_LINE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Once the localhost code conditions are removed, an upstream comment like
+# "... (localhost exempted for dev)" is false — the hardened guard rejects
+# localhost too. Strip that stale localhost parenthetical from comment lines so
+# the hardened output is self-consistent AND deterministic: otherwise the comment
+# keeps diverging from fork main and re-conflicts on every sync merge.
+_COMMENT_LOCALHOST_PAREN = re.compile(
+    r'[ \t]*\([^)]*(?:localhost|127\.0\.0\.1)[^)]*\)', re.IGNORECASE
+)
+
+
+def _strip_stale_localhost_comments(text):
+    out = []
+    for line in text.split('\n'):
+        stripped = line.lstrip()
+        # Only rewrite comment lines, and never our own "# harden:" annotation
+        # (it legitimately says "(localhost removed …)").
+        if stripped.startswith('#') and not stripped.startswith('# harden:'):
+            line = _COMMENT_LOCALHOST_PAREN.sub('', line)
+        out.append(line)
+    return '\n'.join(out)
+
 
 def fix2_webhook_https_only():
     patched = []
@@ -146,6 +167,10 @@ def fix2_webhook_https_only():
             did_change = True
 
         if did_change:
+            # Drop the now-false localhost parenthetical from the descriptive
+            # comment BEFORE adding our annotation (so the annotation's own
+            # "(localhost removed …)" is never touched).
+            new_content = _strip_stale_localhost_comments(new_content)
             # Annotate the surviving guard on its own line above the `if` so intent
             # is clear without injecting a comment into the `[[ ]]` conditional.
             def annotate_guard(m):

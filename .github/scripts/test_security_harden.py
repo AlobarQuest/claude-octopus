@@ -132,6 +132,75 @@ class Fix3LockNaming(unittest.TestCase):
         self.assertIn('flock -x 9', self._read('a.sh'))
 
 
+class Fix2WebhookHttpsOnly(unittest.TestCase):
+    # Mirrors upstream telemetry-webhook.sh: localhost-exempting guard + a comment
+    # whose "(localhost exempted for dev)" becomes false once hardened. The hardener
+    # must remove the code conditions AND normalize the stale comment so its output
+    # is deterministic (== fork main) and stops re-conflicting every sync.
+    UPSTREAM = (
+        '#!/usr/bin/env bash\n'
+        'WEBHOOK_URL="${OCTOPUS_WEBHOOK_URL:-}"\n'
+        '# Reject non-HTTPS URLs to prevent credential leakage (localhost exempted for dev)\n'
+        'if [[ "$WEBHOOK_URL" != https://* && "$WEBHOOK_URL" != http://localhost* '
+        '&& "$WEBHOOK_URL" != http://127.0.0.1* ]]; then\n'
+        '    echo continue\n'
+        'fi\n'
+    )
+
+    def setUp(self):
+        self.mod = load_module()
+        self.prev_cwd = os.getcwd()
+        self.tmp = tempfile.mkdtemp()
+        os.chdir(self.tmp)
+        os.makedirs('hooks')
+
+    def tearDown(self):
+        os.chdir(self.prev_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _harden(self, content):
+        self.mod.changed_files.clear()
+        self.mod.skipped.clear()
+        with open('hooks/telemetry-webhook.sh', 'w') as fh:
+            fh.write(content)
+        self.mod.fix2_webhook_https_only()
+        with open('hooks/telemetry-webhook.sh') as fh:
+            return fh.read()
+
+    def test_localhost_conditions_removed(self):
+        out = self._harden(self.UPSTREAM)
+        self.assertNotIn('http://localhost', out)
+        self.assertNotIn('http://127.0.0.1', out)
+        self.assertIn('if [[ "$WEBHOOK_URL" != https://* ]]; then', out)
+
+    def test_stale_localhost_comment_normalized(self):
+        # The regression that re-conflicted every sync: the descriptive comment
+        # must lose its now-false localhost parenthetical.
+        out = self._harden(self.UPSTREAM)
+        self.assertIn('# Reject non-HTTPS URLs to prevent credential leakage\n', out)
+        self.assertNotIn('localhost exempted for dev', out)
+
+    def test_harden_annotation_not_clobbered(self):
+        # The annotation legitimately contains "(localhost removed …)"; the comment
+        # normalizer must NOT strip its parenthetical.
+        out = self._harden(self.UPSTREAM)
+        self.assertIn('# harden: https-only (localhost removed — SSRF risk in containers)', out)
+
+    def test_output_is_valid_bash(self):
+        out = self._harden(self.UPSTREAM)
+        with open('hooks/out.sh', 'w') as fh:
+            fh.write(out)
+        result = subprocess.run(['bash', '-n', 'hooks/out.sh'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_idempotent_on_already_hardened(self):
+        # Running the hardener on its own output must be a no-op (no double-strip,
+        # no re-annotation) — already-hardened fork main must converge, not churn.
+        once = self._harden(self.UPSTREAM)
+        twice = self._harden(once)
+        self.assertEqual(once, twice)
+
+
 if __name__ == '__main__':
     import warnings
     # security-harden.py reads/writes via the open().read() idiom (no context
