@@ -36,7 +36,8 @@ if [[ "${CLAUDE_CODE_REMOTE:-}" == "true" || "${CLAUDE_CODE_WEB:-}" == "true" ||
                     > "$SESSION_FILE" 2>/dev/null || true
             fi
         elif [[ ! -f "$SESSION_FILE" ]]; then
-            printf '{"remote_session":true,"autonomy":"%s"}\n' "$OCTOPUS_AUTONOMY" > "$SESSION_FILE" 2>/dev/null || true
+            # harden: atomic write — prevents concurrent session corruption
+            (flock -x 9; printf '{"remote_session":true,"autonomy":"%s"}\n' "$OCTOPUS_AUTONOMY" > "$SESSION_FILE") 9>"$SESSION_FILE.lock" 2>/dev/null || true
         fi
     fi
 fi
