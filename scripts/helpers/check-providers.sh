@@ -24,6 +24,20 @@ source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/../lib/auth.sh" 2>/dev/null || true   # octo_oauth_token_valid (oco-dar)
 source "${SCRIPT_DIR}/../lib/qwen.sh" 2>/dev/null || true   # qwen_is_usable (oco-dar)
 source "${SCRIPT_DIR}/../lib/events.sh" 2>/dev/null || true  # opt-in JSONL lifecycle stream
+source "${SCRIPT_DIR}/../lib/quota-watcher.sh" 2>/dev/null || true  # octo_quota_is_dead (oco-cbb)
+
+# oco-cbb: report degraded when a key/binary-present provider was marked
+# quota/auth-dead earlier this session (perplexity 401, gemini exhausted), so it
+# is skipped instead of re-dispatched into the same failure + timeout.
+_octo_provider_state() {
+    local provider="$1" present_state="$2"
+    if [[ "$present_state" == "available" ]] && declare -f octo_quota_is_dead >/dev/null 2>&1 \
+       && octo_quota_is_dead "$provider"; then
+        echo "degraded"
+    else
+        echo "$present_state"
+    fi
+}
 
 provider_status() {
     local provider="$1"
@@ -46,8 +60,16 @@ fi
 
 echo "PROVIDER_CHECK_START"
 provider_status "codex" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
-provider_status "gemini" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
-provider_status "perplexity" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+provider_status "gemini" "$(_octo_provider_state gemini "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)")"
+provider_status "agy" "$(command -v agy >/dev/null 2>&1 && echo available || echo missing)"
+# oco-cbb: opt-in proactive probe for API-key providers (perplexity, openrouter).
+# Only runs when OCTOPUS_PREFLIGHT_PROBE=1; result cached via quota-dead marker
+# so subsequent octo_quota_is_dead reads pick it up automatically.
+if [[ "${OCTOPUS_PREFLIGHT_PROBE:-0}" == "1" ]] && declare -f octo_provider_probe >/dev/null 2>&1 \
+   && { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed "perplexity"; }; then
+    [ -n "${PERPLEXITY_API_KEY:-}" ] && octo_provider_probe "perplexity" || true
+fi
+provider_status "perplexity" "$(_octo_provider_state perplexity "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)")"
 provider_status "opencode" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
 provider_status "copilot" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
 # qwen: binary-only is not enough — an expired OAuth token (free tier EOL
@@ -65,5 +87,9 @@ fi
 provider_status "qwen" "$qwen_state"
 provider_status "cursor-agent" "$cursor_agent_status"
 provider_status "ollama" "$({ ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed "ollama"; } && command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
-provider_status "openrouter" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+if [[ "${OCTOPUS_PREFLIGHT_PROBE:-0}" == "1" ]] && declare -f octo_provider_probe >/dev/null 2>&1 \
+   && { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed "openrouter"; }; then
+    [ -n "${OPENROUTER_API_KEY:-}" ] && octo_provider_probe "openrouter" || true
+fi
+provider_status "openrouter" "$(_octo_provider_state openrouter "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)")"
 echo "PROVIDER_CHECK_END"

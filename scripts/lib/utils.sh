@@ -168,9 +168,9 @@ validate_agent_command() {
     local cmd="$1"
     local cmd_executable="${cmd%%[[:space:]]*}"
 
-    # Allow the vibe shim only when it is the executable token, not when it
-    # appears later in the command string.
-    if [[ "$cmd_executable" == */vibe-exec.sh ]]; then
+    # Allow helper shims only when they are the executable token, not when they
+    # appear later in the command string.
+    if [[ "$cmd_executable" == */vibe-exec.sh || "$cmd_executable" == */openai-compatible-agent.py ]]; then
         return 0
     fi
 
@@ -179,6 +179,10 @@ validate_agent_command() {
         "codex "*|"codex")
             return 0 ;;
         "gemini "*|"gemini")
+            return 0 ;;
+        "agy "*|"agy")
+            return 0 ;;
+        *"/scripts/helpers/agy-exec.sh")
             return 0 ;;
         "claude "*|"claude")
             return 0 ;;

@@ -11,31 +11,46 @@
 #                    gpt-5.2-codex, gpt-5.4-mini (budget), gpt-5 (standard), gpt-5.2, gpt-5.1
 # - OpenAI Reasoning: o3, o3-pro (API-key only), o3 (API-key only), o3-mini (API-key only)
 # - OpenAI Large Context: gpt-4.1 (1M ctx, API-key only), gpt-5.4 (1M ctx, API-key only)
-# - Google Gemini 3.0: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3-pro-image-preview
+# - Google Gemini 3.0: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3-pro-image (GA; gemini-3-pro-image-preview deprecated 2026-06-25)
+# - Google Antigravity CLI: agy --print stdin dispatch, optional OCTOPUS_AGY_MODEL
 # Note: "API-key only" models require OPENAI_API_KEY; they are NOT available via ChatGPT subscription/OAuth.
 get_agent_command() {
     local agent_type="$1"
     local phase="${2:-}"
     local role="${3:-}"
     local model=""
+    # Allow swapping the claude binary (e.g. clarp = subscription-billed drop-in
+    # for `claude -p`, instead of metered API). Default unchanged. May include
+    # args (word-split downstream by read -ra), e.g. "clarp --strict-mcp-config".
+    local _claude_bin="${OCTOPUS_CLAUDE_BIN:-claude}"
 
     # Configurable sandbox mode (v7.13.1 - Issue #9)
     # Priority: OCTOPUS_CODEX_SANDBOX env var > default (workspace-write)
-    # Valid values: workspace-write (default), write, read-only
+    # Valid values: workspace-write (default), danger-full-access, read-only
     local codex_sandbox="${OCTOPUS_CODEX_SANDBOX:-workspace-write}"
 
     # Security: reject values not in allowlist
     case "$codex_sandbox" in
-        workspace-write|write|read-only)
+        workspace-write|danger-full-access|read-only)
             ;;
         *)
-            log "ERROR" "Invalid OCTOPUS_CODEX_SANDBOX value: '${codex_sandbox}'. Allowed: workspace-write, write, read-only"
+            log "ERROR" "Invalid OCTOPUS_CODEX_SANDBOX value: '${codex_sandbox}'. Allowed: workspace-write, danger-full-access, read-only"
             log "ERROR" "Falling back to workspace-write for safety."
             codex_sandbox="workspace-write"
             ;;
     esac
 
     local sandbox_flag="--sandbox ${codex_sandbox}"
+    local codex_bin="${OCTOPUS_CODEX_BIN:-codex}"
+
+    # Allow advanced users to point Octopus at a codex-compatible wrapper
+    # without replacing codex on PATH. Keep this restricted because the value
+    # is interpolated into the shell command string returned below.
+    if [[ ! "$codex_bin" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+        log "ERROR" "Invalid OCTOPUS_CODEX_BIN value: '${codex_bin}'. Allowed characters: A-Z a-z 0-9 _ . / -"
+        log "ERROR" "Falling back to codex for safety."
+        codex_bin="codex"
+    fi
 
     # Spawned `claude --print` subprocesses have no interactive approver, so any
     # tool that would prompt is silently denied ("Read is blocked in the current
@@ -52,19 +67,19 @@ get_agent_command() {
     case "$agent_type" in
         codex|codex-standard|codex-max|codex-mini|codex-general)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "${codex_bin} exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
             ;;
         codex-spark)  # v8.9.0: Ultra-fast Spark model (1000+ tok/s)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "${codex_bin} exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
             ;;
         codex-reasoning)  # v8.9.0: Reasoning models (o3, o3)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "${codex_bin} exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
             ;;
         codex-large-context)  # v8.9.0: 1M context models (gpt-4.1)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "${codex_bin} exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
             ;;
         gemini|gemini-fast|gemini-image)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
@@ -94,9 +109,12 @@ get_agent_command() {
             fi
             echo "${gemini_env} ${gemini_exec} ${model} ${gemini_flags}"
             ;;
-        codex-review) echo "codex exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
-        claude) echo "claude${_BARE_OPT} --print ${claude_perm}" ;;                         # Claude Sonnet 4.6
-        claude-sonnet) echo "claude${_BARE_OPT} --print --model sonnet ${claude_perm}" ;;        # Claude Sonnet explicit
+        agy|agy-research|antigravity)
+            echo "${PLUGIN_DIR}/scripts/helpers/agy-exec.sh"
+            ;;
+        codex-review) echo "${codex_bin} exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
+        claude) echo "${_claude_bin}${_BARE_OPT} --print ${claude_perm}" ;;                         # Claude Sonnet 4.6
+        claude-sonnet) echo "${_claude_bin}${_BARE_OPT} --print --model sonnet ${claude_perm}" ;;        # Claude Sonnet explicit
         claude-opus)
             # v9.42: Opus alias — resolves to 4.8 on Claude Code v2.1.154+,
             # then 4.7/4.6 on older hosts or enterprise backends.
@@ -114,23 +132,27 @@ get_agent_command() {
                 opus_effort="$OCTOPUS_EFFORT_OVERRIDE"
             fi
             if [[ "${SUPPORTS_EFFORT_COMMAND:-false}" == "true" || "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" ]]; then
-                echo "env CLAUDE_CODE_EFFORT_LEVEL=${opus_effort} claude${_BARE_OPT} --print --model opus ${claude_perm}"
+                echo "env CLAUDE_CODE_EFFORT_LEVEL=${opus_effort} ${_claude_bin}${_BARE_OPT} --print --model opus ${claude_perm}"
             else
-                echo "claude${_BARE_OPT} --print --model opus ${claude_perm}"
+                echo "${_claude_bin}${_BARE_OPT} --print --model opus ${claude_perm}"
             fi
             ;;
         claude-opus-fast)
             if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" && "${OCTOPUS_OPUS_MODEL:-}" != "claude-opus-4.6" ]]; then
-                echo "claude${_BARE_OPT} --print --model claude-opus-4-8 --fast ${claude_perm}"
+                echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-8 --fast ${claude_perm}"
             else
-                echo "claude${_BARE_OPT} --print --model claude-opus-4-6 --fast ${claude_perm}"
+                echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-6 --fast ${claude_perm}"
             fi
             ;;
-        claude-opus-legacy) echo "claude${_BARE_OPT} --print --model claude-opus-4-6 ${claude_perm}" ;; # v9.23: explicit 4.6 opt-in
+        claude-opus-legacy) echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-6 ${claude_perm}" ;; # v9.23: explicit 4.6 opt-in
         openrouter) echo "openrouter_execute" ;;                 # OpenRouter API (v4.8)
         openrouter-glm5) echo "openrouter_execute_model z-ai/glm-5" ;;           # v8.11.0: GLM-5 via OpenRouter
         openrouter-kimi) echo "openrouter_execute_model moonshotai/kimi-k2.5" ;; # v8.11.0: Kimi K2.5 via OpenRouter
         openrouter-deepseek) echo "openrouter_execute_model deepseek/deepseek-r1-0528" ;; # v8.11.0: DeepSeek R1 via OpenRouter
+        openai-compatible-agent)  # Generic OpenAI-compatible tool-loop agent
+            model=$(get_agent_model "$agent_type" "$phase" "$role")
+            echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider generic --model ${model} --cwd ${PWD}"
+            ;;
         perplexity|perplexity-fast)  # v8.24.0: Perplexity Sonar — web-grounded research (Issue #22)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
             echo "perplexity_execute $model"
@@ -204,6 +226,7 @@ get_provider_context_limit() {
     case "$provider" in
         codex)      echo "${OCTOPUS_CODEX_CONTEXT_BUDGET:-${default_budget}}" ;;
         gemini)     echo "${OCTOPUS_GEMINI_CONTEXT_BUDGET:-${default_budget}}" ;;
+        agy|antigravity) echo "${OCTOPUS_AGY_CONTEXT_BUDGET:-${default_budget}}" ;;
         claude)     echo "${OCTOPUS_CLAUDE_CONTEXT_BUDGET:-${default_budget}}" ;;
         perplexity) echo "${OCTOPUS_PERPLEXITY_CONTEXT_BUDGET:-${default_budget}}" ;;
         openrouter) echo "${OCTOPUS_OPENROUTER_CONTEXT_BUDGET:-${default_budget}}" ;;
@@ -381,8 +404,10 @@ get_agent_model() {
     case "$agent_type" in
         codex*)      provider="codex" ;;
         gemini*)     provider="gemini" ;;
+        agy*|antigravity) provider="agy" ;;
         claude*)     provider="claude" ;;
         openrouter*) provider="openrouter" ;;
+        openai-compatible-agent*) provider="openai-compatible-agent" ;;
         perplexity*) provider="perplexity" ;;
         qwen*)       provider="qwen" ;;
         cursor-agent*) provider="cursor-agent" ;;
@@ -415,8 +440,10 @@ validate_model_allowed() {
     case "$provider" in
         codex)      allowlist_var="OCTOPUS_CODEX_ALLOWED_MODELS" ;;
         gemini)     allowlist_var="OCTOPUS_GEMINI_ALLOWED_MODELS" ;;
+        agy)        allowlist_var="OCTOPUS_AGY_ALLOWED_MODELS" ;;
         claude)     allowlist_var="OCTOPUS_CLAUDE_ALLOWED_MODELS" ;;
         openrouter) allowlist_var="OCTOPUS_OPENROUTER_ALLOWED_MODELS" ;;
+        openai-compatible-agent) allowlist_var="OPENAI_COMPAT_ALLOWED_MODELS" ;;
         perplexity) allowlist_var="OCTOPUS_PERPLEXITY_ALLOWED_MODELS" ;;
         qwen)       allowlist_var="OCTOPUS_QWEN_ALLOWED_MODELS" ;;
         cursor-agent) allowlist_var="OCTOPUS_CURSOR_AGENT_ALLOWED_MODELS" ;;
@@ -591,6 +618,8 @@ find_capable_fallback() {
             candidates=(gpt-5.4-mini gpt-5.2-codex gpt-5.3-codex gpt-5.4 gpt-5.4-pro o3) ;;
         gemini)
             candidates=(gemini-3-flash-preview gemini-3.1-pro-preview) ;;
+        agy)
+            candidates=(default) ;;
         claude)
             candidates=(claude-sonnet-4.6 claude-opus-4.6) ;;
         openrouter)

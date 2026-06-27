@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
 
 # Known providers and phases for validation
-KNOWN_PROVIDERS="codex gemini claude perplexity openrouter opencode copilot ollama qwen cursor-agent vibe"
+KNOWN_PROVIDERS="codex gemini agy claude perplexity openrouter opencode copilot ollama qwen cursor-agent vibe"
 KNOWN_PHASES="discover define develop deliver quick debate review security research"
 
 # Colors
@@ -44,6 +44,7 @@ usage() {
     echo "Environment Variables:"
     echo "  OCTOPUS_CODEX_MODEL         Override codex model (highest priority)"
     echo "  OCTOPUS_GEMINI_MODEL        Override gemini model"
+    echo "  OCTOPUS_AGY_MODEL           Override Antigravity CLI model"
     echo "  OCTOPUS_CURSOR_AGENT_MODEL  Override cursor-agent model"
     echo "  OCTOPUS_COST_MODE           Set cost tier: budget, standard, premium"
     echo "  OCTO_ALLOWED_PROVIDERS      Override provider availability for this process"
@@ -74,7 +75,7 @@ ensure_config() {
       "default": "gemini-3.1-pro-preview",
       "fallback": "gemini-3-flash-preview",
       "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image-preview"
+      "image": "gemini-3-pro-image"
     },
     "claude": {
       "default": "claude-sonnet-4.6",
@@ -320,7 +321,7 @@ cmd_list() {
     # Environment overrides
     echo -e "\n${YELLOW}Environment Overrides:${NC}"
     local has_env=false
-    for var in OCTOPUS_CODEX_MODEL OCTOPUS_GEMINI_MODEL OCTOPUS_CURSOR_AGENT_MODEL OCTOPUS_PERPLEXITY_MODEL OCTOPUS_OPENCODE_MODEL OCTOPUS_COST_MODE OCTO_ALLOWED_PROVIDERS OCTOPUS_TRACE_MODELS; do
+    for var in OCTOPUS_CODEX_MODEL OCTOPUS_GEMINI_MODEL OCTOPUS_AGY_MODEL OCTOPUS_CURSOR_AGENT_MODEL OCTOPUS_PERPLEXITY_MODEL OCTOPUS_OPENCODE_MODEL OCTOPUS_COST_MODE OCTO_ALLOWED_PROVIDERS OCTOPUS_TRACE_MODELS; do
         if [[ -n "${!var:-}" ]]; then
             echo "  $var=${!var}"
             has_env=true
@@ -522,7 +523,9 @@ cmd_models() {
         "o3-mini|200|yes|no|yes|codex|budget|active"
         "gemini-3.1-pro-preview|1000|yes|yes|no|gemini|premium|active"
         "gemini-3-flash-preview|1000|yes|yes|no|gemini|budget|active"
-        "gemini-3-pro-image-preview|1000|yes|yes|no|gemini|premium|active"
+        "gemini-3-pro-image|1000|yes|yes|no|gemini|premium|active"
+        "gemini-3.1-flash-image|1000|yes|yes|no|gemini|budget|active"
+        "gemini-3-pro-image-preview|1000|yes|yes|no|gemini|premium|deprecated"
         "claude-sonnet-4.6|200|yes|yes|no|claude|standard|active"
         "claude-opus-4.8|1000|yes|yes|yes|claude|premium|active"
         "claude-opus-4.7|1000|yes|yes|yes|claude|premium|legacy"

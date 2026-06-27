@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **gemini-image migrated off the deprecated `gemini-3-pro-image-preview`** before Google's 2026-06-25 shutdown (#493, oco-803). Image routing now defaults to the GA `gemini-3-pro-image` (Nano Banana Pro); `gemini-3.1-flash-image` (Nano Banana 2, fast tier) added to the catalog; the preview entry is retained with `deprecated` status so pinned configs degrade gracefully. Cost table and `octo-model-config` catalog refreshed.
+- **API-key providers no longer dispatch into a quota-dead key** (#494, oco-cbb). Perplexity payloads now cap output via `OCTOPUS_PERPLEXITY_MAX_TOKENS` (default 4096). New opt-in proactive health probe (`octo_provider_probe`, gated by `OCTOPUS_PREFLIGHT_PROBE=1`) validates perplexity/openrouter keys before dispatch and marks the provider `degraded` on 401/402/429; it fails open on transient network errors so a flaky connection never hides a working provider.
+- **Parallel probe path skips quota-dead providers** (#495). `auto-route.sh` consults `octo_quota_is_dead` before adding a provider to the fan-out, so a perplexity 401 or gemini capacity-exhaustion this session no longer re-dispatches and burns time.
+
+### Changed
+
+- **Doctor surfaces the fix inline by default.** `warn`/`fail` rows now always print their actionable detail (e.g. `Run: ollama serve`) without requiring `--verbose`; `pass` rows stay quiet unless `--verbose`.
+- **Setup dashboard shows concrete next-step commands** for unconfigured providers (codex/gemini/perplexity/cursor-agent), so a fresh install tells the user exactly what to export or install.
+
+## [9.45.0] - 2026-06-14
+
+### Added
+
+- **Antigravity CLI (`agy`) as a first-class provider.** Stdin dispatch via `scripts/helpers/agy-exec.sh` (`agy --print --sandbox --print-timeout`), detection, routing, doctor checks, env-overridable version floor (`OCTO_AGY_MIN_VERSION`), the 🧭 indicator, and `OCTOPUS_AGY_MODEL`/`OCTOPUS_AGY_PRINT_TIMEOUT` controls. Minimal `env -i` isolation with opt-in `OCTOPUS_ALLOW_FULL_AGY_ENV` (#489, closes #423).
+- **Generic OpenAI-compatible tool-loop agent** (`openai-compatible-agent`) for any OpenAI-API-compatible endpoint (#465).
+- **Tangle agent routing overrides** via `octopus_agent_override` and `OCTOPUS_TANGLE_DECOMPOSE_AGENT`/`OCTOPUS_TANGLE_DECOMPOSE_FALLBACK_AGENT`/`OCTOPUS_TANGLE_AGENT` (#488, was #462).
+- **`OCTOPUS_CODEX_BIN` and `OCTOPUS_CLAUDE_BIN` overrides** to point Octopus at codex-/claude-compatible wrappers without replacing the binary on PATH (#453, #487).
+
+### Changed
+
+- **Codex `danger-full-access` sandbox mode** is now permitted when explicitly selected (#470).
+- **Gemini skip-trust** flag is applied only on CLI versions that support it (#461).
+
+### Fixed
+
+- Preserve Codex provider config (`CODEX_HOME` and the configured `env_key`) through credential-isolated dispatch for `codex*` agents (#452).
+- Tangle decomposition now reformats unsafe decompositions and fails closed (no monolithic direct fallback) instead of silently degrading (#459); same-subtask write-scope overlaps are ignored rather than rejected (#486, was #460).
+- Four Linux fresh-install bugs: CWD-relative `OCTO_ROOT`, doctor abort on stale check, missing council `RESULTS_DIR`, and a self-symlink loop (#482, closes #481).
+
+## [9.44.1] - 2026-06-14
+
 ### Added
 
 - `scripts/helpers/audit-provider-contracts.sh` release-gate audit for provider drift: provider states must stay `available|missing|degraded`, qwen auth must fail closed when OAuth cannot be validated, stale free-tier setup guidance must not reappear, and provider version floors must remain env-overridable.
@@ -10,7 +43,10 @@
 
 ### Fixed
 
+- Pass `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, and `CLOUDSDK_CORE_PROJECT` through Gemini environment isolation so Vertex-backed Gemini auth keeps its project context (#472).
+- Lower the Gemini CLI version floor to `0.45.0` and honor `OCTO_*_MIN_VERSION` overrides for provider checks (#475).
 - `detect_providers` no longer treats a bare qwen OAuth file as dispatchable when the qwen auth validator is unavailable; it reports `oauth-unvalidated` instead. Setup guidance now points users at `QWEN_API_KEY` or Coding-Plan auth rather than the retired free tier.
+- `scripts/lib/events.sh` no longer sets shell options at the top, so sourcing it no longer leaks `set -e`/`pipefail` into the calling shell (#479).
 
 ## [9.44.0] - 2026-06-10
 

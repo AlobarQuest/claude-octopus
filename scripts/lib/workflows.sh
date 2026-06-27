@@ -123,6 +123,7 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     case "$agent_type" in
         codex*) provider_name="codex" ;;
         gemini*) provider_name="gemini" ;;
+        agy*|antigravity) provider_name="agy" ;;
         claude*) provider_name="claude" ;;
         perplexity*) provider_name="perplexity" ;;
         copilot*) provider_name="copilot" ;;
@@ -741,7 +742,7 @@ grasp_define() {
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable for problem definition — falling back to Claude"
         def1=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" 120 "backend-architect" "grasp") || true
     }
-    def2=$(run_agent_sync "gemini" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || {
+    def2=$(run_agent_sync "agy" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || {
         log WARN "Gemini failed for success criteria, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable for success criteria — falling back to Claude"
         def2=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || true
@@ -772,7 +773,7 @@ Output a single, clear problem definition document with:
 4. Recommended Approach"
 
     local consensus
-    consensus=$(run_agent_sync "gemini" "$consensus_prompt" 180 "synthesizer" "grasp") || {
+    consensus=$(run_agent_sync "agy" "$consensus_prompt" 180 "synthesizer" "grasp") || {
         consensus="[Auto-consensus failed - manual review required]\n\nProblem: $def1\n\nSuccess Criteria: $def2\n\nConstraints: $def3"
     }
 
@@ -1019,6 +1020,73 @@ tangle_scope_is_known_or_explicit_new_file() {
     return 1
 }
 
+
+tangle_line_is_numbered_subtask() {
+    local line="$1"
+    local numbered_subtask_pattern='^[[:space:]]*(\*\*)?[0-9]+[.)]'
+    if [[ "$line" =~ $numbered_subtask_pattern ]]; then
+        return 0
+    fi
+    return 1
+}
+
+tangle_parseable_subtask_count() {
+    local subtasks="$1"
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        tangle_line_is_numbered_subtask "$line" && ((count++)) || true
+    done <<< "$subtasks"
+    echo "$count"
+}
+
+tangle_parseable_coding_subtask_count() {
+    local subtasks="$1"
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
+        [[ "$line" =~ \[CODING\] ]] && ((count++)) || true
+    done <<< "$subtasks"
+    echo "$count"
+}
+
+tangle_reformat_decomposition() {
+    local original_task="$1"
+    local previous_decomposition="$2"
+    local reason="${3:-not parseable}"
+    local repo_file_map="${4:-}"
+    local reformat_prompt="Reformat the previous Octopus task decomposition. Do not add analysis.
+
+Required output format, exactly one subtask per line:
+1. [CODING] Short title — Files: relative/file.js, another/file.js — Task: specific coding work
+2. [REASONING] Short title — Task: specific reasoning/review work
+
+Rules:
+- Output only numbered lines. No Markdown headings, no code fences, no prose before or after.
+- Every [CODING] line must include a same-line 'Files:' clause.
+- Use relative file or directory scopes from the repository file map when possible.
+- Prefer concrete paths from the repository file map; invented/generic paths will be resolved against the actual worktree before dispatch.
+- New files should be explicit filenames whose parent directory already exists, or root-level files; avoid creating new source trees unless explicitly required.
+- Coding write scopes must be disjoint. If scopes overlap, merge those items into one [CODING] line.
+- If all coding work touches the same files, output one [CODING] line with those files rather than pretending it can be parallelized.
+- Keep 1-6 total subtasks.
+
+${repo_file_map}
+
+Original task:
+${original_task}
+
+Previous decomposition failed validation because: ${reason}
+
+Previous decomposition:
+${previous_decomposition}
+"
+
+    run_agent_sync "agy" "$reformat_prompt" 120 "researcher" "tangle" || \
+    run_agent_sync "claude-sonnet" "$reformat_prompt" 120 "researcher" "tangle"
+}
+
 tangle_validate_parallel_write_scopes() {
     local subtasks="$1"
     local task_index=0
@@ -1028,10 +1096,10 @@ tangle_validate_parallel_write_scopes() {
 
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        [[ ! "$line" =~ ^[0-9]+[\.\)] ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
 
         local subtask
-        subtask=$(echo "$line" | sed 's/^[0-9]*[\.\)]\s*//')
+        subtask=$(echo "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//')
         ((task_index++)) || true
 
         if [[ "$subtask" =~ \[REASONING\] ]]; then
@@ -1073,6 +1141,7 @@ tangle_validate_parallel_write_scopes() {
             [[ -z "$scope" ]] && continue
             local i
             for i in "${!existing_scopes[@]}"; do
+                [[ "${existing_tasks[$i]}" == "$task_index" ]] && continue
                 if tangle_scopes_overlap "$scope" "${existing_scopes[$i]}"; then
                     echo "coding subtask ${task_index} effective write scope '${scope}' overlaps subtask ${existing_tasks[$i]} scope '${existing_scopes[$i]}'"
                     return 1
@@ -1228,46 +1297,78 @@ Each subtask should be:
 ${context}${repo_file_map}
 Task: $resolved_prompt
 
-Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+Output only numbered subtask lines, with no headings, no analysis, no Markdown fences, and no prose before or after.
+Required format:
+1. [CODING] Short title — Files: relative/file.js, relative/dir/ — Task: specific coding work
+2. [REASONING] Short title — Task: specific reasoning work
+Every [CODING] line must include a same-line Files: clause."
+
+    # Tangle decomposition agents are overridable (OCTOPUS_TANGLE_DECOMPOSE_AGENT,
+    # OCTOPUS_TANGLE_DECOMPOSE_FALLBACK_AGENT, OCTOPUS_TANGLE_AGENT). Override only
+    # selects the dispatch agent; the fail-closed contract below is unchanged.
+    local tangle_decompose_agent="agy" tangle_decompose_fallback_agent="codex"
+    if declare -f octopus_agent_override >/dev/null 2>&1; then
+        tangle_decompose_agent=$(octopus_agent_override "tangle" "decompose" "agy")
+        tangle_decompose_fallback_agent=$(octopus_agent_override "tangle" "decompose_fallback" "codex")
+    fi
 
     local subtasks
-    subtasks=$(run_agent_sync "gemini" "$decompose_prompt" 120 "researcher" "tangle") || \
-    subtasks=$(run_agent_sync "codex" "$decompose_prompt" 120 "researcher" "tangle") || {
-        log WARN "Decomposition failed with all providers, falling back to direct execution"
-        local direct_prompt
-        direct_prompt=$(build_tangle_subtask_prompt "$resolved_prompt" "Implement the full task directly because decomposition failed with all providers.")
-        spawn_agent "codex" "$direct_prompt" "tangle-${task_group}-direct" "implementer" "tangle"
-        wait
-        return
+    subtasks=$(run_agent_sync "$tangle_decompose_agent" "$decompose_prompt" 120 "researcher" "tangle") || \
+    subtasks=$(run_agent_sync "$tangle_decompose_fallback_agent" "$decompose_prompt" 120 "researcher" "tangle") || {
+        log ERROR "Decomposition failed with all providers; refusing monolithic direct fallback"
+        return 1
     }
 
     echo -e "${CYAN}Decomposed into subtasks:${NC}"
     echo "$subtasks"
     echo ""
 
-    local parseable_subtask_count=0
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[0-9]+[\.\)] ]] && ((parseable_subtask_count++)) || true
-    done <<< "$subtasks"
-
-    if [[ $parseable_subtask_count -eq 0 ]]; then
-        log WARN "Decomposition produced no parseable subtasks, falling back to direct execution"
-        local direct_prompt
-        direct_prompt=$(build_tangle_subtask_prompt "$resolved_prompt" "Implement the full task directly because decomposition produced no parseable subtasks.")
-        spawn_agent "codex" "$direct_prompt" "tangle-${task_group}-direct" "implementer" "tangle"
-        wait
-        return
-    fi
+    local parseable_subtask_count
+    local parseable_coding_subtask_count
+    parseable_subtask_count=$(tangle_parseable_subtask_count "$subtasks")
+    parseable_coding_subtask_count=$(tangle_parseable_coding_subtask_count "$subtasks")
 
     local parallel_safety_reason=""
+    if [[ $parseable_subtask_count -eq 0 ]] || [[ $parseable_coding_subtask_count -eq 0 ]] || ! parallel_safety_reason=$(tangle_validate_parallel_write_scopes "$subtasks"); then
+        local retry_reason="${parallel_safety_reason:-no parseable subtasks}"
+        if [[ $parseable_subtask_count -eq 0 ]]; then
+            retry_reason="no parseable subtasks"
+        elif [[ $parseable_coding_subtask_count -eq 0 ]]; then
+            retry_reason="no parseable [CODING] subtasks"
+        fi
+        log WARN "Decomposition failed validation (${retry_reason}); retrying with strict one-line Files format"
+        local reformatted_subtasks
+        if reformatted_subtasks=$(tangle_reformat_decomposition "$resolved_prompt" "$subtasks" "$retry_reason" "$repo_file_map"); then
+            subtasks="$reformatted_subtasks"
+            echo -e "${CYAN}Reformatted subtasks:${NC}"
+            echo "$subtasks"
+            echo ""
+            parseable_subtask_count=$(tangle_parseable_subtask_count "$subtasks")
+            parseable_coding_subtask_count=$(tangle_parseable_coding_subtask_count "$subtasks")
+            parallel_safety_reason=""
+        else
+            log ERROR "Decomposition reformat retry failed; refusing monolithic direct fallback"
+            return 1
+        fi
+    fi
+
+    if [[ $parseable_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+    if [[ $parseable_coding_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable [CODING] subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+
+    if [[ $parseable_coding_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable [CODING] subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+
     if ! parallel_safety_reason=$(tangle_validate_parallel_write_scopes "$subtasks"); then
-        log WARN "Unsafe parallel decomposition: ${parallel_safety_reason}"
-        local direct_prompt
-        direct_prompt=$(build_tangle_subtask_prompt "$resolved_prompt" "Implement the full task directly because parallel decomposition is unsafe: ${parallel_safety_reason}")
-        spawn_agent "codex" "$direct_prompt" "tangle-${task_group}-direct" "implementer" "tangle"
-        wait
-        return
+        log ERROR "Unsafe parallel decomposition after retry: ${parallel_safety_reason}; refusing monolithic direct fallback"
+        return 1
     fi
 
     # Step 2: Parallel execution with progress tracking
@@ -1276,18 +1377,40 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
     local pids=()
     local task_ids=()
 
+    # [REASONING] subtask routing is overridable and falls back through available
+    # providers — mirrors the tangle_decompose_agent resolution above. Without
+    # this, users without agy get an unconditional exit 127 on every REASONING
+    # subtask even though the provider health check already flagged agy as absent.
+    local tangle_reasoning_agent="agy"
+    if declare -f octopus_agent_override >/dev/null 2>&1; then
+        tangle_reasoning_agent=$(octopus_agent_override "tangle" "reasoning" "agy")
+    fi
+    if ! command -v "$tangle_reasoning_agent" >/dev/null 2>&1; then
+        local _tangle_reasoning_fb
+        for _tangle_reasoning_fb in gemini codex; do
+            command -v "$_tangle_reasoning_fb" >/dev/null 2>&1 \
+                && tangle_reasoning_agent="$_tangle_reasoning_fb" && break
+        done
+        # claude-sonnet is a type resolved by get_agent_command, not a bare
+        # executable — command -v never finds it. Fall back unconditionally
+        # since the claude binary (the host process) is always available.
+        if ! command -v "$tangle_reasoning_agent" >/dev/null 2>&1; then
+            tangle_reasoning_agent="claude-sonnet"
+        fi
+    fi
+
     fleet_dispatch_begin
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        [[ ! "$line" =~ ^[0-9]+[\.\)] ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
 
         local subtask
-        subtask=$(echo "$line" | sed 's/^[0-9]*[\.\)]\s*//')
+        subtask=$(echo "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//')
         local agent="codex"
         local role="implementer"
         local pane_icon="⚙️"
         if [[ "$subtask" =~ \[REASONING\] ]]; then
-            agent="gemini"
+            agent="$tangle_reasoning_agent"
             role="researcher"
             pane_icon="🧠"
         fi
@@ -1687,7 +1810,7 @@ Compact source context to synthesize:
 $all_results"
 
     local delivery
-    delivery=$(run_agent_sync "gemini" "$synthesis_prompt" 180 "synthesizer" "ink") || {
+    delivery=$(run_agent_sync "agy" "$synthesis_prompt" 180 "synthesizer" "ink") || {
         delivery=$(build_ink_fallback_delivery "$prompt" "$sonnet_review" "$all_results")
     }
 
@@ -1863,7 +1986,7 @@ Return a concise gate review with:
             successful=$((successful + 1))
         fi
     fi
-    if gemini_view=$(run_agent_sync "gemini" "$gate_prompt" 120 "researcher" "embrace-gate" 2>/dev/null); then
+    if gemini_view=$(run_agent_sync "agy" "$gate_prompt" 120 "researcher" "embrace-gate" 2>/dev/null); then
         if [[ -n "$gemini_view" ]]; then
             gemini_status="ok"
             successful=$((successful + 1))

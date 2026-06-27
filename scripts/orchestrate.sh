@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Octopus - Multi-Agent Orchestrator
-# Coordinates multiple AI agents (Codex CLI, Gemini CLI) for parallel task execution
+# Coordinates multiple AI agents (Codex CLI, Gemini CLI, Antigravity CLI, etc.) for parallel task execution
 # https://github.com/nyldn/claude-octopus
 
 set -eo pipefail
@@ -501,6 +501,16 @@ TASKS_FILE="${WORKSPACE_DIR}/tasks.json"
 RESULTS_DIR="$SESSION_RESULTS_DIR"
 LOGS_DIR="$SESSION_LOGS_DIR"
 PID_FILE="${WORKSPACE_DIR}/pids"
+
+# Telemetry: enable the opt-in JSONL event stream by default for every run so
+# provider.status + dispatch lifecycle events are captured (usage data + the
+# basis for a control-plane HUD). Stdout is unchanged (events.sh appends to the
+# log only). Opt out with OCTO_EVENT_LOG=off; override the path by setting it.
+if [[ -z "${OCTO_EVENT_LOG:-}" ]]; then
+    export OCTO_EVENT_LOG="${RESULTS_DIR}/events.jsonl"
+elif [[ "${OCTO_EVENT_LOG}" == "off" ]]; then
+    unset OCTO_EVENT_LOG
+fi
 ANALYTICS_DIR="${WORKSPACE_DIR}/analytics"
 
 # Secure temporary directory (cleaned up on exit)
@@ -574,7 +584,7 @@ CODEX_SUBAGENT_PREAMBLE="IMPORTANT: You are running as a non-interactive subagen
 
 "
 
-AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context gemini gemini-fast gemini-image codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research cursor-agent vibe vibe-research"
+AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context gemini gemini-fast gemini-image agy agy-research antigravity codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek openai-compatible-agent perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research cursor-agent vibe vibe-research"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # USAGE TRACKING & COST REPORTING (v4.1)
@@ -1519,6 +1529,13 @@ is_agent_available() {
 
     # Load config if needed
     [[ -z "$USER_HAS_OPENAI" ]] && load_user_config
+
+    # oco-cbb: skip a provider marked quota/auth-dead earlier this session
+    # (perplexity 401, gemini exhausted) so it is not re-dispatched into the same
+    # terminal failure + timeout. Guarded; no-op if the helper is unavailable.
+    if declare -f octo_quota_is_dead >/dev/null 2>&1 && octo_quota_is_dead "${agent%%-*}"; then
+        return 1
+    fi
 
     case "$agent" in
         codex|codex-standard|codex-mini|codex-max)
@@ -2742,7 +2759,15 @@ case "$COMMAND" in
         ;;
     spawn)
         [[ $# -lt 2 ]] && { log ERROR "Usage: spawn <agent> <prompt>"; exit 1; }
-        spawn_agent "$1" "$2"
+        case "$1" in
+            agy|agy-*|antigravity)
+                log INFO "Running $1 synchronously because Antigravity CLI print mode does not emit output from background jobs"
+                run_agent_sync "$1" "$2" "$TIMEOUT" "none" "spawn"
+                ;;
+            *)
+                spawn_agent "$1" "$2"
+                ;;
+        esac
         ;;
     auto)
         source "${SCRIPT_DIR}/lib/auto-route.sh" 2>/dev/null || true

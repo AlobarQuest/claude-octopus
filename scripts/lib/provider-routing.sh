@@ -52,7 +52,28 @@ build_provider_env() {
             if [[ -z "${OPENAI_API_KEY:-}" ]]; then
                 resolve_provider_env "OPENAI_API_KEY" 2>/dev/null || true
             fi
+
+            # Preserve Codex CLI provider configuration while keeping env
+            # isolation. Codex supports OpenAI-compatible providers via
+            # config.toml, where env_key may name a provider-specific key
+            # (for example a router/proxy key) rather than OPENAI_API_KEY.
+            local _codex_config_home="${CODEX_HOME:-$HOME/.codex}"
+            local _codex_config="${_codex_config_home}/config.toml"
+            local _codex_env_key=""
+            if [[ -f "$_codex_config" ]]; then
+                _codex_env_key=$(sed -nE 's/^[[:space:]]*env_key[[:space:]]*=[[:space:]]*"([A-Za-z_][A-Za-z0-9_]*)".*/\1/p' "$_codex_config" | head -1)
+                if [[ -n "$_codex_env_key" && "$_codex_env_key" != "OPENAI_API_KEY" ]]; then
+                    resolve_provider_env "$_codex_env_key" 2>/dev/null || true
+                fi
+            fi
+
             PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "OPENAI_API_KEY=${OPENAI_API_KEY:-}" "TMPDIR=${TMPDIR:-/tmp}")
+            if [[ -n "${CODEX_HOME:-}" ]]; then
+                PROVIDER_ENV_ARRAY+=("CODEX_HOME=${CODEX_HOME}")
+            fi
+            if [[ -n "$_codex_env_key" && "$_codex_env_key" != "OPENAI_API_KEY" && -n "${!_codex_env_key:-}" ]]; then
+                PROVIDER_ENV_ARRAY+=("${_codex_env_key}=${!_codex_env_key}")
+            fi
             if [[ ${#_trace_env[@]} -gt 0 ]]; then
                 PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
             fi
@@ -69,6 +90,30 @@ build_provider_env() {
                 PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
             fi
             ;;
+        agy*|antigravity)
+            # Antigravity defaults to a minimal environment. Users who need
+            # desktop/session inheritance can explicitly allow the full env.
+            if [[ "${OCTOPUS_ALLOW_FULL_AGY_ENV:-false}" == "true" ]]; then
+                if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]] && declare -f log_warn >/dev/null 2>&1; then
+                    log_warn "Antigravity CLI inherits the parent shell environment because OCTOPUS_ALLOW_FULL_AGY_ENV=true."
+                fi
+                PROVIDER_ENV_ARRAY=()
+            else
+                PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "TERM=${TERM:-dumb}" "TMPDIR=${TMPDIR:-/tmp}")
+                if [[ -n "${AGY_AUTH_TOKEN:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("AGY_AUTH_TOKEN=${AGY_AUTH_TOKEN}")
+                fi
+                if [[ -n "${AGY_CONFIG:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("AGY_CONFIG=${AGY_CONFIG}")
+                fi
+                if [[ -n "${ANTIGRAVITY_API_KEY:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("ANTIGRAVITY_API_KEY=${ANTIGRAVITY_API_KEY}")
+                fi
+                if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                    PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+                fi
+            fi
+            ;;
         perplexity*)
             # perplexity_execute is a shell function — env -i cannot exec it (#300)
             if [[ -z "${PERPLEXITY_API_KEY:-}" ]]; then
@@ -83,8 +128,18 @@ build_provider_env() {
             fi
             return 0
             ;;
+        claude*)
+            # A headless claude (or clarp wrapping it) must NOT inherit the parent
+            # Claude Code session markers, or the inner `claude` hangs thinking it
+            # is a nested child (council/agent-sync seat stalls at 0 bytes until
+            # timeout). Strip them; keep the rest of the env (PATH/HOME/auth).
+            PROVIDER_ENV_ARRAY=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH)
+            if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+            fi
+            ;;
         *)
-            # Claude and other providers: no isolation needed
+            # Other providers: no isolation needed
             return 0
             ;;
     esac
@@ -180,7 +235,7 @@ migrate_provider_config() {
       "default": "$gemini_model",
       "fallback": "gemini-3-flash-preview",
       "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image-preview"
+      "image": "gemini-3-pro-image"
     }
   },
   "routing": {
@@ -224,6 +279,7 @@ EOF
         '.providers.codex.fallback'
         '.providers.gemini.default'
         '.providers.gemini.fallback'
+        '.providers.gemini.image'
         '.overrides.codex'
         '.overrides.gemini'
     )
@@ -241,6 +297,8 @@ EOF
                 replacement="gemini-3-flash-preview" ;;
             gemini-2.0-pro*|gemini-1.5-pro*|gemini-pro)
                 replacement="gemini-3.1-pro-preview" ;;
+            gemini-3-pro-image-preview)
+                replacement="gemini-3-pro-image" ;;  # shutdown 2026-06-25 (codex review)
             gpt-4o*|gpt-4-turbo*|gpt-4-*|o1-*|chatgpt-*)
                 replacement="gpt-5.5" ;;
         esac
@@ -271,10 +329,10 @@ set_provider_model() {
 
     # v8.49.0: Provider whitelist validation
     case "$provider" in
-        codex|gemini|claude|perplexity|opencode|openrouter|cursor-agent) ;;
+        codex|gemini|claude|perplexity|opencode|openrouter|openai-compatible-agent|cursor-agent) ;;
         *)
             if [[ "${4:-}" != "--force" ]]; then
-                echo "ERROR: Unknown provider '$provider'. Valid: codex, gemini, claude, perplexity, opencode, openrouter, cursor-agent" >&2
+                echo "ERROR: Unknown provider '$provider'. Valid: codex, gemini, claude, perplexity, opencode, openrouter, openai-compatible-agent, cursor-agent" >&2
                 echo "  Use --force to set a custom provider (e.g., for local proxies)" >&2
                 return 1
             fi
@@ -313,7 +371,7 @@ set_provider_model() {
       "default": "gemini-3.1-pro-preview",
       "fallback": "gemini-3-flash-preview",
       "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image-preview"
+      "image": "gemini-3-pro-image"
     }
   },
   "routing": {
@@ -376,7 +434,7 @@ reset_provider_model() {
         # Clear all overrides (v8.49.0: atomic)
         atomic_json_update "$config_file" '.overrides = {}'
         echo "✓ Cleared all model overrides"
-    elif [[ "$provider" =~ ^(codex|gemini|claude|perplexity|opencode|openrouter|cursor-agent)$ ]]; then
+    elif [[ "$provider" =~ ^(codex|gemini|claude|perplexity|opencode|openrouter|openai-compatible-agent|cursor-agent)$ ]]; then
         # Clear specific override (v8.49.0: atomic + jq --arg)
         atomic_json_update "$config_file" 'del(.overrides[$p])' --arg p "$provider"
         echo "✓ Cleared $provider override"

@@ -86,6 +86,18 @@ cmd_detect_providers() {
     fi
     echo ""
 
+    # Check Antigravity CLI (agy)
+    if command -v agy &>/dev/null; then
+        echo "AGY_STATUS=ok"
+        echo "AGY_AUTH=cli"
+        echo "AGY_MODEL=${OCTOPUS_AGY_MODEL:-}"
+    else
+        echo "AGY_STATUS=not-installed"
+        echo "AGY_AUTH=none"
+        echo "AGY_MODEL=none"
+    fi
+    echo ""
+
     # Check Perplexity API (v8.24.0 - Issue #22)
     if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
         echo "PERPLEXITY_STATUS=ok"
@@ -192,6 +204,9 @@ cmd_detect_providers() {
     local codex_auth=$([[ -f "$HOME/.codex/auth.json" ]] && echo "oauth" || [[ -n "${OPENAI_API_KEY:-}" ]] && echo "api-key" || echo "none")
     local gemini_status=$(command -v gemini &>/dev/null && echo "ok" || echo "missing")
     local gemini_auth=$([[ -f "$HOME/.gemini/oauth_creds.json" ]] && echo "oauth" || [[ -n "${GEMINI_API_KEY:-}" ]] && echo "api-key" || echo "none")
+    local agy_status=$(command -v agy &>/dev/null && echo "ok" || echo "not-installed")
+    local agy_auth=$([[ "$agy_status" == "ok" ]] && echo "cli" || echo "none")
+    local agy_model="${OCTOPUS_AGY_MODEL:-}"
     local perplexity_status=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "ok" || echo "not-configured")
     local perplexity_auth=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "api-key" || echo "none")
     local ollama_status=$(command -v ollama &>/dev/null && { curl -sf http://localhost:11434/api/tags &>/dev/null && echo "running" || echo "stopped"; } || echo "not-installed")
@@ -209,32 +224,37 @@ cmd_detect_providers() {
 # Valid for 1 hour - re-run detect-providers to refresh
 
 # Codex Status
-CODEX_STATUS=$codex_status
-CODEX_AUTH=$codex_auth
+CODEX_STATUS=$(printf '%q' "$codex_status")
+CODEX_AUTH=$(printf '%q' "$codex_auth")
 
 # Gemini Status
-GEMINI_STATUS=$gemini_status
-GEMINI_AUTH=$gemini_auth
+GEMINI_STATUS=$(printf '%q' "$gemini_status")
+GEMINI_AUTH=$(printf '%q' "$gemini_auth")
+
+# Antigravity Status
+AGY_STATUS=$(printf '%q' "$agy_status")
+AGY_AUTH=$(printf '%q' "$agy_auth")
+AGY_MODEL=$(printf '%q' "$agy_model")
 
 # Perplexity Status (v8.24.0)
-PERPLEXITY_STATUS=$perplexity_status
-PERPLEXITY_AUTH=$perplexity_auth
+PERPLEXITY_STATUS=$(printf '%q' "$perplexity_status")
+PERPLEXITY_AUTH=$(printf '%q' "$perplexity_auth")
 
 # Ollama Status (v9.9.0)
-OLLAMA_STATUS=$ollama_status
+OLLAMA_STATUS=$(printf '%q' "$ollama_status")
 
 # Copilot Status (v9.9.0)
-COPILOT_STATUS=$copilot_status
+COPILOT_STATUS=$(printf '%q' "$copilot_status")
 
 # Qwen Status (v9.10.0)
-QWEN_STATUS=$qwen_status
+QWEN_STATUS=$(printf '%q' "$qwen_status")
 
 # OpenCode Status (v9.11.0)
-OPENCODE_STATUS=$opencode_status
+OPENCODE_STATUS=$(printf '%q' "$opencode_status")
 
 # Cursor Agent Status (v9.23.0)
-CURSOR_AGENT_STATUS=$cursor_agent_status
-CURSOR_AGENT_AUTH=$cursor_agent_auth
+CURSOR_AGENT_STATUS=$(printf '%q' "$cursor_agent_status")
+CURSOR_AGENT_AUTH=$(printf '%q' "$cursor_agent_auth")
 
 # Timestamp
 CACHE_TIME=$(date +%s)
@@ -248,24 +268,30 @@ EOF
     if [[ "$codex_status" == "ok" && "$codex_auth" != "none" ]]; then
         echo "  ✓ Codex: Installed and authenticated ($codex_auth)"
     elif [[ "$codex_status" == "ok" ]]; then
-        echo "  ⚠ Codex: Installed but not authenticated"
+        echo "  ⚠ Codex: Installed but not authenticated (run: codex login  OR  export OPENAI_API_KEY=\"sk-...\")"
     else
-        echo "  ✗ Codex: Not installed"
+        echo "  ✗ Codex: Not installed (run: npm install -g @openai/codex)"
     fi
 
     if [[ "$gemini_status" == "ok" && "$gemini_auth" != "none" ]]; then
         echo "  ✓ Gemini: Installed and authenticated ($gemini_auth)"
     elif [[ "$gemini_status" == "ok" ]]; then
-        echo "  ⚠ Gemini: Installed but not authenticated"
+        echo "  ⚠ Gemini: Installed but not authenticated (run: gemini  OR  export GEMINI_API_KEY=\"AIza...\")"
     else
-        echo "  ✗ Gemini: Not installed"
+        echo "  ✗ Gemini: Not installed (run: npm install -g @google/gemini-cli)"
+    fi
+
+    if [[ "$agy_status" == "ok" ]]; then
+        echo "  ✓ Antigravity: Installed (model: ${agy_model:-agy default}) — agy provider enabled"
+    else
+        echo "  ○ Antigravity: Not installed (optional — install agy from Google Antigravity)"
     fi
 
     # Perplexity (optional, v8.24.0)
     if [[ "$perplexity_status" == "ok" ]]; then
         echo "  ✓ Perplexity: Configured ($perplexity_auth) — web search enabled in discover workflows"
     else
-        echo "  ○ Perplexity: Not configured (optional — adds live web search to research)"
+        echo "  ○ Perplexity: Not configured (optional — export PERPLEXITY_API_KEY=\"pplx-...\"  # https://www.perplexity.ai/settings/api)"
     fi
 
     # Ollama (optional, v9.9.0)
@@ -299,14 +325,14 @@ EOF
     if [[ "$cursor_agent_status" == "ok" && "$cursor_agent_auth" != "none" ]]; then
         echo "  ✓ Cursor Agent: Installed and authenticated ($cursor_agent_auth) — Grok 4.20 via Cursor subscription"
     elif [[ "$cursor_agent_status" == "ok" ]]; then
-        echo "  ⚠ Cursor Agent: Installed but not authenticated"
+        echo "  ⚠ Cursor Agent: Installed but not authenticated (run: agent login  OR  export CURSOR_API_KEY=\"...\")"
     else
-        echo "  ○ Cursor Agent: Not installed (optional — requires Cursor IDE v9.23.0+)"
+        echo "  ○ Cursor Agent: Not installed (optional — curl -fsSL https://cursor.com/install | bash)"
     fi
     echo ""
 
     # Provide guidance based on results
-    if [[ "$codex_status" == "missing" && "$gemini_status" == "missing" && "$cursor_agent_status" != "ok" ]]; then
+    if [[ "$codex_status" == "missing" && "$gemini_status" == "missing" && "$agy_status" != "ok" && "$cursor_agent_status" != "ok" ]]; then
         echo "⚠ No providers installed. You need at least ONE provider to use Claude Octopus."
         echo ""
         echo "Next steps:"
@@ -314,10 +340,12 @@ EOF
         echo "     OR"
         echo "  2. Install Gemini CLI: npm install -g @google/gemini-cli"
         echo "     OR"
-        echo "  3. Install Cursor Agent CLI: https://cursor.com/install"
+        echo "  3. Install Antigravity CLI: agy install"
+        echo "     OR"
+        echo "  4. Install Cursor Agent CLI: https://cursor.com/install"
         echo ""
         echo "Then configure authentication - see: /claude-octopus:setup"
-    elif ! { [[ "$codex_status" == "ok" && "$codex_auth" != "none" ]] || [[ "$gemini_status" == "ok" && "$gemini_auth" != "none" ]] || [[ "$cursor_agent_status" == "ok" && "$cursor_agent_auth" != "none" ]]; }; then
+    elif ! { [[ "$codex_status" == "ok" && "$codex_auth" != "none" ]] || [[ "$gemini_status" == "ok" && "$gemini_auth" != "none" ]] || [[ "$agy_status" == "ok" ]] || [[ "$cursor_agent_status" == "ok" && "$cursor_agent_auth" != "none" ]]; }; then
         echo "⚠ Provider(s) installed but not authenticated."
         echo ""
         echo "Next steps:"
@@ -341,6 +369,8 @@ EOF
             echo "  Codex is configured. You can optionally add Gemini for multi-provider workflows."
         elif [[ "$gemini_status" == "ok" && "$gemini_auth" != "none" ]]; then
             echo "  Gemini is configured. You can optionally add Codex for multi-provider workflows."
+        elif [[ "$agy_status" == "ok" ]]; then
+            echo "  Antigravity is configured. You can optionally add Codex or Gemini for multi-provider workflows."
         elif [[ "$cursor_agent_status" == "ok" && "$cursor_agent_auth" != "none" ]]; then
             echo "  Cursor Agent is configured. You can optionally add Codex or Gemini for multi-provider workflows."
         fi

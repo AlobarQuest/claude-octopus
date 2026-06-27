@@ -14,6 +14,94 @@ quota_watcher_kill_spawn_children() {
     pkill -KILL -P "$spawn_pid" 2>/dev/null || true
 }
 
+
+# Emit agent lifecycle events to the Octopus JSONL event stream and, optionally,
+# to an external observer hook. The event stream is the primary integration
+# surface; OCTOPUS_AGENT_LIFECYCLE_HOOK is a best-effort bridge for local control
+# planes that need an immediate callback without tailing OCTO_EVENT_LOG.
+_octopus_agent_lifecycle_event() {
+    local event="$1"
+    local agent_type="$2"
+    local task_id="$3"
+    local role="${4:-}"
+    local phase="${5:-}"
+    local normalized_phase="${phase:-unknown}"
+    local pid="${6:-}"
+    local result_file="${7:-}"
+    local exit_code="${8:-}"
+    local status="${9:-}"
+
+    local provider="${agent_type%%-*}"
+    local event_name="agent.${event}"
+
+    if declare -f octo_event_emit >/dev/null 2>&1; then
+        octo_event_emit "$event_name" \
+            provider="$provider" \
+            agent_type="$agent_type" \
+            task_id="$task_id" \
+            role="$role" \
+            phase="$normalized_phase" \
+            pid="$pid" \
+            result_file="$result_file" \
+            results_dir="${RESULTS_DIR:-}" \
+            workspace_dir="${WORKSPACE_DIR:-}" \
+            exit_code="$exit_code" \
+            status="$status" \
+            root_session_id="${CRABFLEET_ROOT_SESSION_ID:-${OCTOPUS_ROOT_SESSION_ID:-}}" \
+            parent_session_id="${CRABFLEET_PARENT_SESSION_ID:-${OCTOPUS_PARENT_SESSION_ID:-}}" || true
+    fi
+
+    local hook="${OCTOPUS_AGENT_LIFECYCLE_HOOK:-}"
+    [[ -n "$hook" && -x "$hook" ]] || return 0
+
+    local hook_log="${OCTOPUS_AGENT_LIFECYCLE_HOOK_LOG:-/dev/null}"
+    (
+        export OCTOPUS_AGENT_HOOK_EVENT="$event"
+        export OCTOPUS_AGENT_EVENT_NAME="$event_name"
+        export OCTOPUS_AGENT_PROVIDER="$provider"
+        export OCTOPUS_AGENT_TYPE="$agent_type"
+        export OCTOPUS_AGENT_TASK_ID="$task_id"
+        export OCTOPUS_AGENT_ROLE="$role"
+        export OCTOPUS_AGENT_PHASE="$normalized_phase"
+        export OCTOPUS_AGENT_PID="$pid"
+        export OCTOPUS_AGENT_RESULT_FILE="$result_file"
+        export OCTOPUS_AGENT_RESULTS_DIR="${RESULTS_DIR:-}"
+        export OCTOPUS_AGENT_WORKSPACE_DIR="${WORKSPACE_DIR:-}"
+        export OCTOPUS_AGENT_EXIT_CODE="$exit_code"
+        export OCTOPUS_AGENT_STATUS="$status"
+        export OCTOPUS_AGENT_ROOT_SESSION_ID="${CRABFLEET_ROOT_SESSION_ID:-${OCTOPUS_ROOT_SESSION_ID:-}}"
+        export OCTOPUS_AGENT_PARENT_SESSION_ID="${CRABFLEET_PARENT_SESSION_ID:-${OCTOPUS_PARENT_SESSION_ID:-}}"
+        local hook_timeout="${OCTOPUS_AGENT_LIFECYCLE_HOOK_TIMEOUT:-3}"
+        if declare -f run_with_timeout >/dev/null 2>&1; then
+            run_with_timeout "$hook_timeout" "$hook" "$event"
+        elif command -v timeout >/dev/null 2>&1; then
+            timeout "$hook_timeout" "$hook" "$event"
+        else
+            # Built-in timeout fallback: run hook in background, wait with
+            # configured timeout, and kill if still running. Uses only bash
+            # built-ins so it works on systems without run_with_timeout or
+            # GNU timeout. See issue #511.
+            "$hook" "$event" &
+            local _hook_pid=$!
+            local _hook_waited=0
+            while [[ $_hook_waited -lt $hook_timeout ]]; do
+                if ! kill -0 "$_hook_pid" 2>/dev/null; then
+                    wait "$_hook_pid" 2>/dev/null || true
+                    break
+                fi
+                sleep 1
+                ((_hook_waited++)) || true
+            done
+            if kill -0 "$_hook_pid" 2>/dev/null; then
+                kill -TERM "$_hook_pid" 2>/dev/null || true
+                sleep 0.5 2>/dev/null || true
+                kill -KILL "$_hook_pid" 2>/dev/null || true
+                wait "$_hook_pid" 2>/dev/null || true
+            fi
+        fi
+    ) >>"$hook_log" 2>&1 || true
+}
+
 spawn_agent() {
     local _ts; _ts=$(date +%s)
     local agent_type="$1"
@@ -306,6 +394,9 @@ ${heuristic_ctx}"
         return 1
     fi
 
+    # oco-aek: provider selected for dispatch (circuit closed). Opt-in event.
+    declare -f octo_event_emit >/dev/null 2>&1 && octo_event_emit "provider.selected" provider="$provider_prefix" agent_type="$agent_type" phase="${phase:-unknown}" || true
+
     local cmd
     if ! cmd=$(get_agent_command "$agent_type" "${phase:-}" "${role:-}"); then
         log ERROR "Unknown agent type: $agent_type"
@@ -473,6 +564,7 @@ ${heuristic_ctx}"
         if [[ "$SUPPORTS_HOOK_LAST_MESSAGE" == "true" ]]; then
             log "DEBUG" "Result capture via SubagentStop hook (last_assistant_message)"
         fi
+        _octopus_agent_lifecycle_event "spawned" "$agent_type" "$task_id" "$role" "$phase" "" "$result_file" "" "running"
         return 0
     fi
 
@@ -547,9 +639,19 @@ ${heuristic_ctx}"
         if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == cursor-agent* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]]; then
             cmd_array+=(-p "")
         fi
-        # Belt-and-suspenders: bypass Gemini's interactive trust check in headless mode (#405)
+        # Belt-and-suspenders: bypass Gemini's interactive trust check in headless mode (#405).
+        # Newer Gemini CLI versions removed --skip-trust; detect support once per spawn process.
         if [[ "$agent_type" == gemini* ]]; then
-            cmd_array+=(--skip-trust)
+            if [[ -z "${_GEMINI_SUPPORTS_SKIP_TRUST+x}" ]]; then
+                if [[ $(gemini --help 2>&1 | grep -c -- --skip-trust || true) -gt 0 ]]; then
+                    _GEMINI_SUPPORTS_SKIP_TRUST=true
+                else
+                    _GEMINI_SUPPORTS_SKIP_TRUST=false
+                fi
+            fi
+            if [[ "$_GEMINI_SUPPORTS_SKIP_TRUST" == "true" ]]; then
+                cmd_array+=(--skip-trust)
+            fi
         fi
 
         local auth_attempt=0
@@ -557,23 +659,36 @@ ${heuristic_ctx}"
         while true; do
             exit_code=0
 
-            # Quota fast-fail watcher: detects quota exhaustion in stderr/stdout
-            # and kills the provider process early instead of waiting the full TIMEOUT.
-            # Applies to Gemini (free tier exhausts quota and retries for ~18h internally).
-            local _quota_watcher_pid=""
+            # oco-2kw: per-provider timeout. Gemini has no request timeout and its
+            # non-interactive maxSessionTurns default is unlimited, so a quota-loop
+            # or stall could burn the global TIMEOUT (~600s). Cap gemini separately;
+            # all others keep the global TIMEOUT. Plain scalar — bash 3.2 safe.
+            local _eff_timeout="$TIMEOUT"
             if [[ "$agent_type" == gemini* ]]; then
-                local _spawn_pid=$BASHPID
-                _quota_watcher_pid=$(start_quota_watcher \
-                    "$_spawn_pid" \
-                    "$temp_errors" \
-                    "$temp_output" \
-                    quota_watcher_kill_spawn_children \
-                    "[$agent_type] Quota exhaustion detected - fast-failing (saves ~${TIMEOUT}s wait)")
+                _eff_timeout="${OCTOPUS_GEMINI_TIMEOUT:-180}"
             fi
 
+            # oco-48z: quota/terminal-error fast-fail watcher for ALL providers (was
+            # gemini-only). Greps temp files every 2s; on match it kills the provider
+            # early and marks it quota-dead for the session (oco-cbb), so preflight and
+            # is_agent_available skip it instead of re-dispatching into the same failure.
+            local _quota_watcher_pid=""
+            local _spawn_pid=$BASHPID
+            local _provider_prefix="${agent_type%%-*}"
+            _quota_watcher_pid=$(start_quota_watcher \
+                "$_spawn_pid" \
+                "$temp_errors" \
+                "$temp_output" \
+                quota_watcher_kill_spawn_children \
+                "[$agent_type] Quota/terminal error detected - fast-failing (saves ~${_eff_timeout}s wait)" \
+                "$_provider_prefix")
+
             # v9.2.2: All agents use stdin-based prompt delivery to avoid ARG_MAX limits (Issue #173)
-            # Previously only gemini used stdin; codex/claude passed prompt as CLI arg which fails on large diffs
-            if printf '%s' "$enhanced_prompt" | run_with_timeout "$TIMEOUT" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"; then
+            # Previously only gemini used stdin; codex/claude passed prompt as CLI arg which fails on large diffs.
+            if [[ "$agent_type" == agy* || "$agent_type" == "antigravity" ]]; then
+                printf '%s' "$enhanced_prompt" | run_with_timeout "$_eff_timeout" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"
+                exit_code=${PIPESTATUS[1]:-0}
+            elif printf '%s' "$enhanced_prompt" | run_with_timeout "$_eff_timeout" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"; then
                 exit_code=0
             else
                 exit_code=$?
@@ -916,11 +1031,25 @@ ${heuristic_ctx}"
             rm -f "$_done_tmp" 2>/dev/null || true
         fi
 
+        local _hook_final_status="failed"
+        if [[ "${_spawn_exit:-0}" -eq 0 ]]; then
+            if [[ "${_octo_success_status:-ok}" == "failed" ]]; then
+                _hook_final_status="failed"
+            else
+                _hook_final_status="completed"
+            fi
+        elif [[ "${_spawn_exit:-0}" -eq 124 || "${_spawn_exit:-0}" -eq 143 ]]; then
+            _hook_final_status="timeout"
+        fi
+        _octopus_agent_lifecycle_event "completed" "$agent_type" "$task_id" "$role" "$phase" "$BASHPID" "$result_file" "$_spawn_exit" "$_hook_final_status"
+
         # v8.19.0: Cleanup heartbeat (self-terminating monitor handles this too)
         cleanup_heartbeat "$$" 2>/dev/null || true
     ) &
 
     local pid=$!
+
+    _octopus_agent_lifecycle_event "spawned" "$agent_type" "$task_id" "$role" "$phase" "$pid" "$result_file" "" "running"
 
     # v8.19.0: Start heartbeat monitor for agent process
     start_heartbeat_monitor "$pid" "$task_id"

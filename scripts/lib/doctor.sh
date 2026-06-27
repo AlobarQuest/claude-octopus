@@ -153,6 +153,23 @@ doctor_check_providers() {
             "Gemini CLI not installed" "npm install -g @google/gemini-cli"
     fi
 
+    # Antigravity CLI (agy)
+    if command -v agy &>/dev/null; then
+        local agy_ver agy_path
+        agy_ver=$(agy --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        agy_path=$(command -v agy)
+        if ! octo_version_ok "${agy_ver}" "${OCTO_AGY_MIN_VERSION:-1.0.6}"; then
+            doctor_add "agy-cli" "providers" "warn" \
+               "Antigravity CLI v${agy_ver} (below floor v${OCTO_AGY_MIN_VERSION:-1.0.6})" "${agy_path} — run: agy update"
+        else
+            doctor_add "agy-cli" "providers" "pass" \
+               "Antigravity CLI v${agy_ver}" "$agy_path"
+        fi
+    else
+        doctor_add "agy-cli" "providers" "info" \
+            "Antigravity CLI not installed (optional)" "Install agy to enable Antigravity provider routing"
+    fi
+
     # Perplexity API (v8.24.0 - optional)
     if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
         doctor_add "perplexity-api" "providers" "pass" \
@@ -174,7 +191,7 @@ doctor_check_providers() {
             stale_count=0
             local _check="${_octo_root}/scripts/helpers/check-ollama-models.sh"
             if [[ -r "$_check" ]]; then
-                stale_count=$(bash "$_check" --count-stale 2>/dev/null)
+                stale_count=$(bash "$_check" --count-stale 2>/dev/null || echo "0")
                 stale_count=$(printf '%s' "$stale_count" | grep -oE '^[0-9]+$' || echo "0")
                 stale_count="${stale_count:-0}"
             fi
@@ -1651,8 +1668,12 @@ doctor_output_human() {
         esac
 
         echo -e "  ${icon} ${msg}"
-        if [[ -n "$detail" && "$verbose" == "true" ]]; then
-            echo -e "    ${DIM}${detail}${NC}"
+        # Always show detail for warn/fail (it contains the actionable fix).
+        # Only gate detail behind --verbose for passing checks.
+        if [[ -n "$detail" ]]; then
+            if [[ "$status" == "warn" || "$status" == "fail" || "$verbose" == "true" ]]; then
+                echo -e "    ${DIM}${detail}${NC}"
+            fi
         fi
     done
 
