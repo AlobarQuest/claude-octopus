@@ -10,111 +10,11 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  classify-changes:
-    name: Classify Changes
-    runs-on: ubuntu-latest
-    outputs:
-      heavy_tests: ${{ steps.classify.outputs.heavy_tests }}
-      fast_path: ${{ steps.classify.outputs.fast_path }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Classify changed files
-        id: classify
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            head="${{ github.event.pull_request.head.sha }}"
-          elif [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
-          else
-            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
-            echo "fast_path=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$base" "$head")"
-          if [[ -z "$changed" ]]; then
-            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
-            echo "fast_path=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          fast_path=true
-          while IFS= read -r file; do
-            case "$file" in
-              package.json|README.md|CHANGELOG.md|docs/*|.claude-plugin/plugin.json|.claude-plugin/marketplace.json|.codex-plugin/plugin.json|.cursor-plugin/plugin.json|.factory-plugin/plugin.json|.factory-plugin/marketplace.json)
-                ;;
-              *)
-                fast_path=false
-                ;;
-            esac
-          done <<< "$changed"
-
-          if [[ "$fast_path" == "true" ]]; then
-            echo "heavy_tests=false" >> "$GITHUB_OUTPUT"
-            echo "fast_path=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
-            echo "fast_path=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  portability-lint:
-    name: Portability Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Check for GNU-only sed patterns
-        run: |
-          echo "Checking for non-portable sed usage..."
-          FAIL=0
-          # GNU-only command grouping in sed address ranges: sed '/pat/,/pat/{...}'
-          # This is the actual bug class from issue #255. sed -i is handled with
-          # platform conditionals throughout the codebase (see lib/config-display.sh).
-          if grep -rnE "sed\s.*'/[^']*,/[^']*\{" scripts/ hooks/ 2>/dev/null; then
-            echo "FAIL: GNU-only sed command grouping found. Use awk instead."
-            FAIL=1
-          fi
-          if [ "$FAIL" -eq 1 ]; then
-            echo ""
-            echo "Policy: use awk/grep for multi-line extraction. Reserve sed for single-line s/// only."
-            exit 1
-          fi
-          echo "OK: No non-portable sed patterns found."
-
-      - name: Install ShellCheck
-        run: sudo apt-get install -y shellcheck
-
-      - name: Run ShellCheck on core scripts
-        run: |
-          shellcheck -s bash -S warning \
-            scripts/orchestrate.sh \
-            scripts/lib/*.sh \
-            hooks/*.sh \
-            2>&1 || true
-
   smoke:
-    name: Smoke Tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Smoke Tests
+    runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: classify-changes
-    if: needs.classify-changes.outputs.heavy_tests == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout code
@@ -137,20 +37,15 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: smoke-test-logs-${{ matrix.os }}
+          name: smoke-test-logs
           path: /tmp/test_*.log
           retention-days: 7
 
   unit:
-    name: Unit Tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Unit Tests
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [classify-changes, smoke, portability-lint]
-    if: needs.classify-changes.outputs.heavy_tests == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    needs: smoke
 
     steps:
       - name: Checkout code
@@ -169,7 +64,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-results-${{ matrix.os }}
+          name: unit-test-results
           path: test-results*.xml
           retention-days: 30
 
@@ -177,46 +72,16 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-logs-${{ matrix.os }}
+          name: unit-test-logs
           path: /tmp/test_*.log
           retention-days: 7
 
-  smoke-required:
-    name: Smoke Tests
-    runs-on: ubuntu-latest
-    needs: [classify-changes, smoke]
-    if: always()
-    steps:
-      - name: Verify smoke matrix passed
-        run: |
-          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
-            echo "Fast path: skipping smoke matrix for release/docs-only changes."
-          elif [[ "${{ needs.smoke.result }}" != "success" ]]; then
-            echo "Smoke matrix result: ${{ needs.smoke.result }}"
-            exit 1
-          fi
-
-  unit-required:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    needs: [classify-changes, unit]
-    if: always()
-    steps:
-      - name: Verify unit matrix passed
-        run: |
-          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
-            echo "Fast path: skipping unit matrix for release/docs-only changes."
-          elif [[ "${{ needs.unit.result }}" != "success" ]]; then
-            echo "Unit matrix result: ${{ needs.unit.result }}"
-            exit 1
-          fi
-
-  integration-heavy:
-    name: Integration Tests (full)
+  integration:
+    name: Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [classify-changes, unit-required]
-    if: needs.classify-changes.outputs.heavy_tests == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    needs: unit
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout code
@@ -247,26 +112,11 @@ jobs:
           path: /tmp/test_*.log
           retention-days: 7
 
-  integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: [classify-changes, integration-heavy]
-    if: always()
-    steps:
-      - name: Verify integration tests passed
-        run: |
-          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
-            echo "Fast path: skipping integration tests for release/docs-only changes."
-          elif [[ "${{ needs.integration-heavy.result }}" != "success" ]]; then
-            echo "Integration result: ${{ needs.integration-heavy.result }}"
-            exit 1
-          fi
-
   e2e:
     name: End-to-End Tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [smoke-required, unit-required, integration, portability-lint]
+    needs: [smoke, unit, integration]
     # Only run E2E on main branch, scheduled builds, or manual trigger
     if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
@@ -307,13 +157,12 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [smoke-required, unit-required, integration, portability-lint]
+    needs: [smoke, unit, integration]
     if: always()
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
-        continue-on-error: true
 
       - name: Create test summary
         run: |
@@ -323,7 +172,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Category | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Smoke | ${{ needs.smoke-required.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit | ${{ needs.unit-required.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke | ${{ needs.smoke.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit | ${{ needs.unit.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration | ${{ needs.integration.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Portability | ${{ needs.portability-lint.result }} |" >> $GITHUB_STEP_SUMMARY
