@@ -28,15 +28,23 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile, readdir } from "node:fs/promises";
+import {
+  isDirectExecution,
+  loadProviderEnvAllowlist,
+  providerEnvironment,
+  sanitizeAdapterError,
+  validateProjectRoot,
+} from "../../shared/adapter-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, "../..");
 const ORCHESTRATE_SH = resolve(PLUGIN_ROOT, "scripts/orchestrate.sh");
+const PROVIDER_ENV_ALLOWLIST = loadProviderEnvAllowlist(PLUGIN_ROOT);
 
 // --- IDE Context State ---
 
@@ -62,17 +70,20 @@ const MAX_SELECTION_LENGTH = 50_000; // 50KB max for editor selection
 
 // --- Helpers ---
 
-async function runOrchestrate(
+export async function runOrchestrate(
   command: string,
   prompt: string,
+  projectRoot: string,
   flags: string[] = [],
-  postFlags: string[] = []
+  postFlags: string[] = [],
+  executor: typeof execFileAsync = execFileAsync
 ): Promise<{ text: string; isError: boolean }> {
   // Global flags MUST come before the command; subcommand flags go after
   const args = [...flags, command, ...postFlags, prompt];
   try {
-    const { stdout, stderr } = await execFileAsync(ORCHESTRATE_SH, args, {
-      cwd: PLUGIN_ROOT,
+    const effectiveProjectRoot = await validateProjectRoot(projectRoot);
+    const { stdout, stderr } = await executor(ORCHESTRATE_SH, args, {
+      cwd: effectiveProjectRoot,
       timeout: 300_000,
       env: {
         // Security: only forward required env vars, not the full process.env
@@ -81,21 +92,9 @@ async function runOrchestrate(
         TMPDIR: process.env.TMPDIR,
         SHELL: process.env.SHELL,
         USER: process.env.USER,
-        // v8.32.0: Provider keys forwarded to orchestrate.sh which handles
-        // per-agent credential isolation via build_provider_env().
-        // Only forward keys that are set (avoid undefined in env).
-        ...(process.env.OPENAI_API_KEY && { OPENAI_API_KEY: process.env.OPENAI_API_KEY }),
-        ...(process.env.AGY_AUTH_TOKEN && { AGY_AUTH_TOKEN: process.env.AGY_AUTH_TOKEN }),
-        ...(process.env.ANTIGRAVITY_API_KEY && { ANTIGRAVITY_API_KEY: process.env.ANTIGRAVITY_API_KEY }),
-        ...(process.env.OPENROUTER_API_KEY && { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY }),
-        ...(process.env.PERPLEXITY_API_KEY && { PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY }),
-        // Ollama Anthropic-compatible path (ANTHROPIC_BASE_URL=http://localhost:11434)
-        ...(process.env.ANTHROPIC_BASE_URL && { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL }),
-        ...(process.env.ANTHROPIC_AUTH_TOKEN && { ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN }),
-        // GitHub Copilot CLI auth (checked in precedence order by copilot CLI)
-        ...(process.env.COPILOT_GITHUB_TOKEN && { COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN }),
-        ...(process.env.GH_TOKEN && { GH_TOKEN: process.env.GH_TOKEN }),
-        ...(process.env.GITHUB_TOKEN && { GITHUB_TOKEN: process.env.GITHUB_TOKEN }),
+        // The shared list covers every supported adapter. The shell dispatch
+        // plan forwards only the credential selected for the current seat.
+        ...providerEnvironment(PROVIDER_ENV_ALLOWLIST),
         // Octopus config — explicit allowlist (never forward security-governing vars)
         ...Object.fromEntries(
           Object.entries(process.env).filter(([k]) =>
@@ -109,14 +108,12 @@ async function runOrchestrate(
         ...(editorContext.selection && { OCTOPUS_IDE_SELECTION: editorContext.selection }),
         ...(editorContext.cursorLine !== undefined && { OCTOPUS_IDE_CURSOR_LINE: String(editorContext.cursorLine) }),
         ...(editorContext.languageId && { OCTOPUS_IDE_LANGUAGE: editorContext.languageId }),
-        ...(editorContext.workspaceRoot && { OCTOPUS_IDE_WORKSPACE: editorContext.workspaceRoot }),
+        OCTOPUS_PROJECT_DIR: effectiveProjectRoot,
       },
     });
     return { text: stdout || stderr || "Command completed with no output.", isError: false };
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    // Sanitize potential API key leaks from error messages
-    const sanitized = msg.replace(/[A-Za-z_]+KEY=[^\s]+/g, "[REDACTED]");
+    const sanitized = sanitizeAdapterError(error);
     return { text: `Error executing ${command}: ${sanitized}`, isError: true };
   }
 }
@@ -127,34 +124,46 @@ interface SkillMeta {
   file: string;
 }
 
-async function loadSkillMetadata(): Promise<SkillMeta[]> {
-  const skillsDir = resolve(PLUGIN_ROOT, ".claude/skills");
-
-  let files: string[];
+async function findSkillFiles(directory: string): Promise<string[]> {
+  let entries;
   try {
-    files = await readdir(skillsDir);
+    entries = await readdir(directory, { withFileTypes: true });
   } catch {
     return [];
   }
 
+  const files: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await findSkillFiles(path)));
+    } else if (entry.isFile() && entry.name === "SKILL.md") {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+export async function loadSkillMetadata(): Promise<SkillMeta[]> {
+  const files = await findSkillFiles(resolve(PLUGIN_ROOT, "skills"));
+
   const skills: SkillMeta[] = [];
 
   for (const file of files) {
-    if (!file.endsWith(".md")) continue;
-    const content = await readFile(resolve(skillsDir, file), "utf-8");
+    const content = await readFile(file, "utf-8");
     const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!frontmatterMatch) continue;
 
     const fm = frontmatterMatch[1];
     const name =
       fm.match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^["']|["']$/g, "") ??
-      file.replace(".md", "");
+      dirname(relative(PLUGIN_ROOT, file)).split("/").pop() ?? "unknown";
     const description =
       fm
         .match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1]
         ?.trim() ?? "No description";
 
-    skills.push({ name, description, file });
+    skills.push({ name, description, file: relative(PLUGIN_ROOT, file) });
   }
 
   return skills;
@@ -168,15 +177,18 @@ const server = new McpServer({
 });
 const registerTool = server.tool.bind(server) as (...args: unknown[]) => void;
 type ToolParams = Record<string, any>;
+const projectRootSchema = z
+  .string()
+  .describe("Absolute root directory of the project for this call");
 
 // --- Double Diamond Phase Tools ---
 
 registerTool(
   "octopus_discover",
   "Run the Discover (Probe) phase — multi-provider research using Codex and Antigravity CLIs for broad exploration of a topic.",
-  { prompt: z.string().describe("The topic or question to research") },
-  async ({ prompt }: ToolParams) => {
-    const { text, isError } = await runOrchestrate("probe", prompt);
+  { prompt: z.string().describe("The topic or question to research"), project_root: projectRootSchema },
+  async ({ prompt, project_root }: ToolParams) => {
+    const { text, isError } = await runOrchestrate("probe", prompt, project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -184,9 +196,9 @@ registerTool(
 registerTool(
   "octopus_define",
   "Run the Define (Grasp) phase — consensus building on requirements, scope, and approach.",
-  { prompt: z.string().describe("The requirements or scope to define") },
-  async ({ prompt }: ToolParams) => {
-    const { text, isError } = await runOrchestrate("grasp", prompt);
+  { prompt: z.string().describe("The requirements or scope to define"), project_root: projectRootSchema },
+  async ({ prompt, project_root }: ToolParams) => {
+    const { text, isError } = await runOrchestrate("grasp", prompt, project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -196,6 +208,7 @@ registerTool(
   "Run the Develop (Tangle) phase — implementation with quality gates and multi-provider validation.",
   {
     prompt: z.string().describe("What to implement"),
+    project_root: projectRootSchema,
     quality_threshold: z
       .number()
       .min(0)
@@ -203,11 +216,11 @@ registerTool(
       .default(75)
       .describe("Minimum quality score to pass (0-100)"),
   },
-  async ({ prompt, quality_threshold }: ToolParams) => {
+  async ({ prompt, project_root, quality_threshold }: ToolParams) => {
     const flags = quality_threshold !== undefined && quality_threshold !== 75
       ? ["-q", `${quality_threshold}`]
       : [];
-    const { text, isError } = await runOrchestrate("tangle", prompt, flags);
+    const { text, isError } = await runOrchestrate("tangle", prompt, project_root, flags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -215,9 +228,9 @@ registerTool(
 registerTool(
   "octopus_deliver",
   "Run the Deliver (Ink) phase — final validation, adversarial review, and delivery.",
-  { prompt: z.string().describe("What to validate and deliver") },
-  async ({ prompt }: ToolParams) => {
-    const { text, isError } = await runOrchestrate("ink", prompt);
+  { prompt: z.string().describe("What to validate and deliver"), project_root: projectRootSchema },
+  async ({ prompt, project_root }: ToolParams) => {
+    const { text, isError } = await runOrchestrate("ink", prompt, project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -227,14 +240,15 @@ registerTool(
   "Run the full Double Diamond workflow (Discover → Define → Develop → Deliver) end-to-end.",
   {
     prompt: z.string().describe("The full task or project to execute"),
+    project_root: projectRootSchema,
     autonomy: z
       .enum(["supervised", "semi-autonomous", "autonomous"])
       .default("supervised")
       .describe("How much human oversight to apply"),
   },
-  async ({ prompt, autonomy }: ToolParams) => {
+  async ({ prompt, project_root, autonomy }: ToolParams) => {
     const flags = [`--autonomy`, autonomy];
-    const { text, isError } = await runOrchestrate("embrace", prompt, flags);
+    const { text, isError } = await runOrchestrate("embrace", prompt, project_root, flags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -246,6 +260,7 @@ registerTool(
   "Run a structured AI debate between Claude, Sonnet, Antigravity, and Codex on a topic.",
   {
     question: z.string().describe("The question or topic to debate"),
+    project_root: projectRootSchema,
     rounds: z
       .number()
       .min(1)
@@ -257,10 +272,10 @@ registerTool(
       .default("cross-critique")
       .describe("Evaluation mode: cross-critique (ACH falsification) or blinded (independent evaluation, prevents anchoring bias)"),
   },
-  async ({ question, rounds, mode }: ToolParams) => {
+  async ({ question, project_root, rounds, mode }: ToolParams) => {
     // orchestrate.sh grapple parses -r/--mode AFTER the subcommand, not as global flags
     const postFlags = [`-r`, `${rounds}`, `--mode`, mode];
-    const { text, isError } = await runOrchestrate("grapple", question, [], postFlags);
+    const { text, isError } = await runOrchestrate("grapple", question, project_root, [], postFlags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -270,6 +285,7 @@ registerTool(
   "Run a configurable multi-LLM council with personas, budget caps, synthesis, veto gates, and optional implementation handoff.",
   {
     prompt: z.string().describe("The task, question, or decision for the council"),
+    project_root: projectRootSchema,
     goal: z
       .enum(["advice", "decision", "plan", "implement", "review"])
       .optional()
@@ -329,6 +345,7 @@ registerTool(
   },
   async ({
     prompt,
+    project_root,
     goal,
     domain,
     style,
@@ -364,7 +381,7 @@ registerTool(
     if (dry_run) postFlags.push("--dry-run");
     if (json) postFlags.push("--json");
 
-    const { text, isError } = await runOrchestrate("council", prompt, [], postFlags);
+    const { text, isError } = await runOrchestrate("council", prompt, project_root, [], postFlags);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -373,6 +390,7 @@ registerTool(
   "octopus_review",
   "Run multi-LLM code review pipeline (Codex + Antigravity + Claude + Perplexity fleet). Loads REVIEW.md customization if present. Supports inline PR comment publishing.",
   {
+    project_root: projectRootSchema,
     target: z
       .string()
       .optional()
@@ -398,7 +416,7 @@ registerTool(
       .optional()
       .describe("Whether to debate contested findings via multi-LLM gate (default: auto)"),
   },
-  async ({ target, focus, provenance, autonomy, publish, debate }: ToolParams) => {
+  async ({ project_root, target, focus, provenance, autonomy, publish, debate }: ToolParams) => {
     // Build JSON profile and dispatch to review_run() via code-review command
     const profile = JSON.stringify({
       target: target ?? "staged",
@@ -408,7 +426,7 @@ registerTool(
       publish: publish ?? "ask",
       debate: debate ?? "auto",
     });
-    const { text, isError } = await runOrchestrate("code-review", profile);
+    const { text, isError } = await runOrchestrate("code-review", profile, project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -417,13 +435,14 @@ registerTool(
   "octopus_security",
   "Run comprehensive security audit with OWASP compliance and vulnerability detection.",
   {
+    project_root: projectRootSchema,
     target: z
       .string()
       .describe("File path, directory, or description of what to audit"),
   },
-  async ({ target }: ToolParams) => {
+  async ({ project_root, target }: ToolParams) => {
     // orchestrate.sh uses "squeeze" for security audits
-    const { text, isError } = await runOrchestrate("squeeze", target);
+    const { text, isError } = await runOrchestrate("squeeze", target, project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -523,9 +542,9 @@ registerTool(
 registerTool(
   "octopus_status",
   "Check Claude Octopus provider availability and configuration status.",
-  {},
-  async () => {
-    const { text, isError } = await runOrchestrate("status", "");
+  { project_root: projectRootSchema },
+  async ({ project_root }: ToolParams) => {
+    const { text, isError } = await runOrchestrate("status", "", project_root);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
@@ -553,7 +572,9 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch((error) => {
-  console.error("Failed to start MCP server:", error);
-  process.exit(1);
-});
+if (isDirectExecution(import.meta.url)) {
+  main().catch((error) => {
+    console.error("Failed to start MCP server:", error);
+    process.exit(1);
+  });
+}

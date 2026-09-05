@@ -10,6 +10,15 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Packaging Integrity (Regression: Issue #19)"
 
+PACKAGING_FIXTURE_DIR=""
+cleanup_packaging_fixture() {
+    case "$PACKAGING_FIXTURE_DIR" in
+        "$TEST_TMP_DIR"/npm-pack-*) rm -rf -- "$PACKAGING_FIXTURE_DIR" ;;
+    esac
+    PACKAGING_FIXTURE_DIR=""
+}
+trap cleanup_packaging_fixture EXIT INT TERM
+
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
 
 test_sourced_scripts_exist() {
@@ -142,11 +151,166 @@ test_orchestrate_can_source_deps() {
     fi
 }
 
+test_extracted_archive_contract() {
+    test_case "npm archive contains every declared component and adapter entrypoint"
+    local required_tool pack_json tarball extract_dir package_root result npm_error
+    for required_tool in npm jq tar python3; do
+        if ! command -v "$required_tool" >/dev/null 2>&1; then
+            test_skip "$required_tool is required for npm archive validation"
+            return 0
+        fi
+    done
+    PACKAGING_FIXTURE_DIR="$TEST_TMP_DIR/npm-pack-${BASHPID:-$$}"
+    if ! mkdir "$PACKAGING_FIXTURE_DIR"; then
+        test_fail "unable to allocate package fixture"
+        return 1
+    fi
+    npm_error="$PACKAGING_FIXTURE_DIR/npm-pack.stderr"
+    extract_dir="$PACKAGING_FIXTURE_DIR/extracted"
+    mkdir -p "$extract_dir"
+    if ! pack_json=$(cd "$PROJECT_ROOT" && npm pack --ignore-scripts --json --pack-destination "$PACKAGING_FIXTURE_DIR" 2>"$npm_error"); then
+        result="$(tr '\n' ' ' < "$npm_error")"
+        cleanup_packaging_fixture
+        test_fail "npm pack failed: ${result:-no diagnostics}"
+        return 1
+    fi
+    tarball=$(printf '%s' "$pack_json" | jq -r '.[0].filename // empty' 2>/dev/null)
+    if [[ -z "$tarball" || ! -f "$PACKAGING_FIXTURE_DIR/$tarball" ]] ||
+       ! tar -xzf "$PACKAGING_FIXTURE_DIR/$tarball" -C "$extract_dir"; then
+        cleanup_packaging_fixture
+        test_fail "npm archive could not be extracted"
+        return 1
+    fi
+    package_root="$extract_dir/package"
+    local status=0
+    if result=$(python3 - "$package_root" <<'PYTEST'
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+missing = []
+
+def resolve(relative, kind="path"):
+    relative = str(relative)
+    if relative.startswith("./"):
+        relative = relative[2:]
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        missing.append(f"escaping {kind}: {relative}")
+        return None
+    return candidate
+
+claude = json.loads((root / ".claude-plugin/plugin.json").read_text())
+for command in claude.get("commands", []):
+    path = resolve(command, "Claude command")
+    if path is not None and not path.is_file():
+        missing.append(str(command))
+for skill in claude.get("skills", []):
+    path = resolve(skill, "Claude skill")
+    if path is not None and not (path / "SKILL.md").is_file():
+        missing.append(f"{skill}/SKILL.md")
+
+for manifest_name in (".codex-plugin/plugin.json", ".cursor-plugin/plugin.json"):
+    manifest = json.loads((root / manifest_name).read_text())
+    for field in ("skills", "agents", "commands"):
+        relative = manifest.get(field)
+        if isinstance(relative, str):
+            path = resolve(relative, f"{manifest_name} {field}")
+            if path is not None and not path.is_dir():
+                missing.append(f"{manifest_name}:{field}:{relative}")
+
+for adapter in ("mcp-server", "openclaw"):
+    package = root / adapter / "package.json"
+    if not package.is_file():
+        missing.append(str(package.relative_to(root)))
+        continue
+    metadata = json.loads(package.read_text())
+    entrypoint = root / adapter / metadata.get("main", "")
+    if not entrypoint.is_file():
+        missing.append(str(entrypoint.relative_to(root)))
+
+for required in ("scripts/orchestrate.sh", "hooks/hooks.json", "config/model-pricing.tsv"):
+    path = root / required
+    if not path.exists():
+        missing.append(required)
+if not os.access(root / "scripts/orchestrate.sh", os.X_OK):
+    missing.append("scripts/orchestrate.sh:not-executable")
+
+print("\n".join(missing))
+raise SystemExit(bool(missing))
+PYTEST
+    ); then
+        status=0
+    else
+        status=$?
+    fi
+    cleanup_packaging_fixture
+    if [[ "$status" -eq 0 ]]; then
+        test_pass
+    else
+        test_fail "extracted archive is incomplete: $result"
+        return 1
+    fi
+}
+
+test_metadata_fast_path_validates_archive() {
+    test_case "metadata-only CI runs extracted archive validation"
+    local workflow="$PROJECT_ROOT/.github/workflows/test.yml"
+    if grep -q '^  package-integrity:' "$workflow" &&
+       grep -q 'tests/smoke/test-packaging-integrity.sh' "$workflow"; then
+        test_pass
+    else
+        test_fail "metadata fast path can skip package archive validation"
+        return 1
+    fi
+}
+
+test_package_integrity_checkout_is_hardened() {
+    test_case "package integrity pins checkout and does not persist credentials"
+    local workflow="$PROJECT_ROOT/.github/workflows/test.yml"
+    local package_job package_checkout
+    package_job=$(sed -n '/^  package-integrity:/,/^  portability-lint:/p' "$workflow")
+    package_checkout=$(grep -A3 -F 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<< "$package_job" || true)
+    if grep -Fq 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1' <<< "$package_job" &&
+       grep -Fq 'persist-credentials: false' <<< "$package_checkout"; then
+        test_pass
+    else
+        test_fail "package integrity checkout is mutable or persists credentials"
+        return 1
+    fi
+}
+
+test_summary_propagates_package_integrity_failure() {
+    test_case "test summary reports and fails on package integrity failure"
+    local workflow="$PROJECT_ROOT/.github/workflows/test.yml"
+    local summary_job package_status_check
+    summary_job=$(sed -n '/^  test-summary:/,$p' "$workflow")
+    # shellcheck disable=SC2016 # Match literal GitHub expressions in the workflow.
+    package_status_check=$(grep -A3 -F 'if [[ "${{ needs.package-integrity.result }}" != "success" ]]; then' <<< "$summary_job" || true)
+    # shellcheck disable=SC2016 # Match literal GitHub expressions in the workflow.
+    if grep -Fq '| Package | ${{ needs.package-integrity.result }} |' <<< "$summary_job" &&
+       grep -Fq 'if [[ "${{ needs.package-integrity.result }}" != "success" ]]; then' <<< "$summary_job" &&
+       grep -Fq 'exit 1' <<< "$package_status_check"; then
+        test_pass
+    else
+        test_fail "test summary does not propagate package integrity failure"
+        return 1
+    fi
+}
+
 # Run tests
 test_sourced_scripts_exist
 test_metrics_tracker_exists
 test_state_manager_exists
 test_hook_scripts_exist
 test_orchestrate_can_source_deps
+test_extracted_archive_contract
+test_metadata_fast_path_validates_archive
+test_summary_propagates_package_integrity_failure
+test_package_integrity_checkout_is_hardened
 
 test_summary

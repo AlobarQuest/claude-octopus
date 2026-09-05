@@ -17,11 +17,24 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type, type TSchema, type Static } from "@sinclair/typebox";
 import { loadSkills } from "./skill-loader.js";
+import {
+  loadProviderEnvAllowlist,
+  providerEnvironment,
+  sanitizeAdapterError,
+  validateProjectRoot,
+} from "../../shared/adapter-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, "../..");
+const PROVIDER_ENV_ALLOWLIST = loadProviderEnvAllowlist(PLUGIN_ROOT);
+const BLOCKED_ENV_VARS = new Set([
+  "OCTOPUS_SECURITY_V870",
+  "OCTOPUS_AGY_SANDBOX",
+  "OCTOPUS_CODEX_SANDBOX",
+  "CLAUDE_OCTOPUS_AUTONOMY",
+]);
 
 // --- Types (OpenClaw Plugin API — matching openclaw@2026.2.22-2) ---
 
@@ -74,20 +87,26 @@ function textResult(text: string): AgentToolResult {
 
 // Allowed autonomy values for runtime validation
 const VALID_AUTONOMY = new Set(["supervised", "semi-autonomous", "autonomous"]);
+const PROJECT_ROOT_PARAMETER = Type.String({
+  description: "Absolute root directory of the project for this call",
+});
 
-async function executeOrchestrate(
+export async function executeOrchestrate(
   command: string,
   prompt: string,
+  projectRoot: string,
   flags: string[] = [],
-  postFlags: string[] = []
+  postFlags: string[] = [],
+  executor: typeof execFileAsync = execFileAsync
 ): Promise<string> {
   const orchestrateSh = resolve(PLUGIN_ROOT, "scripts/orchestrate.sh");
   // Global flags MUST come before the command; subcommand flags go after
   const args = [...flags, command, ...postFlags, prompt];
 
   try {
-    const { stdout, stderr } = await execFileAsync(orchestrateSh, args, {
-      cwd: PLUGIN_ROOT,
+    const effectiveProjectRoot = await validateProjectRoot(projectRoot);
+    const { stdout, stderr } = await executor(orchestrateSh, args, {
+      cwd: effectiveProjectRoot,
       timeout: 300_000,
       env: {
         // Security: only forward required env vars, not the full process.env
@@ -96,33 +115,24 @@ async function executeOrchestrate(
         TMPDIR: process.env.TMPDIR,
         SHELL: process.env.SHELL,
         USER: process.env.USER,
-        // AI provider keys
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-        AGY_AUTH_TOKEN: process.env.AGY_AUTH_TOKEN,
-        ANTIGRAVITY_API_KEY: process.env.ANTIGRAVITY_API_KEY,
-        OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-        PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
-        // Ollama Anthropic-compatible path (ANTHROPIC_BASE_URL=http://localhost:11434)
-        ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
-        ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
-        // GitHub Copilot CLI auth (checked in precedence order by copilot CLI)
-        COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
-        GH_TOKEN: process.env.GH_TOKEN,
-        GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+        // The shared list covers every supported adapter. The shell dispatch
+        // plan forwards only the credential selected for the current seat.
+        ...providerEnvironment(PROVIDER_ENV_ALLOWLIST),
         // Octopus config
         ...Object.fromEntries(
           Object.entries(process.env).filter(([k]) =>
-            k.startsWith("CLAUDE_OCTOPUS_") || k.startsWith("OCTOPUS_")
+            (k.startsWith("CLAUDE_OCTOPUS_") || k.startsWith("OCTOPUS_")) &&
+            !BLOCKED_ENV_VARS.has(k)
           )
         ),
         CLAUDE_OCTOPUS_MCP_MODE: "true",
         CLAUDE_OCTOPUS_OPENCLAW: "true",
+        OCTOPUS_PROJECT_DIR: effectiveProjectRoot,
       },
     });
     return stdout || stderr || "Command completed with no output.";
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return `Error: ${msg}`;
+    return `Error: ${sanitizeAdapterError(error)}`;
   }
 }
 
@@ -144,8 +154,9 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Run multi-provider research using Codex and Antigravity CLIs for broad exploration.",
     parameters: Type.Object({
       prompt: Type.String({ description: "Topic to research" }),
+      project_root: PROJECT_ROOT_PARAMETER,
     }),
-    run: async (params) => executeOrchestrate("probe", params.prompt as string),
+    run: async (params) => executeOrchestrate("probe", params.prompt as string, params.project_root as string),
   },
   {
     name: "octopus_define",
@@ -154,8 +165,9 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Build consensus on requirements, scope, and approach using multi-AI synthesis.",
     parameters: Type.Object({
       prompt: Type.String({ description: "Requirements or scope to define" }),
+      project_root: PROJECT_ROOT_PARAMETER,
     }),
-    run: async (params) => executeOrchestrate("grasp", params.prompt as string),
+    run: async (params) => executeOrchestrate("grasp", params.prompt as string, params.project_root as string),
   },
   {
     name: "octopus_develop",
@@ -164,6 +176,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Implement with quality gates and multi-provider validation.",
     parameters: Type.Object({
       prompt: Type.String({ description: "What to implement" }),
+      project_root: PROJECT_ROOT_PARAMETER,
       quality_threshold: Type.Optional(
         Type.Number({ description: "Minimum quality score (0-100)", default: 75 })
       ),
@@ -171,7 +184,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
     run: async (params) => {
       const qt = params.quality_threshold as number | undefined;
       const flags = qt !== undefined && qt !== 75 ? ["-q", `${qt}`] : [];
-      return executeOrchestrate("tangle", params.prompt as string, flags);
+      return executeOrchestrate("tangle", params.prompt as string, params.project_root as string, flags);
     },
   },
   {
@@ -181,8 +194,9 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Final validation, adversarial review, and delivery of completed work.",
     parameters: Type.Object({
       prompt: Type.String({ description: "What to validate and deliver" }),
+      project_root: PROJECT_ROOT_PARAMETER,
     }),
-    run: async (params) => executeOrchestrate("ink", params.prompt as string),
+    run: async (params) => executeOrchestrate("ink", params.prompt as string, params.project_root as string),
   },
   {
     name: "octopus_embrace",
@@ -191,6 +205,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Full Double Diamond workflow: Discover → Define → Develop → Deliver.",
     parameters: Type.Object({
       prompt: Type.String({ description: "Full task or project" }),
+      project_root: PROJECT_ROOT_PARAMETER,
       autonomy: Type.Optional(
         Type.Union(
           [
@@ -207,7 +222,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       if (!VALID_AUTONOMY.has(autonomy)) {
         return `Error: invalid autonomy value '${autonomy}'. Allowed: supervised, semi-autonomous, autonomous`;
       }
-      return executeOrchestrate("embrace", params.prompt as string, [
+      return executeOrchestrate("embrace", params.prompt as string, params.project_root as string, [
         `--autonomy`, autonomy,
       ]);
     },
@@ -219,6 +234,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Multi-provider AI debate between Claude, Sonnet, Antigravity, and Codex on any topic.",
     parameters: Type.Object({
       question: Type.String({ description: "Question to debate" }),
+      project_root: PROJECT_ROOT_PARAMETER,
       rounds: Type.Optional(
         Type.Number({ default: 1, description: "Debate rounds" })
       ),
@@ -234,7 +250,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
     }),
     // orchestrate.sh grapple parses -r/--mode AFTER the subcommand, not as global flags
     run: async (params) =>
-      executeOrchestrate("grapple", params.question as string, [], [
+      executeOrchestrate("grapple", params.question as string, params.project_root as string, [], [
         "-r",
         `${params.rounds ?? 1}`,
         "--mode",
@@ -248,6 +264,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       "Use Octopus to turn a project brief, roadmap, implementation plan, or decision into a structured council output. For planning-only handoffs from main, set goal=plan and implement=never.",
     parameters: Type.Object({
       prompt: Type.String({ description: "Project brief, roadmap path, implementation plan, or decision to pass to Octopus. Include explicit no-edit/no-implementation constraints for planning-only handoffs." }),
+      project_root: PROJECT_ROOT_PARAMETER,
       goal: Type.Optional(
         Type.Union([
           Type.Literal("advice"),
@@ -357,7 +374,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
       if (params.dry_run === true) postFlags.push("--dry-run");
       if (params.json === true) postFlags.push("--json");
 
-      return executeOrchestrate("council", params.prompt as string, [], postFlags);
+      return executeOrchestrate("council", params.prompt as string, params.project_root as string, [], postFlags);
     },
   },
   {
@@ -366,6 +383,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
     description:
       "Multi-LLM code review pipeline (Codex + Antigravity + Claude + Perplexity fleet). Loads REVIEW.md customization, supports inline PR comment publishing.",
     parameters: Type.Object({
+      project_root: PROJECT_ROOT_PARAMETER,
       target: Type.Optional(
         Type.String({ description: "What to review: 'staged' (default), 'working-tree', PR number, or file path" })
       ),
@@ -421,7 +439,7 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
         publish: (params.publish as string) ?? "ask",
         debate: (params.debate as string) ?? "auto",
       });
-      return executeOrchestrate("code-review", profile);
+      return executeOrchestrate("code-review", profile, params.project_root as string);
     },
   },
   {
@@ -430,10 +448,11 @@ const WORKFLOW_DEFS: WorkflowDef[] = [
     description:
       "Comprehensive security audit with OWASP compliance and vulnerability detection.",
     parameters: Type.Object({
+      project_root: PROJECT_ROOT_PARAMETER,
       target: Type.String({ description: "File or directory to audit" }),
     }),
     run: async (params) =>
-      executeOrchestrate("squeeze", params.target as string),
+      executeOrchestrate("squeeze", params.target as string, params.project_root as string),
   },
 ];
 
