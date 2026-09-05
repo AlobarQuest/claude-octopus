@@ -1924,10 +1924,55 @@ council_response_is_blind() {
     # provider explicitly reports it could not reach the file/permission, rather
     # than a host self-dispatch stub. Surfacing it (vs a generic "degenerate")
     # lets the operator switch that provider's mode/model after the FIRST blind
-    # round instead of eating several. Brevity-gated so a long real review that
-    # merely quotes such a phrase is never flagged.
+    # round instead of eating several. The explicit-refusal checks below are
+    # brevity-gated so a long real review that merely quotes such a phrase is
+    # never flagged; the fabricated-narrative check just above is length-
+    # independent because that failure mode is, by construction, long.
     local f="$1"
     [[ -f "$f" ]] || return 1
+
+    # Length-INDEPENDENT "fabricated narrative" blind seat (sail-cruisey #2459):
+    # a reviewer dispatched without file-read tools that writes a long, plausible
+    # VERDICT entirely from the prose task-summary. It slips past the brevity gate
+    # below (these fabrications run well over 1600 chars). Flag it only when it
+    # BOTH (a) explicitly admits in the first person that it could not reach the
+    # artifact — file access restricted / prohibited from file-or-terminal tools /
+    # cannot-read-files —
+    # AND (b) cites zero real source references (extension-neutral path.ext:line).
+    # Both are required so a genuine review is never flagged for merely mentioning
+    # a summary. NOTES:
+    #  - a bare "based on the provided summary" is deliberately NOT a trigger — a
+    #    legitimate plan/design review (no code to cite) uses that phrasing.
+    #  - "assuming the described changes" is likewise NOT a standalone trigger: it
+    #    is a normal conditional a plan review can use. #2459 is still caught by its
+    #    explicit "file access is restricted" admission.
+    #  - (b) matches any letter-first extension (.sh/.py/.go/.tsx/…), so a grounded
+    #    non-frontend review that cites e.g. council.sh:1946 is never flagged.
+    # Normalize wrapping, then evaluate one sentence/clause at a time. This
+    # catches Markdown line wraps without letting an unrelated first-person
+    # sentence turn a later third-person access report into an admission.
+    local normalized_without_urls
+    normalized_without_urls="$(tr '\n' ' ' < "$f" | tr -s '[:space:]' ' ' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E \
+            -e 's#https?://[^[:space:]]*([.!?;])([[:space:]]|$)#\1\2#g' \
+            -e 's#https?://[^[:space:]]+##g')"
+    if printf '%s\n' "$normalized_without_urls" | awk '
+        BEGIN { RS="[.!?;]+"; found=0 }
+        {
+            first_person = ($0 ~ /(^|[^[:alnum:]_])(i|we|my|our)([^[:alnum:]_]|$)/)
+            access_failure = ($0 ~ /((direct[[:space:]]+)?file[[:space:]]+access[[:space:]]+is[[:space:]]+restricted|restricted[[:space:]]+by[[:space:]]+the[[:space:]]+output[[:space:]]+rules|prohibited[[:space:]]+from[[:space:]]+using[[:space:]]+any[[:space:]]+(file|terminal|command)|(cannot|could[[:space:]]*not|couldn.t|unable[[:space:]]+to|can.t|was[[:space:]]+not[[:space:]]+able[[:space:]]+to|were[[:space:]]+not[[:space:]]+able[[:space:]]+to)[[:space:]]+(open|read|access|view)[^.!?;]{0,40}(files?|plan|prd|diff|patch|artifact|document|spec)|(did[[:space:]]+not|do[[:space:]]+not|don.t)[[:space:]]+have[[:space:]]+(direct[[:space:]]+)?access[^.!?;]{0,40}(files?|plan|prd|diff|patch|artifact|document|spec)|lack(ed|s)?[[:space:]]+(direct[[:space:]]+)?access[^.!?;]{0,40}(files?|plan|prd|diff|patch|artifact|document|spec))/)
+            third_party_access = ($0 ~ /(^|[^[:alnum:]_])(another|other)[[:space:]]+(reviewer|seat|agent|provider|model)([^[:alnum:]_]|$)[^.!?;]{0,80}(cannot|could[[:space:]]*not|couldn.t|unable[[:space:]]+to|can.t|did[[:space:]]+not|lack(ed|s)?)/)
+            first_person_access = ($0 ~ /(^|[^[:alnum:]_])(i|we)[[:space:]]+(cannot|could[[:space:]]*not|couldn.t|unable[[:space:]]+to|can.t|was[[:space:]]+not[[:space:]]+able[[:space:]]+to|were[[:space:]]+not[[:space:]]+able[[:space:]]+to)[[:space:]]+(open|read|access|view)/ || $0 ~ /(^|[^[:alnum:]_])(i|we)[[:space:]]+((did[[:space:]]+not|do[[:space:]]+not|don.t)[[:space:]]+have|lack(ed)?)[[:space:]]+(direct[[:space:]]+)?access/)
+            if (first_person && access_failure && (!third_party_access || first_person_access)) found=1
+        }
+        END { exit(found ? 0 : 1) }
+    ' >/dev/null 2>&1 \
+        && ! printf '%s\n' "$normalized_without_urls" \
+            | grep -ciE '(^|[^[:alnum:]_./-])[[:alnum:]_./-]+\.[[:alpha:]][[:alnum:]]*:[0-9]+([^0-9]|$)' >/dev/null; then
+        return 0
+    fi
+
     local nlen
     nlen="$(tr -d '[:space:]' < "$f" | wc -c | tr -d '[:space:]')"
     (( nlen < 1600 )) || return 1

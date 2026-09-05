@@ -2375,6 +2375,271 @@ test_council_advice_marks_blind_seat() {
     fi
 }
 
+test_council_blind_fabricated_narrative() {
+    test_case "a long fabricated-narrative seat (admits no file access, zero source cites) is blind regardless of length; grounded long reviews and plan reviews are not (sail-cruisey #2459)"
+    load_council_lib || return 1
+
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-fabricated.XXXXXX")"
+
+    # (a) Fabricated narrative: LONG (>1600 non-ws chars, clears the brevity gate),
+    # admits "direct file access is restricted by the output rules", cites zero
+    # path.ext:line references, still emits VERDICT: APPROVE. This is the exact
+    # shape of the agy seat in the #2459 council that recorded met:true wrongly.
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Based on the provided summary of the changes, the approach is architecturally sound and the described refactor preserves the existing data contract between the frontend and the backend API surface while keeping the component boundaries intact."
+        done
+        echo
+        echo "I am assuming the described changes accurately reflect the contents of the diff, as direct file access is restricted by the output rules."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/fabricated.md"
+
+    # (b) Grounded long review: same length class, but carries real file:line
+    # evidence — must NOT be flagged even though it also references "the summary".
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Based on the provided summary and the diff, the guard added in src/WatcherDashboard.tsx:142 correctly handles the nil price point and the fixture wiring is consistent across the affected suite."
+        done
+        echo
+        echo "src/WatcherDashboard.test.tsx:88 asserts the success case; src/api/types.ts:53 defines the contract."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/grounded.md"
+
+    # (c) Plan/design review control: LONG, references "based on the provided
+    # summary", cites zero code lines (there is no code to cite in a plan review),
+    # but makes NO could-not-read-the-artifact admission. Must NOT be flagged —
+    # this is the #2527 false-positive guard.
+    {
+        echo "## Recommendation"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Approve the plan. Solving the contrast issue at the design-token architecture level and enforcing it with an automated end-to-end assertion is aligned with robust, systemic engineering practice and prevents future regressions."
+        done
+        echo
+        echo "Confidence: High (based on the provided summary of the plan's methodology)."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/planreview.md"
+
+    # (d) Substantive third-person review that discusses an access restriction as
+    # implementation behavior. The phrase alone is not a personal admission that
+    # the reviewer could not inspect the artifact, even without source citations.
+    {
+        echo "## Review"
+        for _i in $(seq 1 24); do
+            echo "The implementation correctly documents that file access is restricted by the output rules while preserving the review workflow and its existing operator-facing behavior."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/third-person-restriction.md"
+
+    # First-person prose in one clause must not attach to another reviewer's
+    # access failure in a later semicolon-delimited clause.
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment; another reviewer could not access the files. The implementation remains sound."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/mixed-person.md"
+
+    # First-person analysis and another reviewer's access failure can also share
+    # one clause; the explicit third-party subject keeps it from becoming a
+    # personal admission.
+    {
+        for _i in $(seq 1 24); do
+            echo "I confirmed that another reviewer could not access the files, but their limitation does not change my substantive assessment."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/same-clause-third-party.md"
+
+    # A third-party report must not mask an explicit first-person admission in
+    # that same clause.
+    {
+        for _i in $(seq 1 24); do
+            echo "I cannot access the files, and another reviewer could not access them either."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/same-clause-self-and-third-party.md"
+
+    # Ordinary Markdown wrapping must not hide the reviewer's own admission.
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        printf '%s\n' "I cannot" "access the files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/wrapped-admission.md"
+
+    # Equivalent explicit first-person admissions must not evade the long-form
+    # check merely by avoiding the words "cannot" and "unable".
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I did not have access to the repository files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/did-not-have-access.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I was not able to read the diff in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/was-not-able.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I lack direct access to the source files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/lack-access.md"
+
+    # A URL port is not a repository source citation.
+    {
+        for _i in $(seq 1 24); do
+            echo "The service health endpoint is documented at https://example.com:443/status and the overall approach appears sound."
+        done
+        echo "I cannot access the files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/url-port.md"
+
+    # Removing a URL must preserve a following sentence/clause boundary so a
+    # first-person assessment does not attach to a third-person access report.
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment at https://example.com/status. Another reviewer could not access the files."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/url-period-boundary.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment at https://example.com/status; another reviewer could not access the files."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/url-semicolon-boundary.md"
+
+    # (e) Plan review that uses the conditional "assuming the described changes"
+    # with no code cites and NO access-failure admission — must NOT be flagged.
+    # "assuming the described changes" is a normal conditional, not an admission
+    # of blindness, so it is not a standalone trigger (CodeRabbit #1000).
+    {
+        echo "## Recommendation"
+        echo "Approve. Assuming the described changes land as specified, the token architecture is sound and the rollout sequencing is reasonable."
+        echo "VERDICT: APPROVE"
+    } > "$d/assuming.md"
+
+    # (f) Grounded review that DOES admit restricted access but cites a real
+    # non-frontend source reference (path.ext:line). The extension-neutral cite
+    # check must recognize it and keep the seat OUT of the blind set (CodeRabbit
+    # #1000: shell/py/go citations, not just the frontend allowlist).
+    {
+        echo "## Review"
+        for _i in $(seq 1 24); do
+            echo "The implementation follows the documented control flow and preserves the existing safety boundary."
+        done
+        echo "I cannot access files in this sandbox, but the guard at [scripts/lib/council.sh:1946] correctly bounds the case; helpers/run.py:12 is consistent."
+        echo "VERDICT: APPROVE"
+    } > "$d/shellcite.md"
+
+    # (g) Long, citation-free response whose access admission names a NON-"file"
+    # artifact noun ("cannot access the diff") — must still be flagged. The access
+    # clause uses the same artifact nouns as the short-response branch, not just
+    # file/files (CodeRabbit #1000).
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "The refactor keeps the data contract intact and the component boundaries look reasonable given the described behavior of the affected modules and their call sites."
+        done
+        echo
+        echo "I cannot access the diff directly, so this is based on the described behavior."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/cantdiff.md"
+
+    local fab_len fab=n grounded_ok=n plan_ok=n third_person_ok=n mixed_person_ok=n
+    local same_clause_third_party_ok=n same_clause_self_and_third_party=n
+    local wrapped=n did_not_have=n was_not_able=n lack_access=n url_port=n
+    local url_period_ok=n url_semicolon_ok=n assuming_ok=n shellcite_ok=n cantdiff=n
+    council_response_is_blind "$d/cantdiff.md" && cantdiff=y
+    council_response_is_blind "$d/wrapped-admission.md" && wrapped=y
+    council_response_is_blind "$d/did-not-have-access.md" && did_not_have=y
+    council_response_is_blind "$d/was-not-able.md" && was_not_able=y
+    council_response_is_blind "$d/lack-access.md" && lack_access=y
+    council_response_is_blind "$d/url-port.md" && url_port=y
+    council_response_is_blind "$d/url-period-boundary.md" || url_period_ok=y
+    council_response_is_blind "$d/url-semicolon-boundary.md" || url_semicolon_ok=y
+    fab_len="$(tr -d '[:space:]' < "$d/fabricated.md" | wc -c | tr -d '[:space:]')"
+    council_response_is_blind "$d/assuming.md" || assuming_ok=y
+    council_response_is_blind "$d/shellcite.md" || shellcite_ok=y
+    council_response_is_blind "$d/fabricated.md" && fab=y
+    council_response_is_blind "$d/grounded.md" || grounded_ok=y
+    council_response_is_blind "$d/planreview.md" || plan_ok=y
+    council_response_is_blind "$d/third-person-restriction.md" || third_person_ok=y
+    council_response_is_blind "$d/mixed-person.md" || mixed_person_ok=y
+    council_response_is_blind "$d/same-clause-third-party.md" || same_clause_third_party_ok=y
+    council_response_is_blind "$d/same-clause-self-and-third-party.md" && same_clause_self_and_third_party=y
+
+    # Integration: a fabricated-narrative agy seat alongside a grounded codex seat
+    # in a standard (required=2) council. agy must be classified blind and dropped
+    # from the approving set, leaving a single grounded model family (openai) — so
+    # the vote fails and quorum.met recomputes to false (the #2459 miss).
+    local r; r="$(mktemp -d "$TEST_TMP_DIR/council-fab-int.XXXXXX")"; mkdir -p "$r/responses"
+    COUNCIL_RUN_DIR="$r"
+    COUNCIL_DEPTH="standard"
+    COUNCIL_FIXTURE=""
+    COUNCIL_BLIND_SEATS=""
+    COUNCIL_ROSTER_JSON='[
+      {"persona":"backend-architect","seat":"member","provider":"agy","provider_org":"google","model":"gemini"},
+      {"persona":"security-auditor","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"}
+    ]'
+    council_dispatch_member_detached() {
+        local mj="$1" out="$3" prov
+        prov="$(jq -r '.provider' <<< "$mj")"
+        if [[ "$prov" == "agy" ]]; then
+            cp "$d/fabricated.md" "$out"
+        else
+            printf '## Review\n\nsrc/app.tsx:42 guards the nil case; src/api/types.ts:9 matches.\n\nVERDICT: APPROVE\n' > "$out"
+        fi
+        return 0
+    }
+    council_run_chair_fallback() { :; }
+    # This is an assignment word before a function call. Quote the value, not
+    # the complete KEY=value token, which the shell would treat as a command.
+    COUNCIL_PROVIDER_STATUS_JSON='{"agy":"available","codex":"available"}' \
+        council_run_advice_phase >/dev/null 2>&1 || true
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    local agy_status codex_prov blind met approving_fams
+    agy_status="$(jq -r 'map(select(.provider=="agy"))[0].status // "none"' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    blind="$COUNCIL_BLIND_SEATS"
+    met="$COUNCIL_QUORUM_MET"
+    approving_fams="$COUNCIL_DISTINCT_APPROVING_MODEL_FAMILIES"
+    codex_prov="$COUNCIL_RESPONDING_PROVIDERS"
+
+    if [[ "$fab" == "y" && "$fab_len" -gt 1600 && "$grounded_ok" == "y" && "$plan_ok" == "y" \
+          && "$third_person_ok" == "y" && "$mixed_person_ok" == "y" \
+          && "$same_clause_third_party_ok" == "y" \
+          && "$same_clause_self_and_third_party" == "y" \
+          && "$wrapped" == "y" && "$did_not_have" == "y" \
+          && "$was_not_able" == "y" && "$lack_access" == "y" && "$url_port" == "y" \
+          && "$url_period_ok" == "y" && "$url_semicolon_ok" == "y" \
+          && "$assuming_ok" == "y" && "$shellcite_ok" == "y" && "$cantdiff" == "y" \
+          && "$agy_status" == "blind" && "$blind" == *"agy"* \
+          && "$codex_prov" == *"codex"* && "$codex_prov" != *"agy"* \
+          && "$approving_fams" == "1" && "$met" == "false" ]]; then
+        test_pass
+    else
+        test_fail "fabricated-narrative blind detection wrong: fab=$fab fab_len=$fab_len grounded_ok=$grounded_ok plan_ok=$plan_ok third_person_ok=$third_person_ok mixed_person_ok=$mixed_person_ok wrapped=$wrapped did_not_have=$did_not_have was_not_able=$was_not_able lack_access=$lack_access url_port=$url_port url_period_ok=$url_period_ok url_semicolon_ok=$url_semicolon_ok assuming_ok=$assuming_ok shellcite_ok=$shellcite_ok cantdiff=$cantdiff agy_status='$agy_status' blind=[$blind] responders=[$codex_prov] approving_families=$approving_fams met=$met"
+        return 1
+    fi
+}
+
 test_council_permission_denied_finding_is_substantive() {
     test_case "a short grounded review may mention permission denied without being blind"
     load_council_lib || return 1
@@ -2850,6 +3115,7 @@ test_council_live_response_uses_synthesis_timeout_for_chair
 test_council_rc_is_timeout_requires_watchdog_provenance
 test_council_advice_marks_timed_out_seat
 test_council_advice_marks_blind_seat
+test_council_blind_fabricated_narrative
 test_council_permission_denied_finding_is_substantive
 test_council_advice_does_not_infer_timeout_from_provider_rc
 test_council_seat_timeout_rejects_zero_and_nonnumeric
