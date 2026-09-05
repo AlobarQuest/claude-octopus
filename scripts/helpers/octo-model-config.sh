@@ -71,6 +71,10 @@ log_info() { echo -e "${GREEN}INFO:${NC} $1"; }
 log_warn() { echo -e "${YELLOW}WARN:${NC} $1"; }
 log_error() { echo -e "${RED}ERROR:${NC} $1"; }
 
+automatic_target_allowed() {
+    octo_model_automatic_target_allowed "${1:-}"
+}
+
 # Ensure config file exists and is v3.0
 ensure_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -96,8 +100,7 @@ ensure_config() {
     "claude": {
       "default": "claude-sonnet-5",
       "budget": "claude-haiku-4.5",
-      "opus": "claude-opus-5",
-      "fable": "claude-fable-5"
+      "opus": "claude-opus-5"
     },
     "perplexity": {
       "default": "sonar-pro",
@@ -463,6 +466,10 @@ cmd_tier() {
         log_error "Invalid tier target: '$target'"
         return 1
     fi
+    if ! automatic_target_allowed "$target"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic cost tier"
+        return 1
+    fi
 
     ensure_config
     local tmp_file="${CONFIG_FILE}.tmp.$$"
@@ -651,7 +658,17 @@ cmd_set() {
         exit 1
     fi
 
+    if [[ -n "$capability" ]] && ! automatic_target_allowed "$model"; then
+        log_error "$model is explicit-only and cannot be assigned to an automatic capability"
+        exit 1
+    fi
+
     ensure_config
+
+    if [[ -z "$capability" ]] && ! automatic_target_allowed "$model"; then
+        log_error "$model is explicit-only; use a one-command environment pin or an exact model-qualified seat"
+        exit 1
+    fi
 
     # v8.49.0: Use jq --arg for injection safety
     if [[ -n "$capability" ]]; then
@@ -684,6 +701,10 @@ cmd_route() {
         log_error "Invalid target: '$target'"
         exit 1
     fi
+    if ! automatic_target_allowed "$target"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic phase route"
+        exit 1
+    fi
 
     ensure_config
     # v8.49.0: Use jq --arg for injection safety
@@ -706,6 +727,10 @@ cmd_route_role() {
 
     if ! validate_model "$target"; then
         log_error "Invalid target: '$target'"
+        exit 1
+    fi
+    if ! automatic_target_allowed "$target"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic role route"
         exit 1
     fi
 
@@ -736,14 +761,16 @@ cmd_models() {
     local filter="${1:-}"
     echo -e "${CYAN}Model Catalog${NC}"
     echo "───────────────────────────────────────────────────────────────────────────"
-    printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" "Model" "Ctx(K)" "Tools" "Image" "Reas" "Provider" "Tier" "Status"
-    echo "  ───────────────────────────────────────────────────────────────────────────"
+    printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %-10s %s\n" "Model" "Ctx(K)" "Tools" "Image" "Reas" "Provider" "Tier" "Policy" "Status"
+    echo "  ──────────────────────────────────────────────────────────────────────────────────────"
 
-    local name catalog ctx tools images reasoning provider tier status
+    local name catalog ctx tools images reasoning provider tier status policy selection
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
         catalog="$(get_model_catalog "$name")"
         IFS='|' read -r ctx tools images reasoning provider tier status <<< "$catalog"
+        policy="$(get_model_policy "$name")"
+        selection="${policy%%|*}"
 
         # Apply filter
         if [[ -n "$filter" ]]; then
@@ -757,8 +784,8 @@ cmd_models() {
             esac
         fi
 
-        printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" \
-            "$name" "${ctx}K" "$tools" "$images" "$reasoning" "$provider" "$tier" "$status"
+        printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %-10s %s\n" \
+            "$name" "${ctx}K" "$tools" "$images" "$reasoning" "$provider" "$tier" "$selection" "$status"
     done < <(octo_model_ids)
     echo ""
     echo "  Filters: --tools, --images, --reasoning, --budget, --premium, or text search"

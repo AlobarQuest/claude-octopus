@@ -12,8 +12,15 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _provider_registry_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${_provider_registry_dir}/provider-registry.sh" || { echo "provider-routing: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
-source "${_provider_registry_dir}/kimi-env.sh" || { echo "provider-routing: failed to load kimi-env.sh" >&2; return 1 2>/dev/null || exit 1; }
+_octo_provider_routing_load_error() {
+    if declare -f log >/dev/null 2>&1; then
+        log ERROR "$1"
+    else
+        printf '%s\n' "$1" >&2
+    fi
+}
+source "${_provider_registry_dir}/provider-registry.sh" || { _octo_provider_routing_load_error "provider-routing: failed to load provider-registry.sh"; return 1 2>/dev/null || exit 1; }
+source "${_provider_registry_dir}/kimi-env.sh" || { _octo_provider_routing_load_error "provider-routing: failed to load kimi-env.sh"; return 1 2>/dev/null || exit 1; }
 
 # Providers accepted by set_provider_model / reset_provider_model.
 #
@@ -37,6 +44,9 @@ octo_model_config_provider_list() {
 _provider_routing_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -f octo_model_cache_file >/dev/null 2>&1; then
     source "${_provider_routing_lib_dir}/model-cache-path.sh" 2>/dev/null || true
+fi
+if ! declare -f octo_model_automatic_target_allowed >/dev/null 2>&1; then
+    source "${_provider_routing_lib_dir}/models.sh" || { _octo_provider_routing_load_error "provider-routing: failed to load models.sh"; return 1 2>/dev/null || exit 1; }
 fi
 
 # [EXTRACTED to lib/persona-loader.sh] select_opus_mode()
@@ -478,8 +488,7 @@ migrate_provider_config() {
     "claude": {
       "default": "claude-sonnet-5",
       "budget": "claude-haiku-4.5",
-      "opus": "claude-opus-5",
-      "fable": "claude-fable-5"
+      "opus": "claude-opus-5"
     }
   },
   "routing": {
@@ -642,6 +651,11 @@ set_provider_model() {
         echo "  Examples: gpt-5.6-sol, default, claude-opus-5" >&2
         return 1
     fi
+    if ! octo_model_automatic_target_allowed "$model"; then
+        echo "ERROR: '$model' is explicit-only and cannot be stored in providers.json" >&2
+        echo "  Use a one-command environment pin or an exact model-qualified seat" >&2
+        return 1
+    fi
 
     # Ensure config file exists and is v3.0
     if [[ ! -f "$config_file" ]]; then
@@ -666,8 +680,7 @@ set_provider_model() {
     "claude": {
       "default": "claude-sonnet-5",
       "budget": "claude-haiku-4.5",
-      "opus": "claude-opus-5",
-      "fable": "claude-fable-5"
+      "opus": "claude-opus-5"
     }
   },
   "routing": {

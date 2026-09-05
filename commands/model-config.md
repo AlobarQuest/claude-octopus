@@ -158,15 +158,22 @@ AskUserQuestion({
     header: "Codex Model",
     multiSelect: false,
     options: [
-      {label: "gpt-5.6-sol", description: "Frontier — 1M context, $5/$30 MTok, best for implementation and independent review"},
-      {label: "gpt-5.6-terra", description: "Balanced — 1M context, $2.50/$15 MTok, strong general-purpose Codex seat"},
-      {label: "gpt-5.6-luna", description: "Budget — 1M context, $1/$6 MTok, best for quick checks and prototypes"},
+      {label: "gpt-5.6-sol", description: "Frontier default — 1M context, $4/$20 MTok, best for implementation and independent review"},
+      {label: "gpt-5.6-terra", description: "Balanced — 1M context, $2/$12 MTok, strong general-purpose Codex seat"},
+      {label: "gpt-5.6-luna", description: "Budget — 1M context, $0.20/$1.20 MTok, best for quick checks and prototypes"},
       {label: "o3", description: "Reasoning — 200K context, $2/$8 MTok, deep analysis & trade-offs"},
       {label: "Custom", description: "Enter a custom model name"}
     ]
   }]
 })
 ```
+
+`gpt-6-astra` is intentionally absent from persistent defaults and cost tiers.
+For a bounded evaluation after Sol fails a hard acceptance test, use
+`OCTOPUS_CODEX_MODEL=gpt-6-astra` for one command or an exact
+`codex:gpt-6-astra` seat. Model overrides written by `--session` share the
+global provider configuration, so explicit-only frontier models are rejected
+there until overrides are truly session-scoped.
 
 **OpenRouter example:**
 ```
@@ -491,22 +498,18 @@ When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.6-sol`), skip
 
 2. **Set Model** (`<provider> <model>` or with `--session`):
    ```bash
-   # Read and validate
-   CONFIG_FILE="${HOME}/.claude-octopus/config/providers.json"
-   # Use jq to set the model
-   jq --arg p "<provider>" --arg m "<model>" '.providers[$p].default = $m' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh set "<provider>" "<model>" [--session]
    ```
 
    **Dot syntax** (`<provider>.<capability> <model>`):
    ```bash
-   jq --arg p "<provider>" --arg c "<capability>" --arg m "<model>" \
-     '.providers[$p][$c] = $m' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh set "<provider>.<capability>" "<model>"
    ```
 
 3. **Set Phase Routing** (`phase <phase> <model>`):
    Validate phase name against: `discover`, `define`, `develop`, `deliver`, `quick`, `debate`, `review`, `security`, `research`.
    ```bash
-   jq --arg phase "<phase>" --arg model "<model>" '.routing.phases[$phase] = $model' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh route "<phase>" "<model>"
    ```
 
 4. **Reset**: Use default values from the ensure_config block in `scripts/helpers/octo-model-config.sh`.
@@ -523,11 +526,11 @@ When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.6-sol`), skip
 
 ### Validation Gates
 
-- Provider names validated against whitelist: `codex agy antigravity claude perplexity openrouter openai-compatible openai-tools openai-compatible-agent opencode copilot ollama qwen`
+- Provider names are validated against the canonical registry: `codex commandcode claude claude-sdk agy perplexity opencode openrouter orcarouter atlascloud openai-compatible openai-tools openai-compatible-agent cursor-agent grok qwen ollama copilot vibe kimi`. Aliases are canonicalized first; for example, `antigravity` becomes `agy`.
 - Phase names validated against known list
-- Model names checked for injection safety (alphanumeric, hyphens, dots, slashes only)
-- Config file operations use atomic write (tmp + mv)
-- Always use `jq --arg` (never string interpolation)
+- Model values reject empty strings, whitespace, shell metacharacters, and leading slashes. Provider-qualified targets such as `codex:default` are allowed.
+- In dot syntax, the suffix is stored as a capability key without separate capability-name validation.
+- Route and model writes use `jq --arg`, a temporary file, and `mv` for atomic replacement.
 
 ### Prohibited Actions
 

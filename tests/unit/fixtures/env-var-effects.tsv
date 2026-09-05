@@ -21,6 +21,7 @@ OCTOPUS_AGY_MODEL	covered-by	test-agy-provider.sh
 OCTOPUS_ALLOW_FULL_KIMI_ENV	covered-by	test-kimi-provider.sh
 OCTOPUS_AUTO_TITLE	skip	sets the Claude Code session title; observable only in the host UI
 OCTOPUS_AUTO_ROUTER_MODE	covered-by	test-explicit-activation.sh
+OCTOPUS_CLAUDE_MODEL	covered-by	test-fable5-mode.sh
 OCTOPUS_CLAUDE_SDK_MODEL	covered-by	test-claude-sdk-provider.sh
 OCTOPUS_CODEX_ACTIVE_SESSION	covered-by	test-plugin-update-health.sh
 OCTOPUS_CODEX_MODEL	covered-by	test-role-mapping-v929.sh
@@ -31,6 +32,7 @@ OCTOPUS_COMPACT_BANNERS	skip	changes banner prose only; asserting it would pin c
 OCTOPUS_COST_MODE	covered-by	test-cost-mode-toggle.sh
 OCTOPUS_EFFORT_OVERRIDE	covered-by	test-execution-mechanism.sh
 OCTOPUS_FABLE5_FALLBACK_MODEL	covered-by	test-fable5-mode.sh
+OCTOPUS_FABLE5_MAX_EFFORT	covered-by	test-fable5-escalation.sh
 OCTOPUS_FABLE5_MAX_INPUT_BYTES	covered-by	test-routing-evals-v10.sh
 OCTOPUS_FABLE5_MODE	covered-by	test-fable5-mode.sh
 OCTOPUS_FABLE5_NO_RETRY	covered-by	test-fable5-mode.sh

@@ -97,6 +97,121 @@ cat > "$CONFIG_FILE" << EOF
 EOF
 assert_eq "$(resolve_octopus_model "codex" "codex")" "config-default" "Config file default"
 
+test_case "explicit-only models are rejected from memory and persistent caches"
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-5.6-sol" } }
+}
+EOF
+cache_seed_output="$CLAUDE_OCTOPUS_WORKSPACE/cache-seed.out"
+resolve_octopus_model codex codex > "$cache_seed_output"
+cache_var="$(compgen -v | grep '^_OCTO_MODEL_CACHE_MC_codex_A_codex_' | head -1)"
+memory_result=""
+persistent_result=""
+if [[ -n "$cache_var" ]]; then
+    printf -v "$cache_var" '%s' gpt-6-astra
+    memory_result="$(resolve_octopus_model codex codex)"
+    unset "$cache_var"
+
+    persistent_cache="$(octo_model_cache_file)"
+    cache_key="${cache_var#_OCTO_MODEL_CACHE_}"
+    jq --arg key "$cache_key" --arg model gpt-6-astra \
+        '.[$key] = $model' "$persistent_cache" > "${persistent_cache}.tmp" &&
+        mv "${persistent_cache}.tmp" "$persistent_cache"
+    persistent_result="$(resolve_octopus_model codex codex)"
+fi
+if [[ "$memory_result" == gpt-5.6-sol && "$persistent_result" == gpt-5.6-sol ]]; then
+    test_pass
+else
+    test_fail "cache policy mismatch: memory=[$memory_result] persistent=[$persistent_result]"
+fi
+
+# Explicit-only frontier models must not become routine defaults, even if a
+# providers.json file was hand-edited. Environment pins and exact seats remain valid.
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-6-astra" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-sol" "Explicit-only Astra is rejected as config default"
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "overrides": { "codex": "gpt-6-astra" },
+  "providers": { "codex": { "default": "gpt-5.6-sol" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-sol" "Persistent Astra override is rejected"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": {
+    "codex": {
+      "default": "gpt-5.6-sol",
+      "frontier": "gpt-6-astra",
+      "roles": { "reviewer": "gpt-6-astra" }
+    }
+  },
+  "cost_mode": "premium",
+  "tiers": { "premium": { "codex": "gpt-6-astra" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex-frontier")" "gpt-5.6-sol" "Explicit-only Astra is rejected as capability mapping"
+clear_model_cache
+assert_eq "$(resolve_octopus_model "codex" "codex" "review" "reviewer")" "gpt-5.6-sol" "Explicit-only Astra is rejected as provider-role default"
+clear_model_cache
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-sol" "Explicit-only Astra is rejected as cost-tier mapping"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-5.6-sol" } },
+  "cost_mode": "premium",
+  "tiers": { "premium": { "codex": "codex:gpt-6-astra" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-sol" "Provider-qualified Astra is rejected as cost-tier mapping"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-5.6-sol" } },
+  "cost_mode": "premium",
+  "tiers": { "premium": { "codex": "codex:gpt-5.6-terra" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-terra" "Same-provider qualified tier target resolves to its bare model"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-5.6-sol" } },
+  "cost_mode": "premium",
+  "tiers": { "premium": { "codex": "claude:claude-sonnet-5" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.6-sol" "Cross-provider qualified tier target is rejected"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": { "codex": { "default": "gpt-5.6-sol" } },
+  "routing": { "phases": { "review": "gpt-6-astra" } }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex" "review")" "gpt-5.6-sol" "Explicit-only Astra is rejected as persistent phase route"
+
 # Test 4: Capability mapping
 clear_model_cache
 cat > "$CONFIG_FILE" << EOF

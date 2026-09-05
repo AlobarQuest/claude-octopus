@@ -60,6 +60,24 @@ estimate_tokens() {
     echo $(( (char_count + 3) / 4 ))  # Round up
 }
 
+# Apply request-size pricing rules from the canonical pricing table.
+octo_effective_model_pricing() {
+    local model="$1" input_tokens="$2" input_price="$3" output_price="$4"
+    local rule="" threshold="" input_multiplier="" output_multiplier=""
+    rule="$(awk -F'\t' -v model="$model" '$1 == "request-rule" && $2 == model {print $3 ":" $4 ":" $5; exit}' "$OCTOPUS_MODEL_PRICING_FILE" 2>/dev/null || true)"
+    if [[ -n "$rule" ]]; then
+        threshold="${rule%%:*}"
+        rule="${rule#*:}"
+        input_multiplier="${rule%%:*}"
+        output_multiplier="${rule##*:}"
+    fi
+    if [[ "$threshold" =~ ^[0-9]+$ && "$input_tokens" -gt "$threshold" ]]; then
+        input_price="$(awk -v price="$input_price" -v multiplier="$input_multiplier" 'BEGIN {printf "%.6f", price * multiplier}')"
+        output_price="$(awk -v price="$output_price" -v multiplier="$output_multiplier" 'BEGIN {printf "%.6f", price * multiplier}')"
+    fi
+    printf '%s:%s\n' "$input_price" "$output_price"
+}
+
 # Estimate per-call API spend for progress reporting. Subscription and OAuth
 # seats intentionally remain zero because they have no attributable call price.
 estimate_agent_call_cost() {
@@ -80,17 +98,22 @@ estimate_agent_call_cost() {
     output_price="${pricing##*:}"
     [[ "$input_price" =~ ^[0-9]+([.][0-9]+)?$ ]] || input_price=0
     [[ "$output_price" =~ ^[0-9]+([.][0-9]+)?$ ]] || output_price=0
+    pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+    input_price="${pricing%%:*}"
+    output_price="${pricing##*:}"
     awk -v input_tokens="$input_tokens" -v output_tokens="$output_tokens" \
         -v input_price="$input_price" -v output_price="$output_price" \
         'BEGIN {printf "%.6f\n", (input_tokens * input_price + output_tokens * output_price) / 1000000}'
 }
 
 # Parse native Task tool metrics from <usage> blocks (v8.6.0, enhanced v8.8.0)
-# Sets globals: _PARSED_TOKENS, _PARSED_TOOL_USES, _PARSED_DURATION_MS, _PARSED_SPEED
+# Sets globals: _PARSED_TOKENS, _PARSED_INPUT_TOKENS,
+# _PARSED_OUTPUT_TOKENS, _PARSED_TOOL_USES, _PARSED_DURATION_MS, _PARSED_SPEED
 # Guards on SUPPORTS_NATIVE_TASK_METRICS. Falls back gracefully on parse failure.
 parse_task_metrics() {
     local output="$1"
-    _PARSED_TOKENS="" ; _PARSED_TOOL_USES="" ; _PARSED_DURATION_MS="" ; _PARSED_SPEED=""
+    _PARSED_TOKENS="" ; _PARSED_INPUT_TOKENS="" ; _PARSED_OUTPUT_TOKENS=""
+    _PARSED_TOOL_USES="" ; _PARSED_DURATION_MS="" ; _PARSED_SPEED=""
     [[ "$SUPPORTS_NATIVE_TASK_METRICS" != "true" ]] && return 0
 
     local usage_block
@@ -98,6 +121,8 @@ parse_task_metrics() {
     if [[ -n "$usage_block" ]]; then
         # v9.5: bash regex extraction (zero subshells, was 4 echo|grep|grep chains)
         [[ "$usage_block" =~ total_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_TOKENS="${BASH_REMATCH[1]}" || _PARSED_TOKENS=""
+        [[ "$usage_block" =~ input_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_INPUT_TOKENS="${BASH_REMATCH[1]}" || _PARSED_INPUT_TOKENS=""
+        [[ "$usage_block" =~ output_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_OUTPUT_TOKENS="${BASH_REMATCH[1]}" || _PARSED_OUTPUT_TOKENS=""
         [[ "$usage_block" =~ tool_uses:[[:space:]]*([0-9]+) ]] && _PARSED_TOOL_USES="${BASH_REMATCH[1]}" || _PARSED_TOOL_USES=""
         [[ "$usage_block" =~ duration_ms:[[:space:]]*([0-9]+) ]] && _PARSED_DURATION_MS="${BASH_REMATCH[1]}" || _PARSED_DURATION_MS=""
         # v8.8: Parse OTel speed attribute (fast|standard) when available
@@ -106,6 +131,8 @@ parse_task_metrics() {
         fi
     fi
     [[ "$_PARSED_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_TOKENS=""
+    [[ "$_PARSED_INPUT_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_INPUT_TOKENS=""
+    [[ "$_PARSED_OUTPUT_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_OUTPUT_TOKENS=""
     [[ "$_PARSED_TOOL_USES" =~ ^[0-9]+$ ]] || _PARSED_TOOL_USES=""
     [[ "$_PARSED_DURATION_MS" =~ ^[0-9]+$ ]] || _PARSED_DURATION_MS=""
     [[ "$_PARSED_SPEED" =~ ^(fast|standard)$ ]] || _PARSED_SPEED=""
@@ -135,6 +162,9 @@ calculate_agent_cost() {
     pricing=$(get_model_pricing "$model" "$agent_type")
     local input_price="${pricing%%:*}"
     local output_price="${pricing##*:}"
+    pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+    input_price="${pricing%%:*}"
+    output_price="${pricing##*:}"
 
     # Cost = (input_tokens / 1M) * input_price + (output_tokens / 1M) * output_price
     local cost=$(awk "BEGIN {printf \"%.4f\", (($input_tokens / 1000000.0) * $input_price) + (($output_tokens / 1000000.0) * $output_price)}")
@@ -311,7 +341,8 @@ display_workflow_cost_estimate() {
         claude-opus-fast:claude-opus-4.8) claude_model_label="Opus 4.8 Fast" ;;
         claude-opus-fast:claude-opus-4.7) claude_model_label="Opus 4.7 Fast" ;;
         claude-opus-fast:claude-opus-4.6) claude_model_label="Opus 4.6 Fast" ;;
-        *:claude-fable-5)     claude_model_label="Fable 5" ;;
+        *:claude-fable-5-1) claude_model_label="Fable 5.1" ;;
+        *:claude-fable-5) claude_model_label="Fable 5" ;;
         *:claude-opus-5-fast) claude_model_label="Opus 5 Fast" ;;
         *:claude-opus-5)      claude_model_label="Opus 5" ;;
         *:claude-opus-4.8)    claude_model_label="Opus 4.8" ;;
@@ -609,6 +640,19 @@ record_agent_start() {
     local prompt="$3"
     local phase="${4:-unknown}"
     local metrics_id="m-$(date +%s)-$$-${RANDOM}"
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        echo "$metrics_id"
+        return 0
+    fi
+    local metrics_base="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
+    local input_tokens
+    input_tokens="$(estimate_tokens "$prompt")"
+    if declare -f get_metrics_base >/dev/null 2>&1; then
+        metrics_base="$(get_metrics_base)"
+    fi
+    if [[ -n "$metrics_base" ]] && mkdir -p "$metrics_base" 2>/dev/null; then
+        (umask 077; printf '%s|%s\n' "$(date +%s)" "$input_tokens" > "${metrics_base}/.agent-start-${metrics_id}") 2>/dev/null || true
+    fi
     echo "$metrics_id"
 }
 
@@ -623,6 +667,13 @@ record_agent_complete() {
     local actual_tokens="${6:-}"
     local tool_uses="${7:-}"
     local duration_ms="${8:-0}"
+    local native_input_tokens="${9:-}"
+    local native_output_tokens="${10:-}"
+    local metrics_base="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
+    if declare -f get_metrics_base >/dev/null 2>&1; then
+        metrics_base="$(get_metrics_base)"
+    fi
+    local start_file="${metrics_base}/.agent-start-${metrics_id}"
 
     [[ "$DRY_RUN" == "true" ]] && return 0
 
@@ -631,14 +682,45 @@ record_agent_complete() {
         local timestamp
         timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-        # Calculate cost with actual tokens
+        # Use native component counts when available. If the provider reports
+        # only a total, combine it with the prompt measurement captured at
+        # dispatch start instead of inventing a percentage split.
+        local input_tokens="" output_tokens=""
+        if [[ "$native_input_tokens" =~ ^[0-9]+$ && "$native_output_tokens" =~ ^[0-9]+$ ]] &&
+           (( native_input_tokens + native_output_tokens == actual_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens="$native_output_tokens"
+        elif [[ "$native_input_tokens" =~ ^[0-9]+$ ]] && (( native_input_tokens <= actual_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens=$((actual_tokens - native_input_tokens))
+        elif [[ "$native_output_tokens" =~ ^[0-9]+$ ]] && (( native_output_tokens <= actual_tokens )); then
+            output_tokens="$native_output_tokens"
+            input_tokens=$((actual_tokens - native_output_tokens))
+        elif [[ -f "$start_file" ]]; then
+            local start_record measured_input_tokens
+            start_record="$(cat "$start_file" 2>/dev/null || true)"
+            measured_input_tokens="${start_record#*|}"
+            if [[ "$start_record" == *"|"* && "$measured_input_tokens" =~ ^[0-9]+$ ]]; then
+                input_tokens="$measured_input_tokens"
+                (( input_tokens > actual_tokens )) && input_tokens="$actual_tokens"
+                output_tokens=$((actual_tokens - input_tokens))
+            fi
+        fi
+
+        if [[ -z "$input_tokens" || -z "$output_tokens" ]]; then
+            log WARN "Skipping actual-cost entry without native token components or a measured prompt"
+            rm -f "$start_file" 2>/dev/null || true
+            return 0
+        fi
+
+        # Calculate cost with the measured token components.
         local pricing
         pricing=$(get_model_pricing "$model" "$agent_type")
         local input_price="${pricing%%:*}"
         local output_price="${pricing##*:}"
-        # Assume 40% input, 60% output split for actual tokens
-        local input_tokens=$(( actual_tokens * 40 / 100 ))
-        local output_tokens=$(( actual_tokens * 60 / 100 ))
+        pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+        input_price="${pricing%%:*}"
+        output_price="${pricing##*:}"
         local cost
         cost=$(awk "BEGIN {printf \"%.6f\", ($input_tokens * $input_price + $output_tokens * $output_price) / 1000000}")
 
@@ -648,6 +730,7 @@ record_agent_complete() {
             log DEBUG "Recorded actual metrics: agent=$agent_type tokens=$actual_tokens cost=\$$cost duration=${duration_ms}ms"
         fi
     fi
+    rm -f "$start_file" 2>/dev/null || true
 }
 
 # [EXTRACTED to lib/error-tracking.sh]
