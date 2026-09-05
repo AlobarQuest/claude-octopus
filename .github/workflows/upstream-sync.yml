@@ -66,8 +66,12 @@ jobs:
           git commit -m "ci: preserve fork workflow and script files" --allow-empty
           git push origin upstream-sync --force
 
+      # `continue-on-error` so the hardening steps and the pull request still run -- the state
+      # must stay VISIBLE. The run is failed at the end instead, by the gate at the bottom.
       - name: Generate AI security review
+        id: review
         if: steps.check.outputs.has_changes == 'true'
+        continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python3 .github/scripts/ai_security_review.py
@@ -165,3 +169,17 @@ jobs:
               --title "Upstream sync — ${DATE}" \
               --body-file /tmp/pr_body.md
           fi
+
+      # THE GATE, and it goes last so the pull request exists before the run goes red.
+      #
+      # Added while this repository's key still WORKED. The sibling repository ran six consecutive
+      # green days with its review answering HTTP 401, because the failure was caught, written into
+      # a pull-request body, and the step exited 0. The right moment for this guard is before that
+      # happens here, not after.
+      - name: Fail the run if the security review did not happen
+        if: steps.check.outputs.has_changes == 'true' && steps.review.outcome == 'failure'
+        run: |
+          echo "::error::the AI security review did not run; the pull request body says why."
+          echo "The pull request was still opened or updated so the state is visible, and this"
+          echo "run fails so it is not silently green. Read the body, fix the cause, re-run."
+          exit 1

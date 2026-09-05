@@ -141,22 +141,35 @@ payload = {
     "messages": [{"role": "user", "content": prompt}]
 }
 
-req = urllib.request.Request(
-    'https://api.anthropic.com/v1/messages',
-    data=json.dumps(payload).encode(),
-    headers={
-        'x-api-key': os.environ['ANTHROPIC_API_KEY'],
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-    }
-)
+# AN EMPTY SECRET IS THE CASE THAT BIT, so it is checked rather than left to the API. A missing
+# variable would raise KeyError here and fail loudly; an EMPTY one returns "", reaches the API,
+# comes back 401, and was caught below and turned into a line of prose. Measured on the sibling
+# repository 2026-09-05: `gh secret set` with `--body` omitted reads stdin, so a non-interactive
+# invocation writes an empty string, GitHub accepts it, and `updated_at` moves as though it worked.
+failed = None
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+if not api_key:
+    review = ("Warning: ANTHROPIC_API_KEY is not set or is empty — AI review skipped. "
+              "Review the diff manually before merging.")
+    failed = "the ANTHROPIC_API_KEY secret is not set, or is set to an empty value"
+else:
+    req = urllib.request.Request(
+        'https://api.anthropic.com/v1/messages',
+        data=json.dumps(payload).encode(),
+        headers={
+            'x-api-key': api_key,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+        }
+    )
 
-try:
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-        review = result['content'][0]['text']
-except Exception as e:
-    review = "Warning: Error generating AI review: {}\n\nReview the diff manually before merging.".format(e)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+            review = result['content'][0]['text']
+    except Exception as e:
+        review = "Warning: Error generating AI review: {}\n\nReview the diff manually before merging.".format(e)
+        failed = "the Anthropic API rejected or refused the call: {}".format(e)
 
 # prepend scan hits so they're visible even if AI summary is brief
 output = review
@@ -171,3 +184,14 @@ if scan_findings:
 with open('/tmp/ai_review.md', 'w') as f:
     f.write(output)
 print(output)
+
+# EXIT NON-ZERO WHEN THE REVIEW DID NOT HAPPEN. The warning still goes in the body first, so the
+# pull request carries the state; this only makes it LOUD as well as visible. Failing silently and
+# failing invisibly are different problems and this fixes the second.
+#
+# The sibling repository ran six consecutive green days with its review answering 401, because the
+# failure was caught, written into a body nobody scrolls to, and the step exited 0. This key works
+# today; that is exactly when to add the guard, not after it stops.
+if failed is not None:
+    print("::error::AI security review did not run -- {}".format(failed))
+    raise SystemExit(2)
