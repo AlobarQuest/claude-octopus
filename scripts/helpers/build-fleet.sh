@@ -78,11 +78,15 @@ for _provider in codex commandcode grok agy copilot qwen cursor-agent opencode \
     # auto-approves tools and cannot enforce that boundary, so it remains an
     # implementation provider but is not eligible for these fleets.
     [[ "$_provider" == "kimi" ]] && continue
-    provider_status_is_available "$_provider" && AVAILABLE_CLI+=("$_provider")
+    provider_status_is_available "$_provider" && \
+        octo_provider_allowed "$_provider" && \
+        AVAILABLE_CLI+=("$_provider")
 done
 # Atlas Cloud's canonical provider status is `atlascloud`, while its executable
 # agent type is `atlascloud-agent` (the Python tool-loop dispatch shim).
-provider_status_is_available atlascloud && AVAILABLE_CLI+=("atlascloud-agent")
+provider_status_is_available atlascloud && \
+    octo_provider_allowed atlascloud-agent && \
+    AVAILABLE_CLI+=("atlascloud-agent")
 
 CLI_COUNT=0
 if [[ -n "${AVAILABLE_CLI[*]:-}" ]]; then
@@ -280,7 +284,7 @@ build_research_fleet() {
                     qwen)
                         emit "qwen" "Contrarian Analysis" "Play devil's advocate on: $PROMPT. What are the strongest arguments AGAINST the obvious approach? What risks are being systematically underestimated?" ;;
                     cursor-agent)
-                        emit "cursor-agent" "XAI Perspective" "Provide an independent analysis of: $PROMPT. Focus on alternative implementation choices, practical trade-offs, and assumptions that deserve re-examination." ;;
+                        emit "cursor-agent" "Cursor Perspective" "Provide an independent analysis of: $PROMPT. Focus on alternative implementation choices, practical trade-offs, and assumptions that deserve re-examination." ;;
                     opencode)
                         emit "opencode" "Implementation Patterns" "Research concrete implementation patterns for: $PROMPT. Focus on production-grade examples, common pitfalls, and battle-tested approaches. Cite specific repos or documentation." ;;
                     ollama)

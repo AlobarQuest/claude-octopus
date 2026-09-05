@@ -158,4 +158,418 @@ else
     test_pass
 fi
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Session auth via `agent status` — 2026.06+ builds keep no authInfo marker in
+# ~/.cursor/cli-config.json; the bounded, cached status probe is the only signal.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+write_cursor_status_mock() {
+    cat > "$MOCK_BIN_DIR/agent" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--version" ]]; then
+    echo "${CURSOR_MOCK_VERSION:-2026.06.24-test}"
+    exit 0
+fi
+if [[ "$1" == "status" ]]; then
+    [[ -n "${CURSOR_STATUS_CALLS:-}" ]] && echo "status $*" >> "$CURSOR_STATUS_CALLS"
+    [[ -n "${CURSOR_MOCK_STATUS_SLEEP:-}" ]] && /bin/sleep "$CURSOR_MOCK_STATUS_SLEEP"
+    printf '%s\n' "${CURSOR_MOCK_STATUS_JSON:-{\"isAuthenticated\":false}}"
+    exit 0
+fi
+exit 2
+EOF
+    cat > "$MOCK_BIN_DIR/timeout" <<'EOF'
+#!/bin/bash
+shift
+exec "$@"
+EOF
+    chmod +x "$MOCK_BIN_DIR/agent" "$MOCK_BIN_DIR/timeout"
+}
+
+EMPTY_CURSOR_HOME="$TEST_TMP_DIR/cursor-home-empty"
+mkdir -p "$EMPTY_CURSOR_HOME/.cursor"
+printf '{"version":1,"sandbox":{}}\n' > "$EMPTY_CURSOR_HOME/.cursor/cli-config.json"
+CURSOR_PROBE_PATH="$MOCK_BIN_DIR:/usr/bin:/bin"
+# Probe cases exercise the live status path; the on-disk verdict cache gets its
+# own case below.
+export OCTOPUS_CURSOR_AGENT_AUTH_CACHE_TTL=0
+
+test_case "session auth is accepted from agent status when cli-config.json has no authInfo"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-1.txt"; : > "$CALLS_FILE"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export 'CURSOR_MOCK_STATUS_JSON={"status":"authenticated","isAuthenticated":true,"userInfo":{"email":"secret@example.test"}}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    if cursor_agent_is_available; then
+        echo "available:$(cursor_agent_auth_method)"
+    else
+        echo "unavailable:$(cursor_agent_auth_method)"
+    fi
+)
+if [[ "$probe_output" == "available:cursor-session" ]] && ! grep -q "secret@example.test" <<< "$probe_output" && grep -q "status --format json" "$CALLS_FILE"; then
+    test_pass
+else
+    test_fail "expected available:cursor-session via status probe, got '$probe_output' (calls: $(cat "$CALLS_FILE" 2>/dev/null))"
+fi
+
+test_case "unauthenticated agent status leaves Cursor unavailable"
+reset_mocks; write_cursor_status_mock
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}"
+    export CURSOR_MOCK_STATUS_JSON='{"status":"unauthenticated","isAuthenticated":false}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    cursor_agent_is_available && echo "available" || echo "unavailable:$(cursor_agent_auth_method)"
+)
+if [[ "$probe_output" == "unavailable:none" ]]; then
+    test_pass
+else
+    test_fail "expected unavailable:none, got '$probe_output'"
+fi
+
+test_case "session status probe stays bounded by OCTOPUS_CURSOR_AGENT_STATUS_TIMEOUT"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-bounded.txt"; : > "$CALLS_FILE"
+# Force the portable fallback watchdog: PATH holds only the mock dir (no
+# coreutils timeout/gtimeout on any host) plus a grep shim for the verdict parse.
+rm -f "$MOCK_BIN_DIR/timeout"
+printf '#!/bin/bash\nexec /usr/bin/grep "$@"\n' > "$MOCK_BIN_DIR/grep"; chmod +x "$MOCK_BIN_DIR/grep"
+SECONDS=0
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${MOCK_BIN_DIR}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export "CURSOR_MOCK_STATUS_SLEEP=5" "OCTOPUS_CURSOR_AGENT_PROBE_TIMEOUT=1" "OCTOPUS_CURSOR_AGENT_STATUS_TIMEOUT=1"
+    export 'CURSOR_MOCK_STATUS_JSON={"isAuthenticated":true}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    cursor_agent_is_available && echo "available" || echo "unavailable"
+)
+if [[ "$probe_output" == "unavailable" && $SECONDS -le 3 ]] && grep -q "status --format json" "$CALLS_FILE"; then
+    test_pass
+else
+    test_fail "status probe was not exercised and bounded (result=$probe_output elapsed=${SECONDS}s calls=$(cat "$CALLS_FILE" 2>/dev/null))"
+fi
+
+test_case "a non-Cursor 'agent' binary short-circuits before the status probe"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-2.txt"; : > "$CALLS_FILE"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export CURSOR_MOCK_VERSION="1.4.2" CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":true}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    cursor_agent_session_authenticated && echo "authenticated" || echo "rejected"
+)
+if [[ "$probe_output" == "rejected" && ! -s "$CALLS_FILE" ]]; then
+    test_pass
+else
+    test_fail "semver 'agent' should be rejected without probing status (result=$probe_output calls=$(cat "$CALLS_FILE"))"
+fi
+
+test_case "status probe result is cached for the process"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-3.txt"; : > "$CALLS_FILE"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":true}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    cursor_agent_is_available && cursor_agent_is_available && cursor_agent_auth_method
+)
+call_count=$(grep -c "status" "$CALLS_FILE" 2>/dev/null || true)
+if [[ "$probe_output" == "cursor-session" && "${call_count:-0}" -eq 1 ]]; then
+    test_pass
+else
+    test_fail "expected one cached status probe, got ${call_count:-0} (result=$probe_output)"
+fi
+
+test_case "legacy authInfo block still authenticates without probing status"
+reset_mocks; write_cursor_status_mock
+LEGACY_HOME="$TEST_TMP_DIR/cursor-home-legacy"; mkdir -p "$LEGACY_HOME/.cursor"
+printf '{"authInfo": {"accessToken":"redacted"}}\n' > "$LEGACY_HOME/.cursor/cli-config.json"
+CALLS_FILE="$TEST_TMP_DIR/status-calls-4.txt"; : > "$CALLS_FILE"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${LEGACY_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":false}'
+    _CURSOR_AGENT_SESSION_AUTH_CACHE=""
+    cursor_agent_auth_method
+)
+if [[ "$probe_output" == "cursor-session" && ! -s "$CALLS_FILE" ]]; then
+    test_pass
+else
+    test_fail "legacy authInfo should short-circuit (result=$probe_output calls=$(cat "$CALLS_FILE"))"
+fi
+
+test_case "status verdict is cached on disk across processes and holds no credentials"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-5.txt"; : > "$CALLS_FILE"
+AUTH_CACHE="$TEST_TMP_DIR/auth-cache/verdict"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export OCTOPUS_CURSOR_AGENT_AUTH_CACHE_TTL=600 "OCTOPUS_CURSOR_AGENT_AUTH_CACHE_FILE=${AUTH_CACHE}"
+    export CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":true,"userInfo":{"email":"secret@example.test"}}'
+    first=$(bash -c 'source "'"$CURSOR_LIB"'"; cursor_agent_auth_method')
+    second=$(bash -c 'source "'"$CURSOR_LIB"'"; cursor_agent_auth_method')
+    echo "${first}/${second}"
+)
+call_count=$(grep -c "status" "$CALLS_FILE" 2>/dev/null || true)
+if [[ "$probe_output" == "cursor-session/cursor-session" && "${call_count:-0}" -eq 1 ]] &&
+   [[ "$(sed -n '2p' "$AUTH_CACHE")" == "yes" ]] && ! grep -q "secret" "$AUTH_CACHE"; then
+    test_pass
+else
+    test_fail "expected one probe shared via the verdict cache, got calls=${call_count:-0} result=$probe_output cache=$(cat "$AUTH_CACHE" 2>/dev/null | tr '\n' ' ')"
+fi
+
+test_case "a stale or negative cached verdict re-probes"
+reset_mocks; write_cursor_status_mock
+CALLS_FILE="$TEST_TMP_DIR/status-calls-6.txt"; : > "$CALLS_FILE"
+AUTH_CACHE="$TEST_TMP_DIR/auth-cache/stale"
+mkdir -p "$(dirname "$AUTH_CACHE")"
+printf '%s\nyes\n' "$(( $(date +%s) - 7200 ))" > "$AUTH_CACHE"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}" "CURSOR_STATUS_CALLS=${CALLS_FILE}"
+    export OCTOPUS_CURSOR_AGENT_AUTH_CACHE_TTL=600 "OCTOPUS_CURSOR_AGENT_AUTH_CACHE_FILE=${AUTH_CACHE}"
+    export CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":false}'
+    bash -c 'source "'"$CURSOR_LIB"'"; cursor_agent_auth_method'
+)
+call_count=$(grep -c "status" "$CALLS_FILE" 2>/dev/null || true)
+if [[ "$probe_output" == "none" && "${call_count:-0}" -eq 1 && "$(sed -n '2p' "$AUTH_CACHE")" == "no" ]]; then
+    test_pass
+else
+    test_fail "stale cache should re-probe (calls=${call_count:-0} result=$probe_output cache=$(cat "$AUTH_CACHE" 2>/dev/null | tr '\n' ' '))"
+fi
+
+test_case "verdict cache refuses a symlinked cache file and never follows it"
+reset_mocks; write_cursor_status_mock
+SYMLINK_DIR="$TEST_TMP_DIR/auth-cache/symlinked"; mkdir -p "$SYMLINK_DIR"
+TARGET_FILE="$SYMLINK_DIR/victim"; printf 'untouched\n' > "$TARGET_FILE"
+ln -sf "$TARGET_FILE" "$SYMLINK_DIR/verdict"
+probe_output=$(
+    unset CURSOR_API_KEY
+    export "HOME=${EMPTY_CURSOR_HOME}" "PATH=${CURSOR_PROBE_PATH}"
+    export OCTOPUS_CURSOR_AGENT_AUTH_CACHE_TTL=600 "OCTOPUS_CURSOR_AGENT_AUTH_CACHE_FILE=${SYMLINK_DIR}/verdict"
+    export CURSOR_MOCK_STATUS_JSON='{"isAuthenticated":true}'
+    bash -c 'source "'"$CURSOR_LIB"'"; cursor_agent_auth_method' 2>/dev/null
+)
+if [[ "$probe_output" == "cursor-session" && "$(cat "$TARGET_FILE")" == "untouched" && -L "$SYMLINK_DIR/verdict" ]]; then
+    test_pass
+else
+    test_fail "symlinked cache must not be followed (result=$probe_output target=$(cat "$TARGET_FILE" 2>/dev/null))"
+fi
+
+test_case "verdict cache defaults to the user cache directory, not the workspace"
+default_cache=$(env -u XDG_CACHE_HOME -u OCTOPUS_CURSOR_AGENT_AUTH_CACHE_FILE "HOME=${EMPTY_CURSOR_HOME}" "WORKSPACE_DIR=${TEST_TMP_DIR}/some-checkout" bash -c 'source "'"$CURSOR_LIB"'"; _cursor_agent_auth_cache_file')
+if [[ "$default_cache" == "$EMPTY_CURSOR_HOME/.cache/claude-octopus/cursor-agent-auth-verdict" ]]; then
+    test_pass
+else
+    test_fail "unexpected default cache path: $default_cache"
+fi
+
+test_case "no consumer re-implements the Cursor auth probe"
+offenders=$(grep -RnE 'authInfo|agent[[:space:]]+status[[:space:]]+--format' "$PROJECT_ROOT/scripts" --include='*.sh' 2>/dev/null | grep -v 'scripts/lib/cursor-agent.sh' || true)
+if [[ -z "$offenders" ]]; then
+    test_pass
+else
+    test_fail "auth probe duplicated outside lib/cursor-agent.sh: $offenders"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Execution mode contract — `agent -p` has write+shell access; seats opt down.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_case "role table defaults to read-only ask, plan for planners, agent for implementers"
+if [[ "$(cursor_agent_mode_for_role researcher)" == "ask" ]] &&
+   [[ "$(cursor_agent_mode_for_role "")" == "ask" ]] &&
+   [[ "$(cursor_agent_mode_for_role implementation-security-reviewer)" == "ask" ]] &&
+   [[ "$(cursor_agent_mode_for_role backend-architect)" == "ask" ]] &&
+   [[ "$(cursor_agent_mode_for_role planner)" == "plan" ]] &&
+   [[ "$(cursor_agent_mode_for_role architect)" == "plan" ]] &&
+   [[ "$(cursor_agent_mode_for_role implementer)" == "agent" ]] &&
+   [[ "$(cursor_agent_mode_for_role developer)" == "agent" ]]; then
+    test_pass
+else
+    test_fail "role→mode table drifted"
+fi
+
+test_case "OCTOPUS_CURSOR_AGENT_MODE overrides the role default and rejects unknown values"
+if [[ "$(OCTOPUS_CURSOR_AGENT_MODE=agent cursor_agent_resolve_mode researcher 2>/dev/null)" == "agent" ]] &&
+   [[ "$(OCTOPUS_CURSOR_AGENT_MODE=plan cursor_agent_resolve_mode implementer 2>/dev/null)" == "plan" ]] &&
+   [[ "$(OCTOPUS_CURSOR_AGENT_MODE=yolo cursor_agent_resolve_mode implementer 2>/dev/null)" == "agent" ]] &&
+   [[ "$(OCTOPUS_CURSOR_AGENT_MODE=yolo cursor_agent_resolve_mode researcher 2>/dev/null)" == "ask" ]] &&
+   [[ "$(cursor_agent_mode_flag ask)" == "--mode ask" ]] &&
+   [[ "$(cursor_agent_mode_flag agent)" == "--force" ]]; then
+    test_pass
+else
+    test_fail "mode override handling drifted"
+fi
+
+test_case "cursor_agent_execute applies the read-only mode for non-implementer roles"
+reset_mocks
+ARGV_FILE="$TEST_TMP_DIR/cursor-argv-mode.txt"
+cat > "$MOCK_BIN_DIR/timeout" <<'EOF'
+#!/bin/bash
+shift
+exec "$@"
+EOF
+cat > "$MOCK_BIN_DIR/agent" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--version" ]]; then
+    echo "2026.06.24-test"
+    exit 0
+fi
+printf '%s\n' "$*" > "$ARGV_FILE"
+cat >/dev/null
+echo "cursor response"
+EOF
+chmod +x "$MOCK_BIN_DIR/timeout" "$MOCK_BIN_DIR/agent"
+if PATH="${MOCK_BIN_DIR}:/usr/bin:/bin" CURSOR_API_KEY=test ARGV_FILE="${ARGV_FILE}" \
+    cursor_agent_execute cursor-agent "prompt" "" researcher >/dev/null 2>&1 &&
+   grep -q -- '--mode ask' "$ARGV_FILE" &&
+   ! grep -q -- '--force' "$ARGV_FILE" &&
+   PATH="${MOCK_BIN_DIR}:/usr/bin:/bin" CURSOR_API_KEY=test ARGV_FILE="${ARGV_FILE}" \
+    cursor_agent_execute cursor-agent "prompt" "" implementer >/dev/null 2>&1 &&
+   ! grep -q -- '--mode' "$ARGV_FILE" &&
+   grep -q -- '--force' "$ARGV_FILE"; then
+    test_pass
+else
+    test_fail "cursor_agent_execute did not honour the role mode contract: $(cat "$ARGV_FILE" 2>/dev/null)"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dispatch, environment isolation, registry, and fleet wiring
+# ═══════════════════════════════════════════════════════════════════════════════
+
+log() { :; }
+PLUGIN_DIR="$PROJECT_ROOT"
+export "TMPDIR=${TEST_TMP_DIR}/runtime"; mkdir -p "$TMPDIR"
+source "$PROJECT_ROOT/scripts/lib/provider-registry.sh"
+source "$PROJECT_ROOT/scripts/lib/utils.sh"
+source "$PROJECT_ROOT/scripts/lib/models.sh"
+source "$PROJECT_ROOT/scripts/lib/model-resolver.sh"
+source "$PROJECT_ROOT/scripts/lib/provider-routing.sh"
+source "$PROJECT_ROOT/scripts/lib/dispatch.sh"
+
+test_case "dispatch defaults to --mode ask --model auto and validates the command"
+cmd=$(HOME="$EMPTY_CURSOR_HOME" get_agent_command cursor-agent probe researcher 2>/dev/null || true)
+if [[ "$cmd" == "agent --trust --output-format text --mode ask --model auto" ]] && validate_agent_command "$cmd" 2>/dev/null; then
+    test_pass
+else
+    test_fail "unexpected researcher dispatch: '$cmd'"
+fi
+
+test_case "dispatch force-allows implementers and uses --mode plan for planners"
+impl_cmd=$(HOME="$EMPTY_CURSOR_HOME" get_agent_command cursor-agent tangle implementer 2>/dev/null || true)
+plan_cmd=$(HOME="$EMPTY_CURSOR_HOME" get_agent_command cursor-agent grasp planner 2>/dev/null || true)
+if [[ "$impl_cmd" == "agent --trust --output-format text --force --model auto" ]] &&
+   [[ "$plan_cmd" == "agent --trust --output-format text --mode plan --model auto" ]]; then
+    test_pass
+else
+    test_fail "implementer='$impl_cmd' planner='$plan_cmd'"
+fi
+
+test_case "OCTOPUS_CURSOR_AGENT_MODE reaches dispatch and explicit seats keep their model"
+override_cmd=$(HOME="$EMPTY_CURSOR_HOME" OCTOPUS_CURSOR_AGENT_MODE=plan get_agent_command cursor-agent tangle implementer 2>/dev/null || true)
+seat_cmd=$(HOME="$EMPTY_CURSOR_HOME" get_agent_command cursor-agent:composer-2.5 probe researcher 2>/dev/null || true)
+if [[ "$override_cmd" == *"--mode plan"* ]] && [[ "$seat_cmd" == *"--mode ask --model composer-2.5" ]]; then
+    test_pass
+else
+    test_fail "override='$override_cmd' seat='$seat_cmd'"
+fi
+
+test_case "cursor-agent dispatch runs under env -i with CURSOR_API_KEY and HOME only"
+(
+    export CURSOR_API_KEY=test-key OPENAI_API_KEY=leak OCTOPUS_CURSOR_AGENT_MODE=ask
+    build_provider_env cursor-agent
+    joined=" ${PROVIDER_ENV_ARRAY[*]} "
+    [[ "${PROVIDER_ENV_ARRAY[0]}" == "env" && "${PROVIDER_ENV_ARRAY[1]}" == "-i" ]] &&
+    [[ "$joined" == *" CURSOR_API_KEY=test-key "* ]] &&
+    [[ "$joined" == *" HOME=$HOME "* ]] &&
+    [[ "$joined" == *" OCTOPUS_CURSOR_AGENT_MODE=ask "* ]] &&
+    [[ "$joined" != *"OPENAI_API_KEY"* ]]
+) && test_pass || test_fail "cursor-agent env isolation drifted"
+
+test_case "OCTOPUS_ALLOW_FULL_CURSOR_AGENT_ENV=true inherits the parent environment"
+(
+    export OCTOPUS_ALLOW_FULL_CURSOR_AGENT_ENV=true
+    build_provider_env cursor-agent
+    [[ ${#PROVIDER_ENV_ARRAY[@]} -eq 0 ]]
+) && test_pass || test_fail "full-env opt-out should yield an empty env prefix"
+
+test_case "cursor-agent is a council-capable registry provider with a live default model"
+if octo_provider_has_capability cursor-agent council &&
+   ! octo_provider_limitation_reason cursor-agent council >/dev/null 2>&1 &&
+   [[ "$(HOME="$EMPTY_CURSOR_HOME" resolve_octopus_model cursor-agent cursor-agent "" "")" == "auto" ]] &&
+   [[ "$(get_model_capability composer-2.5 provider)" == "cursor-agent" ]] &&
+   ! is_known_model grok-4-20 2>/dev/null; then
+    test_pass
+else
+    test_fail "registry/catalog wiring for cursor-agent drifted"
+fi
+
+test_case "vendor family separates Cursor seats from the standalone grok CLI"
+if [[ "$(octo_model_family composer-2.5)" == "cursor" ]] &&
+   [[ "$(octo_model_family cursor-grok-4.6-high)" == "xai" ]] &&
+   [[ "$(octo_model_family claude-sonnet-5-thinking-high)" == "anthropic" ]] &&
+   [[ "$(octo_model_family cursor-agent)" == "cursor" ]]; then
+    test_pass
+else
+    test_fail "octo_model_family: composer=$(octo_model_family composer-2.5) grok=$(octo_model_family cursor-grok-4.6-high) cursor-agent=$(octo_model_family cursor-agent)"
+fi
+
+test_case "configured review participants accept the cursor alias and keep executor variants"
+review_fleet_fn="$(sed -n '/^_review_fleet_from_config() {/,/^}/p' "$PROJECT_ROOT/scripts/lib/review.sh")"
+REVIEW_HOME="$TEST_TMP_DIR/review-alias-home"; mkdir -p "$REVIEW_HOME/.claude-octopus/config"
+# Order matters: agy takes the security seat first, codex-review the logic seat,
+# so the cursor alias must land on the diversity seat under its canonical ID.
+printf '{"routing":{"features":{"review":["gemini-fast","codex-review","cursor"]}}}\n' > "$REVIEW_HOME/.claude-octopus/config/providers.json"
+review_output=$(HOME="$REVIEW_HOME" bash -c 'log(){ :; }; source "'"$PROJECT_ROOT"'/scripts/lib/provider-registry.sh"; '"$review_fleet_fn"'; _review_fleet_from_config' 2>/dev/null)
+if grep -q '^agy:implementation-security-reviewer' <<< "$review_output" &&
+   grep -q '^codex-review:implementation-logic-reviewer' <<< "$review_output" &&
+   grep -q '^cursor-agent:implementation-diversity-reviewer' <<< "$review_output" &&
+   ! grep -qE '^(cursor|gemini-fast):' <<< "$review_output"; then
+    test_pass
+else
+    test_fail "alias handling in _review_fleet_from_config drifted: $(printf '%s' "$review_output" | tr '\n' ' ')"
+fi
+
+test_case "debate seat fallback skips seated agents and evaluates each default slot"
+pick_fn="$(sed -n '/^_debate_pick_available_seat() {/,/^}/p' "$PROJECT_ROOT/scripts/lib/debate.sh")"
+picked=$(bash -c 'is_agent_available_v2(){ case "$1" in cursor-agent|claude-opus) return 0;; *) return 1;; esac; }; '"$pick_fn"'; a=$(_debate_pick_available_seat codex agy claude-sonnet); b=$(_debate_pick_available_seat codex cursor-agent claude-sonnet); echo "$a/$b"')
+if [[ "$picked" == "cursor-agent/claude-opus" ]] &&
+   grep -q '_debate_cfg_a=true' "$PROJECT_ROOT/scripts/lib/debate.sh" &&
+   grep -q 'for _slot_name in A B' "$PROJECT_ROOT/scripts/lib/debate.sh" &&
+   ! grep -q '_debate_config_seats' "$PROJECT_ROOT/scripts/lib/debate.sh"; then
+    test_pass
+else
+    test_fail "debate fallback drifted (picked=$picked)"
+fi
+
+test_case "review and debate cascades seat Cursor when preferred providers are absent"
+if grep -q 'cursor-agent:implementation-logic-reviewer' "$PROJECT_ROOT/scripts/lib/review.sh" &&
+   grep -q 'cursor-agent:implementation-security-reviewer' "$PROJECT_ROOT/scripts/lib/review.sh" &&
+   grep -q 'cursor-agent:implementation-cve-reviewer' "$PROJECT_ROOT/scripts/lib/review.sh" &&
+   grep -q 'cursor_agent_is_available' "$PROJECT_ROOT/scripts/lib/review.sh" &&
+   grep -q '_debate_pick_available_seat' "$PROJECT_ROOT/scripts/lib/debate.sh" &&
+   grep -q '"Cursor Perspective"' "$PROJECT_ROOT/scripts/helpers/build-fleet.sh" &&
+   ! grep -q '"XAI Perspective"' "$PROJECT_ROOT/scripts/helpers/build-fleet.sh"; then
+    test_pass
+else
+    test_fail "fleet cascades do not seat cursor-agent"
+fi
+
+test_case "provider module and public docs describe Cursor CLI, not Grok-via-Cursor"
+if [[ -f "$PROJECT_ROOT/config/providers/cursor-agent/CLAUDE.md" ]] &&
+   grep -q 'OCTOPUS_CURSOR_AGENT_MODE' "$PROJECT_ROOT/config/providers/cursor-agent/CLAUDE.md" &&
+   grep -q 'Cursor CLI' "$PROJECT_ROOT/docs/TROUBLESHOOTING.md" &&
+   ! grep -q 'via cursor-agent' "$PROJECT_ROOT/README.md" &&
+   ! grep -rq 'grok-4-20' "$PROJECT_ROOT/scripts" "$PROJECT_ROOT/config"; then
+    test_pass
+else
+    test_fail "public Cursor documentation drifted"
+fi
+
 test_summary

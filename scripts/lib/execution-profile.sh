@@ -12,8 +12,9 @@ octo_model_family() {
     gpt-*|o[134]-*|codex*|openai/*) printf '%s\n' openai ;;
     gemini-*|agy-*|google/*) printf '%s\n' google ;;
     qwen-*|qwen/*) printf '%s\n' alibaba ;;
-    grok-*|xai/*) printf '%s\n' xai ;;
+    grok-*|xai/*|cursor-grok-*) printf '%s\n' xai ;;
     kimi-*|moonshot/*) printf '%s\n' moonshot ;;
+    composer-*|cursor-agent*) printf '%s\n' cursor ;;
     *) printf '%s\n' unknown ;;
   esac
 }
@@ -56,6 +57,10 @@ octo_route_task_class() {
 }
 
 _octo_route_provider_for_model() {
+  case "${1:-}" in
+    composer-*|cursor-agent*|cursor-grok-*) printf '%s\n' cursor-agent; return 0 ;;
+    grok-*) printf '%s\n' grok; return 0 ;;
+  esac
   case "$(octo_model_family "${1:-}")" in
     anthropic)
       case "${1:-}" in
