@@ -125,6 +125,45 @@ else
     test_fail "snapshot_tangle_worktree_paths used cwd repo despite explicit non-git PROJECT_ROOT"
 fi
 
+test_case "committed changes remain visible against the immutable start HEAD"
+if (
+    cd "$REPO_DIR"
+    export PROJECT_ROOT="$REPO_DIR"
+    before="$RESULTS_DIR/before-committed.txt"
+    snapshot_tangle_worktree_paths > "$before"
+    baseline_head=$(git rev-parse HEAD)
+    printf 'out of scope\n' > committed-out-of-scope.txt
+    git add committed-out-of-scope.txt
+    git commit -qm "worker commit"
+    changes=$(check_tangle_worktree_changes "$before" "$baseline_head")
+    [[ "$changes" == *"committed-out-of-scope.txt"* ]]
+); then
+    test_pass
+else
+    test_fail "committed changes disappeared from final worktree evidence"
+fi
+
+test_case "staged symlink replacement remains visible after the path was in the baseline snapshot"
+if (
+    cd "$REPO_DIR"
+    export PROJECT_ROOT="$REPO_DIR"
+    printf '%s\n' 'outside' > staged-target.txt
+    ln -s staged-target.txt staged-link
+    git add staged-target.txt staged-link
+    before_paths="$RESULTS_DIR/before-staged-link-paths.txt"
+    before_state="$RESULTS_DIR/before-staged-link-state.txt"
+    snapshot_tangle_worktree_paths > "$before_paths"
+    snapshot_tangle_worktree_state > "$before_state"
+    rm staged-link
+    printf '%s\n' 'replacement' > staged-link
+    changes=$(check_tangle_worktree_changes "$before_paths" "" "$before_state")
+    [[ "$changes" == *"staged-link"* ]]
+); then
+    test_pass
+else
+    test_fail "staged symlink replacement disappeared from final worktree evidence"
+fi
+
 test_case "implementation prompt with no worktree change fails validation"
 if (
     cd "$REPO_DIR"
@@ -356,6 +395,34 @@ if (
     test_pass
 else
     test_fail "abort path did not leave a useful validation report"
+fi
+
+
+test_case "state manifest diff reports changed path instead of ENTRY token"
+before_manifest="$RESULTS_DIR/state-before-manifest.txt"
+after_manifest="$RESULTS_DIR/state-after-manifest.txt"
+printf '%s\n' '## manifest' $'ENTRY\tsrc/app/state.ts\t100644 old\tfile:old' > "$before_manifest"
+printf '%s\n' '## manifest' $'ENTRY\tsrc/app/state.ts\t100644 old\tfile:new' > "$after_manifest"
+manifest_delta=$(tangle_state_manifest_paths_changed "$before_manifest" "$after_manifest")
+if [[ "$manifest_delta" == "src/app/state.ts" ]] && [[ "$manifest_delta" != *"ENTRY"* ]]; then
+    test_pass
+else
+    test_fail "manifest delta returned wrong path token: [$manifest_delta]"
+fi
+
+test_case "worktree evidence fails closed when temp file allocation fails"
+if TMPDIR=/dev/null check_tangle_worktree_changes "$RESULTS_DIR/before-empty.txt" "" >/dev/null 2>&1; then
+    test_fail "worktree evidence failed open after mktemp failure"
+else
+    test_pass
+fi
+
+test_case "validate_tangle_results forwards parent-owned state snapshot"
+validate_source=$(declare -f validate_tangle_results)
+if grep -Fq 'check_tangle_worktree_changes "$worktree_before_file" "$baseline_head" "$worktree_before_state_file"' <<< "$validate_source"; then
+    test_pass
+else
+    test_fail "validate_tangle_results dropped the worktree state snapshot argument"
 fi
 
 test_summary
