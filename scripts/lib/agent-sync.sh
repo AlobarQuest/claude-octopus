@@ -1437,7 +1437,7 @@ ${provider_ctx}"
         if ! declare -f "$_health_handler" >/dev/null 2>&1; then
             _health_diag="registry health handler unavailable: $_health_handler"
             _health_failed=true
-        elif ! _health_diag=$("$_health_handler" "$_provider_for_health" 2>&1); then
+        elif ! _health_diag=$("$_health_handler" "$_provider_for_health" "$model" 2>&1); then
             _health_failed=true
         fi
         if [[ "$_health_failed" == true ]]; then
@@ -1821,7 +1821,7 @@ ${provider_ctx}"
     fi
 
     # v8.7.0: Wrap external CLI output with trust markers
-    case "$agent_type" in codex*|gemini*|agy*|antigravity|perplexity*|cursor-agent*)
+    case "$agent_type" in codex*|gemini*|agy*|antigravity|perplexity*|cursor-agent*|kimi*)
         output=$(wrap_cli_output "$agent_type" "$output") ;; esac
 
     # Check if output is suspiciously empty or placeholder

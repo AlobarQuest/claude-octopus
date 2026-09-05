@@ -13,6 +13,7 @@
 
 _provider_registry_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_provider_registry_dir}/provider-registry.sh" || { echo "provider-routing: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "${_provider_registry_dir}/kimi-env.sh" || { echo "provider-routing: failed to load kimi-env.sh" >&2; return 1 2>/dev/null || exit 1; }
 
 # Providers accepted by set_provider_model / reset_provider_model.
 #
@@ -198,6 +199,21 @@ _octo_build_provider_env_impl() {
                         PROVIDER_ENV_ARRAY+=("${_agy_adapter_var}=${!_agy_adapter_var}")
                     fi
                 done
+                if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                    PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+                fi
+            fi
+            ;;
+        kimi*)
+            # Kimi defaults to a minimal environment (parity with codex/grok/agy).
+            if [[ "${OCTOPUS_ALLOW_FULL_KIMI_ENV:-false}" == "true" ]]; then
+                if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]] && declare -f log_warn >/dev/null 2>&1; then
+                    log_warn "Kimi Code CLI inherits the parent shell environment because OCTOPUS_ALLOW_FULL_KIMI_ENV=true."
+                fi
+                PROVIDER_ENV_ARRAY=()
+            else
+                octopus_build_kimi_provider_env
+                PROVIDER_ENV_ARRAY=("${KIMI_PROVIDER_ENV_ARRAY[@]}")
                 if [[ ${#_trace_env[@]} -gt 0 ]]; then
                     PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
                 fi

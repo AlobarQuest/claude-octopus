@@ -37,6 +37,50 @@ Plus, usually:
 - Unit test in `tests/unit/test-<provider>-provider.sh`
 - `docs/DEVELOPER.md` / README provider tables
 
+## Kimi Code integration
+
+Kimi Code exercises all seven wiring points: `kimi` identity/runtime rows in
+`provider-registry.sh`; the `kimi` command arm and `kimi-exec.sh` stdin shim;
+model alias resolution through `OCTOPUS_KIMI_MODEL`; an isolated environment
+that preserves `KIMI_CODE_HOME` and the documented `KIMI_MODEL_*` override
+family; config-aware detection and health checks; and
+real sync/background dispatch regressions. Its readiness contract uses the
+explicit `OCTOPUS_KIMI_MODEL` alias when set, or `default_model` from
+`$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) otherwise.
+The selected name must resolve to a complete model alias in Kimi's model table.
+It resolves that model's provider in Kimi's order: the model's `provider_id`,
+the model's `provider`, then top-level `default_provider`. Models without a
+provider can instead define a flat `base_url` and `protocol`. Model-level
+`api_key` or OAuth takes precedence over provider-level `api_key`,
+provider-local `env` credentials, or OAuth. A complete `KIMI_MODEL_NAME` plus
+`KIMI_MODEL_API_KEY` override is also accepted. Bare `KIMI_API_KEY` in the
+parent shell is not Kimi Code authentication.
+
+Current Kimi Code print mode is non-interactive and auto-approves tool calls;
+the CLI does not expose a tool permission allowlist. Octopus therefore admits
+Kimi only for write-capable implementation roles and rejects it for research,
+review, and other read-only roles. Use a provider with an enforceable sandbox
+for those seats. Direct `kimi_execute` calls use the same environment allowlist
+as normal dispatch unless `OCTOPUS_ALLOW_FULL_KIMI_ENV=true` is explicitly set.
+The integration uses the current `-p` non-interactive contract; update Kimi
+Code if that option is unavailable.
+
+Readiness validates the complete TOML document with Kimi Code's own runtime and
+built-in `doctor` command, then uses `provider list --json` for provider and
+model records. Because that JSON omits top-level defaults, the bundled helper
+reads only `default_model` and `default_provider` from the already validated
+document. This works with both the native executable and the Node launcher
+without requiring a separate Python installation. If validation cannot run,
+the provider fails closed and asks the user to reinstall or update Kimi Code.
+Legacy keyring-only OAuth is not reported as ready; run `kimi` with the same
+`KIMI_CODE_HOME` and enter `/login` again.
+
+Kimi Code 0.40.1 documents Vertex ADC, but its shipped default headless runtime
+rejects an ADC-only provider before dispatch. Octopus therefore fails that
+configuration closed and does not forward `GOOGLE_APPLICATION_CREDENTIALS`.
+Use `VERTEXAI_API_KEY` or `GOOGLE_API_KEY` inside the selected provider's
+`env` table until the Kimi runtime contract supports ADC consistently.
+
 ## Traps (each has bitten a real PR)
 
 1. **Case glob ordering.** More-specific aliases must precede broader globs (for example, `claude-sdk*` before `claude*`). A late arm behind an earlier glob is silently unreachable; there is no error.
@@ -53,7 +97,7 @@ Plus, usually:
 codex, commandcode, claude, claude-sdk (Agent SDK seat), agy (Antigravity,
 Google seat), perplexity, opencode, openrouter, orcarouter, atlascloud,
 openai-compatible, openai-tools, openai-compatible-agent, cursor-agent, grok,
-qwen, ollama, copilot, and vibe.
+qwen, ollama, copilot, vibe, and kimi.
 
 Retired `gemini` and `gemini-*` IDs are accepted only as compatibility aliases and canonicalize to `agy`. They are not executable providers, are never probed, and are not written to new configuration.
 

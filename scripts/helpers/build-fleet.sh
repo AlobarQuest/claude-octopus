@@ -73,7 +73,11 @@ provider_status_is_available() {
 # Preference order for primary slot assignment. Every entry is still admitted
 # only when the shared status source reports exactly `available`.
 for _provider in codex commandcode grok agy copilot qwen cursor-agent opencode \
-    ollama vibe claude-sdk openrouter openai-compatible perplexity; do
+    ollama vibe kimi claude-sdk openrouter openai-compatible perplexity; do
+    # Fleet seats are consultative/read-only. Kimi's non-interactive mode
+    # auto-approves tools and cannot enforce that boundary, so it remains an
+    # implementation provider but is not eligible for these fleets.
+    [[ "$_provider" == "kimi" ]] && continue
     provider_status_is_available "$_provider" && AVAILABLE_CLI+=("$_provider")
 done
 # Atlas Cloud's canonical provider status is `atlascloud`, while its executable
@@ -144,7 +148,7 @@ build_diverse_order() {
 
     # Preferred order for primary diversity.
     for p in codex commandcode agy copilot qwen grok cursor-agent opencode ollama \
-        vibe claude-sdk openrouter openai-compatible atlascloud-agent perplexity; do
+        vibe kimi claude-sdk openrouter openai-compatible atlascloud-agent perplexity; do
         is_available "$p" || continue
         local fam
         fam=$(get_family "$p")
@@ -160,13 +164,15 @@ build_diverse_order() {
 
 emit() {
     local provider="$1" label="$2" perspective="$3"
+    # Keep allowlist enforcement at the final output boundary so defaults,
+    # fallbacks, and future fleet builders cannot emit an unauthorized seat.
+    octo_provider_allowed "$provider" || return 0
     perspective="${perspective//$'\r'/ }"
     perspective="${perspective//$'\n'/ }"
     printf '%s|%s|%s\n' "$provider" "$label" "$perspective"
 }
 
 emit_if_allowed() {
-    octo_provider_allowed "$1" || return 0
     emit "$@"
 }
 
@@ -195,7 +201,8 @@ build_research_fleet() {
             diverse_arr=(claude-sonnet)
             dcount=1
         else
-            return 0
+            log ERROR "no eligible read-only provider is available for the $WORKFLOW fleet"
+            return 1
         fi
     fi
 
@@ -348,6 +355,10 @@ build_council_order() {
             rest="${rest}${rest:+ }${provider}"
         fi
     done
+    if [[ -z "$first" && -z "$rest" ]]; then
+        log ERROR "no eligible read-only provider is available for the $WORKFLOW fleet"
+        return 1
+    fi
     printf '%s\n' "${first}${rest:+ $rest}"
 }
 
@@ -447,7 +458,14 @@ build_debate_fleet() {
     done
 
     # Ensure at least 1 debater
-    [[ $debater_count -eq 0 ]] && debaters="claude-sonnet"
+    if [[ $debater_count -eq 0 ]]; then
+        if octo_provider_allowed claude-sonnet; then
+            debaters="claude-sonnet"
+        else
+            log ERROR "no eligible read-only provider is available for the $WORKFLOW fleet"
+            return 1
+        fi
+    fi
 
     for d in $debaters; do
         emit "$d" "Debater" "Argue your position on: $PROMPT"
@@ -475,7 +493,14 @@ build_architecture_fleet() {
         [[ $arch_count -ge 2 ]] && break
     done
 
-    [[ $arch_count -eq 0 ]] && octo_provider_allowed claude-sonnet && architects="claude-sonnet"
+    if [[ $arch_count -eq 0 ]]; then
+        if octo_provider_allowed claude-sonnet; then
+            architects="claude-sonnet"
+        else
+            log ERROR "no eligible read-only provider is available for the $WORKFLOW fleet"
+            return 1
+        fi
+    fi
 
     local i=0
     for a in $architects; do
@@ -492,13 +517,14 @@ build_architecture_fleet() {
 
 # ── Main Dispatch ─────────────────────────────────────────────────────────────
 # Normalize workflow name
+fleet_status=0
 case "$WORKFLOW" in
-    research|discover)     build_research_fleet ;;
-    review|security)       build_review_fleet ;;
-    review-order)          build_review_order ;;
-    debate)                build_debate_fleet ;;
-    architecture)          build_architecture_fleet ;;
-    *)                     build_research_fleet ;;
+    research|discover)     build_research_fleet || fleet_status=$? ;;
+    review|security)       build_review_fleet || fleet_status=$? ;;
+    review-order)          build_review_order || fleet_status=$? ;;
+    debate)                build_debate_fleet || fleet_status=$? ;;
+    architecture)          build_architecture_fleet || fleet_status=$? ;;
+    *)                     build_research_fleet || fleet_status=$? ;;
 esac
 
 # ── Fleet Summary (stderr — for diagnostic/logging) ──────────────────────────
@@ -508,3 +534,4 @@ else
     families=$(count_families)
 fi
 >&2 echo "FLEET_SUMMARY: workflow=$WORKFLOW intensity=$INTENSITY families=${families} cli_count=${CLI_COUNT} providers=${AVAILABLE_CLI[*]:-none}"
+return "$fleet_status" 2>/dev/null || exit "$fleet_status"

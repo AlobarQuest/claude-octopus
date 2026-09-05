@@ -6,6 +6,9 @@
 [[ -n "${_OCTOPUS_UTILS_LOADED:-}" ]] && return 0
 _OCTOPUS_UTILS_LOADED=true
 
+_utils_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_utils_lib_dir}/kimi-model-name.sh" || { echo "utils: failed to load kimi-model-name.sh" >&2; return 1 2>/dev/null || exit 1; }
+
 # Internal log helper — uses orchestrate.sh's log() if available, falls back to stderr
 _utils_log() {
     if type log &>/dev/null 2>&1; then
@@ -213,7 +216,7 @@ _octopus_is_safe_openai_compatible_value() {
 # later in the string), so `env OCTOPUS_GROK_MODEL=x echo pwned <shim>` is
 # rejected instead of matching on a fixed prefix/suffix pair.
 _validate_env_prefixed_shim_command() {
-    local cmd="$1" env_prefix="$2" shim_suffix="$3" allowed_tail="${4:-}"
+    local cmd="$1" env_prefix="$2" shim_path="$3" allowed_tail="${4:-}" encoding="${5:-plain}" path_match="${6:-suffix}"
     local -a parts
     read -r -a parts <<< "$cmd"
     if [[ -n "$allowed_tail" ]]; then
@@ -224,7 +227,15 @@ _validate_env_prefixed_shim_command() {
     fi
     [[ "${parts[0]}" == "env" ]] || return 1
     [[ "${parts[1]}" == "${env_prefix}="* ]] || return 1
-    [[ "${parts[2]}" == *"$shim_suffix" ]] || return 1
+    if [[ "$path_match" == exact ]]; then
+        [[ "${parts[2]}" == "$shim_path" ]] || return 1
+    else
+        [[ "${parts[2]}" == *"$shim_path" ]] || return 1
+    fi
+    if [[ "$encoding" == hex ]]; then
+        local encoded="${parts[1]#*=}"
+        octopus_kimi_model_from_hex "$encoded" >/dev/null || return 1
+    fi
     return 0
 }
 
@@ -433,6 +444,11 @@ validate_agent_command() {
     local cmd_executable="${cmd%%[[:space:]]*}"
     local configured_claude="${OCTOPUS_CLAUDE_BIN:-claude}"
     local configured_claude_executable="${configured_claude%%[[:space:]]*}"
+    local trusted_plugin_root="${PLUGIN_DIR:-}"
+    if [[ -z "$trusted_plugin_root" ]]; then
+        trusted_plugin_root="$(cd "${_utils_lib_dir}/../.." && pwd)" || return 1
+    fi
+    local trusted_kimi_shim="${trusted_plugin_root}/scripts/helpers/kimi-exec.sh"
 
     # Allow helper shims only when they are the executable token, not when they
     # appear later in the command string. OpenAI-compatible helper arguments are
@@ -448,8 +464,14 @@ validate_agent_command() {
         || "$cmd_executable" == */scripts/helpers/claude-sdk-exec.sh ]]; then
         return 0
     fi
+    if [[ "$cmd" == "$trusted_kimi_shim" ]]; then
+        return 0
+    fi
     if [[ "$cmd_executable" == "env" ]]; then
         if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_GROK_MODEL" "/scripts/helpers/grok-exec.sh"; then
+            return 0
+        fi
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_KIMI_MODEL_HEX" "$trusted_kimi_shim" "" hex exact; then
             return 0
         fi
         if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_COPILOT_MODEL" "/scripts/helpers/copilot-exec.sh"; then

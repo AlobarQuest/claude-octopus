@@ -5,7 +5,7 @@
 _preflight_registry_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_preflight_registry_dir}/provider-registry.sh" 2>/dev/null || true
 
-for _preflight_dependency in provider-allowlist auth provider-routing qwen openai-compatible grok copilot quota-watcher events; do
+for _preflight_dependency in provider-allowlist auth provider-routing qwen openai-compatible grok kimi copilot quota-watcher events; do
     # shellcheck source=/dev/null
     source "${_preflight_registry_dir}/${_preflight_dependency}.sh" 2>/dev/null || true
 done
@@ -236,6 +236,49 @@ _octo_provider_static_readiness() {
                     status="available"; reason_code="ready"; remediation=""
                 else
                     status="degraded"; reason_code="auth-missing"; remediation="Run: grok login, or set XAI_API_KEY."
+                fi
+            fi
+            ;;
+        kimi)
+            remediation="Install Kimi Code, run kimi, then enter /login."
+            if command -v kimi >/dev/null 2>&1; then
+                local kimi_config_path
+                kimi_config_path="$(kimi_config_file 2>/dev/null || printf '%s' "${KIMI_CODE_HOME:-${HOME}/.kimi-code}/config.toml")"
+                if declare -f kimi_configured_credential_method >/dev/null 2>&1 && \
+                   kimi_configured_credential_method >/dev/null 2>&1; then
+                    status="available"; reason_code="ready"; remediation=""
+                else
+                    status="degraded"
+                    case "$(kimi_credential_issue 2>/dev/null || true)" in
+                        model-missing)
+                            reason_code="model-missing"
+                            remediation="Run kimi and enter /login, or configure default_model and its model/provider mapping in ${kimi_config_path}. OCTOPUS_KIMI_MODEL cannot create a missing Kimi model alias."
+                            ;;
+                        keyring-migration-required)
+                            reason_code="auth-migration-required"
+                            remediation="Kimi Code cannot use the legacy keyring session. Run kimi with the same KIMI_CODE_HOME and enter /login again."
+                            ;;
+                        vertex-adc-unsupported)
+                            reason_code="auth-unsupported"
+                            remediation="Vertex ADC is not supported through the Octopus Kimi integration. Configure VERTEXAI_API_KEY or GOOGLE_API_KEY in the selected provider's env table in ${kimi_config_path}."
+                            ;;
+                        config-invalid)
+                            reason_code="config-invalid"
+                            remediation="Repair ${kimi_config_path}; Kimi requires valid TOML with a complete default model and selected provider mapping."
+                            ;;
+                        validator-unavailable)
+                            reason_code="config-validator-unavailable"
+                            remediation="Reinstall or update Kimi Code so its built-in config validator is available, then retry."
+                            ;;
+                        oauth-invalid)
+                            reason_code="auth-invalid"
+                            remediation="The OAuth session referenced by ${kimi_config_path} is missing or malformed. Run kimi and enter /login again."
+                            ;;
+                        *)
+                            reason_code="auth-missing"
+                            remediation="Run kimi and enter /login, or configure credentials on the selected provider in ${kimi_config_path}. Shell-only API keys are not read automatically."
+                            ;;
+                    esac
                 fi
             fi
             ;;

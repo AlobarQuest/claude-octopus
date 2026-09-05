@@ -21,6 +21,7 @@ _model_resolver_load_error() {
     fi
 }
 source "${_model_resolver_lib_dir}/provider-registry.sh" || { _model_resolver_load_error "failed to load provider-registry.sh"; return 1 2>/dev/null || exit 1; }
+source "${_model_resolver_lib_dir}/kimi-model-name.sh" || { _model_resolver_load_error "failed to load kimi-model-name.sh"; return 1 2>/dev/null || exit 1; }
 if ! declare -f octo_model_cache_file >/dev/null 2>&1; then
     source "${_model_resolver_lib_dir}/model-cache-path.sh" 2>/dev/null || true
 fi
@@ -197,6 +198,13 @@ validate_agy_model_name() {
     return 1
 }
 
+# Kimi Code aliases are user-defined TOML keys and may contain whitespace.
+# They still cross an Octopus command boundary, so retain the generic model
+# validator's metacharacter, line-break, backslash, and absolute-path guards.
+validate_kimi_model_name() {
+    octopus_kimi_model_name_is_safe "$1"
+}
+
 validate_model_name_for_provider() {
     local provider="$1"
     local model="$2"
@@ -204,6 +212,9 @@ validate_model_name_for_provider() {
     case "$provider" in
         agy|agy-research|antigravity)
             validate_agy_model_name "$model"
+            ;;
+        kimi)
+            validate_kimi_model_name "$model"
             ;;
         *)
             validate_model_name "$model"
@@ -723,6 +734,7 @@ resolve_octopus_model() {
             opencode-fast*)  resolved_model="opencode/deepseek-v4-flash-free" ;;
             opencode*)       resolved_model="opencode/deepseek-v4-flash-free" ;;
             grok*)           resolved_model="default" ;; # xAI's own default; dispatch.sh/grok-exec.sh omit --model for "default" (#797)
+            kimi*)           resolved_model="default" ;; # Kimi's own default from ~/.kimi-code/config.toml; the shim omits --model for "default"
             vibe*)           resolved_model="default" ;; # Mistral Vibe's own default from ~/.vibe/config.toml; never wired to --model (#797)
             atlascloud*)     resolved_model="" ;; # No safe universal default; atlascloud-agent dispatch already requires an explicit model pin (#797)
             *)              resolved_model="$(codex_default_model)" ;; # Safest universal fallback
@@ -869,6 +881,9 @@ is_agent_available_v2() {
             fi
             [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && \
                 { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }
+            ;;
+        kimi|kimi-*)
+            declare -f kimi_is_available >/dev/null 2>&1 && kimi_is_available
             ;;
         vibe|vibe-*)
             if [[ -z "${MISTRAL_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Moonshot Kimi Code CLI (`kimi`) as a first-class provider, alongside the
+  existing OpenRouter `openrouter-kimi` API route. Dispatch goes through
+  `scripts/helpers/kimi-exec.sh` (kimi's `-p` takes the prompt as argv, so the
+  shim bridges octo's stdin contract), with model selection wired from
+  `providers.json` / `OCTOPUS_KIMI_MODEL`. Auth comes from the selected
+  provider in `config.toml`, a validated `/login` session, or the documented
+  `KIMI_MODEL_*` override family. Availability requires either a non-empty
+  top-level `default_model` or an `OCTOPUS_KIMI_MODEL` pin that names a complete
+  model alias in kimi's own `config.toml`; `[secondary_model]` carries a
+  separate default for the subagent pool and does not satisfy main-model
+  readiness. A pin with no matching alias fails closed. Config errors exit 1,
+  so the existing exit-code gate in `spawn.sh` handles them.
+
 ### Fixed
 
 - Record the exact post-persona, post-budget prompt in each seat result, annotate

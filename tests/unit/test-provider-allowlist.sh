@@ -20,6 +20,8 @@ test_suite "Provider allowlist"
 ALLOWLIST_LIB="$PROJECT_ROOT/scripts/lib/provider-allowlist.sh"
 CHECK_PROVIDERS="$PROJECT_ROOT/scripts/helpers/check-providers.sh"
 BUILD_FLEET="$PROJECT_ROOT/scripts/helpers/build-fleet.sh"
+SELECT_ADVISORS="$PROJECT_ROOT/scripts/helpers/select-fleet-advisors.sh"
+CONSULTATIVE_LIB="$PROJECT_ROOT/scripts/lib/consultative-advisors.sh"
 MODEL_CONFIG="$PROJECT_ROOT/scripts/helpers/octo-model-config.sh"
 
 test_case "allowlist helper has valid bash syntax"
@@ -136,6 +138,215 @@ if assert_contains "$fleet" "agy|" "legacy gemini token should make AGY eligible
    assert_contains "$fleet" "claude-sonnet|" "claude alias should allow claude-sonnet" &&
    assert_not_contains "$fleet" "codex|" "codex should not be emitted"; then
     test_pass
+fi
+
+test_case "quick research never emits a disallowed Claude fallback"
+codex_only_checker="$TEST_TMP_DIR/codex-only-checker.sh"
+cat > "$codex_only_checker" <<'SH'
+#!/bin/bash
+printf '%s\n' 'codex:available'
+SH
+chmod +x "$codex_only_checker"
+fleet=$(OCTOPUS_PROVIDER_CHECKER="$codex_only_checker" OCTO_ALLOWED_PROVIDERS=codex \
+    "$BUILD_FLEET" research quick fixture 2>/dev/null)
+if [[ "$fleet" == *'codex|'* && "$fleet" != *'claude'* ]]; then
+    test_pass
+else
+    test_fail "quick research escaped its allowlist: fleet='$fleet'"
+fi
+
+advisor_builder="$TEST_TMP_DIR/advisor-builder.sh"
+
+test_case "advisor selection propagates fleet construction failure"
+cat > "$advisor_builder" <<'SH'
+#!/bin/bash
+printf '%s\n' 'codex|Debater|must not escape a failed fleet'
+exit 42
+SH
+chmod +x "$advisor_builder"
+set +e
+advisor_output=$(OCTOPUS_FLEET_BUILDER="$advisor_builder" "$SELECT_ADVISORS" debate standard fixture 2>/dev/null)
+advisor_rc=$?
+set -e
+if [[ "$advisor_rc" -eq 42 && -z "$advisor_output" ]]; then
+    test_pass
+else
+    test_fail "advisor selector must propagate fleet failure without output: rc=$advisor_rc output='$advisor_output'"
+fi
+
+test_case "advisor selection rejects an empty successful fleet"
+cat > "$advisor_builder" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$advisor_builder"
+set +e
+advisor_output=$(OCTOPUS_FLEET_BUILDER="$advisor_builder" "$SELECT_ADVISORS" research standard fixture 2>/dev/null)
+advisor_rc=$?
+set -e
+if [[ "$advisor_rc" -ne 0 && -z "$advisor_output" ]]; then
+    test_pass
+else
+    test_fail "advisor selector must reject an empty fleet: rc=$advisor_rc output='$advisor_output'"
+fi
+
+test_case "advisor selection rejects a Kimi-only consultative fleet"
+cat > "$advisor_builder" <<'SH'
+#!/bin/bash
+printf '%s\n' 'kimi|Debater|unsafe consultative seat'
+SH
+chmod +x "$advisor_builder"
+set +e
+advisor_output=$(OCTOPUS_FLEET_BUILDER="$advisor_builder" OCTO_ALLOWED_PROVIDERS=kimi \
+    "$SELECT_ADVISORS" debate standard fixture 2>/dev/null)
+advisor_rc=$?
+set -e
+if [[ "$advisor_rc" -ne 0 && -z "$advisor_output" ]]; then
+    test_pass
+else
+    test_fail "advisor selector must reject Kimi-only fleets: rc=$advisor_rc output='$advisor_output'"
+fi
+
+test_case "advisor selection emits only allowlisted fleet providers"
+cat > "$advisor_builder" <<'SH'
+#!/bin/bash
+printf '%s\n' \
+    'codex|Debater|OpenAI view' \
+    'agy|Debater|Google view' \
+    'claude-sonnet|Moderator|host view'
+SH
+chmod +x "$advisor_builder"
+advisor_output=$(OCTOPUS_FLEET_BUILDER="$advisor_builder" OCTO_ALLOWED_PROVIDERS=agy \
+    "$SELECT_ADVISORS" debate standard fixture 2>/dev/null)
+if [[ "$advisor_output" == "agy" ]]; then
+    test_pass
+else
+    test_fail "advisor selector escaped the provider allowlist: output='$advisor_output'"
+fi
+
+test_case "brainstorm and debate consumers use fail-closed advisor selection"
+consumer_errors=""
+for consumer in \
+    "$PROJECT_ROOT/commands/brainstorm.md" \
+    "$PROJECT_ROOT/.cursor-plugin/commands/octo-brainstorm.md" \
+    "$PROJECT_ROOT/.claude/skills/skill-debate/SKILL.md" \
+    "$PROJECT_ROOT/skills/skill-debate/SKILL.md"; do
+    grep -q 'select-fleet-advisors.sh' "$consumer" || consumer_errors+="$consumer: missing advisor selector"$'\n'
+    if grep -q 'fallback_advisors' "$consumer"; then
+        consumer_errors+="$consumer: retains provider fallback"$'\n'
+    fi
+done
+if [[ -z "$consumer_errors" ]]; then
+    test_pass
+else
+    test_fail "workflow consumers must preserve fleet admission failures: $consumer_errors"
+fi
+
+test_case "consultative consumer contract launches every selected provider family"
+if [[ ! -r "$CONSULTATIVE_LIB" ]]; then
+    test_fail "missing consultative advisor contract: $CONSULTATIVE_LIB"
+else
+    source "$CONSULTATIVE_LIB"
+    launch_orchestrator="$TEST_TMP_DIR/launch-orchestrator.sh"
+    launch_log="$TEST_TMP_DIR/launch-advisors.log"
+    cat > "$launch_orchestrator" <<'SH'
+#!/bin/bash
+[[ "${1:-}" == spawn ]] || exit 64
+printf '%s\n' "$2" >> "$OCTO_LAUNCH_LOG"
+[[ "${OCTO_ORCH_FAIL:-false}" == true ]] && exit 9
+printf 'response from %s\n' "$2"
+SH
+    chmod +x "$launch_orchestrator"
+    launch_errors=""
+    for provider in openrouter commandcode; do
+        cat > "$advisor_builder" <<SH
+#!/bin/bash
+printf '%s\n' '$provider|Problem Analysis|consumer fixture'
+SH
+        chmod +x "$advisor_builder"
+        selected=$(OCTOPUS_FLEET_BUILDER="$advisor_builder" \
+            OCTO_ALLOWED_PROVIDERS="$provider claude" \
+            "$SELECT_ADVISORS" research standard fixture 2>/dev/null) || selected="failed"
+        : > "$launch_log"
+        output_dir="$TEST_TMP_DIR/launch-$provider"
+        mkdir -p "$output_dir"
+        count=$(OCTO_LAUNCH_LOG="$launch_log" OCTO_ALLOWED_PROVIDERS="$provider claude" \
+            octo_launch_advisors "$launch_orchestrator" "$selected" "$output_dir" response- \
+                'Review as {{advisor}}' 1 2>/dev/null) || count="failed"
+        [[ "$selected" == "$provider" ]] || launch_errors+="$provider selector=$selected"$'\n'
+        [[ "$count" == 1 ]] || launch_errors+="$provider count=$count"$'\n'
+        [[ "$(< "$launch_log")" == "$provider" ]] || launch_errors+="$provider was not launched"$'\n'
+    done
+    if [[ -z "$launch_errors" ]]; then
+        test_pass
+    else
+        test_fail "selected providers did not reach the orchestrator: $launch_errors"
+    fi
+fi
+
+test_case "consultative consumer gates host Claude and enforces provider count"
+if [[ ! -r "$CONSULTATIVE_LIB" ]]; then
+    test_fail "missing consultative advisor contract: $CONSULTATIVE_LIB"
+else
+    source "$CONSULTATIVE_LIB"
+    host_rc=0
+    OCTO_ALLOWED_PROVIDERS=codex octo_consultative_host_allowed || host_rc=$?
+    required=$(OCTO_ALLOWED_PROVIDERS=codex octo_consultative_required_external_count)
+    output_dir="$TEST_TMP_DIR/host-disallowed"
+    mkdir -p "$output_dir"
+    launch_rc=0
+    OCTO_LAUNCH_LOG="$launch_log" OCTO_ALLOWED_PROVIDERS=codex \
+        octo_launch_advisors "$launch_orchestrator" codex "$output_dir" response- \
+            'Review as {{advisor}}' "$required" >/dev/null 2>&1 || launch_rc=$?
+    total_without_host=0
+    total_with_host=0
+    octo_consultative_provider_count_is_sufficient 1 0 || total_without_host=$?
+    octo_consultative_provider_count_is_sufficient 1 1 || total_with_host=$?
+    if [[ "$host_rc" -ne 0 && "$required" -eq 2 && "$launch_rc" -ne 0 && \
+          "$total_without_host" -ne 0 && "$total_with_host" -eq 0 ]]; then
+        test_pass
+    else
+        test_fail "host-disabled run must require two external successes: host=$host_rc required=$required launch=$launch_rc totals=$total_without_host/$total_with_host"
+    fi
+fi
+
+test_case "consultative consumer fails when no advisor launch succeeds"
+if [[ ! -r "$CONSULTATIVE_LIB" ]]; then
+    test_fail "missing consultative advisor contract: $CONSULTATIVE_LIB"
+else
+    source "$CONSULTATIVE_LIB"
+    output_dir="$TEST_TMP_DIR/zero-launch"
+    mkdir -p "$output_dir"
+    launch_rc=0
+    OCTO_ORCH_FAIL=true OCTO_LAUNCH_LOG="$launch_log" OCTO_ALLOWED_PROVIDERS="codex claude" \
+        octo_launch_advisors "$launch_orchestrator" codex "$output_dir" response- \
+            'Review as {{advisor}}' 1 >/dev/null 2>&1 || launch_rc=$?
+    if [[ "$launch_rc" -ne 0 ]]; then
+        test_pass
+    else
+        test_fail "zero successful launches must fail"
+    fi
+fi
+
+test_case "brainstorm and debate use the executable launch contract and gate Claude"
+consumer_errors=""
+for consumer in \
+    "$PROJECT_ROOT/commands/brainstorm.md" \
+    "$PROJECT_ROOT/.cursor-plugin/commands/octo-brainstorm.md" \
+    "$PROJECT_ROOT/.claude/skills/skill-debate/SKILL.md" \
+    "$PROJECT_ROOT/skills/skill-debate/SKILL.md"; do
+    grep -q 'consultative-advisors.sh' "$consumer" || consumer_errors+="$consumer: missing shared launch contract"$'\n'
+    grep -q 'octo_launch_advisors' "$consumer" || consumer_errors+="$consumer: missing counted launch"$'\n'
+    grep -q 'octo_consultative_host_allowed' "$consumer" || consumer_errors+="$consumer: host Claude is not allowlist-gated"$'\n'
+    grep -q 'HOST_ADVISOR_SUCCESS=0' "$consumer" || consumer_errors+="$consumer: host success is not initialized fail-closed"$'\n'
+    if grep -q '^wait$' "$consumer"; then
+        consumer_errors+="$consumer: retains bare wait"$'\n'
+    fi
+done
+if [[ -z "$consumer_errors" ]]; then
+    test_pass
+else
+    test_fail "workflow consumers do not enforce successful provider count: $consumer_errors"
 fi
 
 # ── alias arms must not shadow one another (SC2221/SC2222) ───────────────────

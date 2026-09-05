@@ -18,6 +18,7 @@ OCTOPUS_AGENT_	placeholder	doc template fragment, not a real variable
 OCTOPUS_AGENT_LIFECYCLE_HOOK	covered-by	test-agent-lifecycle-events.sh
 OCTOPUS_AGENT_LIFECYCLE_HOOK_LOG	covered-by	test-agent-lifecycle-events.sh
 OCTOPUS_AGY_MODEL	covered-by	test-agy-provider.sh
+OCTOPUS_ALLOW_FULL_KIMI_ENV	covered-by	test-kimi-provider.sh
 OCTOPUS_AUTO_TITLE	skip	sets the Claude Code session title; observable only in the host UI
 OCTOPUS_AUTO_ROUTER_MODE	covered-by	test-explicit-activation.sh
 OCTOPUS_CLAUDE_SDK_MODEL	covered-by	test-claude-sdk-provider.sh
@@ -36,6 +37,7 @@ OCTOPUS_FABLE5_NO_RETRY	covered-by	test-fable5-mode.sh
 OCTOPUS_FABLE5_ROUTING	covered-by	test-fable5-escalation.sh
 OCTOPUS_IDE_	placeholder	doc template fragment, not a real variable
 OCTOPUS_JOB_ID	skip	opaque correlation id passed through to logs; no behavioural delta
+OCTOPUS_KIMI_MODEL	covered-by	test-kimi-provider.sh
 OCTOPUS_LEGACY_ROLES	covered-by	test-agy-research-defaults.sh
 OCTOPUS_MAX_COST_USD	skip	aborts a run mid-dispatch; needs a live provider to reach the check
 OCTOPUS_OLLAMA_ALLOW_PULL	covered-by	test-codex-pull-guard.sh

@@ -37,6 +37,13 @@ _octopus_is_safe_env_var_name() {
     [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
+_octopus_hex_encode_kimi_model() {
+    local model="$1" encoded
+    encoded="$(LC_ALL=C printf '%s' "$model" | od -An -v -tx1 | tr -d '[:space:]')" || return 1
+    [[ "$encoded" =~ ^([0-9A-Fa-f][0-9A-Fa-f])+$ ]] || return 1
+    printf '%s\n' "$encoded"
+}
+
 _octopus_claude_reasoning_fragment() {
     local level="$1" policy="${2:-best_effort}"
     if [[ "${SUPPORTS_EFFORT_COMMAND:-false}" != "true" ||
@@ -173,6 +180,41 @@ octo_dispatch_command_model() {
       { for (i = 1; i <= NF; i++) if ($i == "--model" && i < NF) { print $(i + 1); exit } }
     ')"
     printf '%s\n' "${resolved:-$fallback}"
+}
+
+# Role-based tool policy is needed during command construction, including when
+# dispatch.sh is sourced without the monolithic orchestrator.
+get_tool_policy() {
+    local role="${1:-}"
+    case "$role" in
+        researcher|ai-engineer|business-analyst|research-synthesizer|ux-researcher)
+            echo "read_search" ;;
+        implementer|tdd-orchestrator|debugger|python-pro|typescript-pro|frontend-developer)
+            echo "full" ;;
+        code-reviewer|security-auditor|performance-engineer|test-automator)
+            echo "read_exec" ;;
+        synthesizer|orchestrator|context-manager|docs-architect|exec-communicator|academic-writer|product-writer)
+            echo "read_communicate" ;;
+        *) echo "full" ;;
+    esac
+}
+
+# Kimi Code's non-interactive mode cannot enforce a read-only tool boundary.
+# Keep its eligibility fail-closed: a role must be explicitly write-capable,
+# and persona frontmatter can still narrow an otherwise write-capable role.
+octo_kimi_role_is_write_capable() {
+    local role="${1:-}"
+    [[ -n "$role" ]] || return 1
+    if declare -f get_agent_readonly >/dev/null 2>&1 && \
+       [[ "$(get_agent_readonly "$role")" == "true" ]]; then
+        return 1
+    fi
+    case "$role" in
+        implementer|tdd-orchestrator|debugger|python-pro|typescript-pro|frontend-developer)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
 }
 
 get_agent_command() {
@@ -501,6 +543,29 @@ get_agent_command() {
                 echo "env OCTOPUS_GROK_MODEL=${model} ${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
             else
                 echo "${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
+            fi
+            ;;
+        kimi|kimi-research)  # Moonshot Kimi Code CLI — headless single-turn via helpers/kimi-exec.sh
+            # Kimi's non-interactive print mode auto-approves tool calls and has
+            # no CLI permission allowlist. Prompt-only tool policies therefore
+            # cannot make a review or research seat read-only.
+            if [[ "$agent_type" == "kimi-research" || "$phase" == "review" ]] || \
+               ! octo_kimi_role_is_write_capable "$role"; then
+                log ERROR "Kimi Code cannot enforce a read-only tool policy; choose a sandboxed provider for role '${role:-unknown}'"
+                return 1
+            fi
+            # Model wiring mirrors grok: get_agent_model reads providers.json +
+            # OCTOPUS_KIMI_MODEL. Kimi aliases may contain whitespace, while all
+            # command consumers split this legacy command string into argv. Hex
+            # keeps the transport one inert token; kimi-exec.sh decodes it without
+            # eval before adding the exact alias to its command array.
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then return 1; fi
+            if [[ -n "$model" && "$model" != "default" ]]; then
+                local model_hex
+                model_hex="$(_octopus_hex_encode_kimi_model "$model")" || return 1
+                echo "env OCTOPUS_KIMI_MODEL_HEX=${model_hex} ${PLUGIN_DIR}/scripts/helpers/kimi-exec.sh"
+            else
+                echo "${PLUGIN_DIR}/scripts/helpers/kimi-exec.sh"
             fi
             ;;
         claude-sdk|claude-sdk-agent|claude-sdk-research)  # v9.50.0: Claude Agent SDK seat

@@ -257,7 +257,7 @@ SUPPORTS_HOOK_LAST_MESSAGE=false
 SUPPORTS_CONTINUATION=false
 SUPPORTS_AGENT_MODEL_OVERRIDE=false
 PROVIDER_ENV_ARRAY=()
-AVAILABLE_AGENTS=fake-api
+AVAILABLE_AGENTS="fake-api kimi kimi-research"
 PLUGIN_DIR="$PROJECT_ROOT"
 _BARE_OPT=""
 export OCTOPUS_OPUS_MODEL=claude-opus-5
@@ -325,6 +325,19 @@ record_agent_start() { :; }
 should_use_agent_teams() { return 1; }
 update_agent_status() { :; }
 write_agent_status() { :; }
+check_provider_health() {
+    printf '%s\n' "$1" >> "$TEST_TMP_DIR/background-health-calls"
+    [[ "$1" != kimi ]] || printf '%s\n' "${2:-missing}" > "$TEST_TMP_DIR/background-kimi-health-model"
+    if [[ "${FAKE_SCENARIO:-}" == kimi-dangling-default ]]; then
+        if ! KIMI_CODE_HOME="$PROJECT_ROOT/tests/fixtures/kimi-dangling-default" \
+            OCTOPUS_KIMI_MODEL="${2:-}" \
+            kimi_configured_credential_method >/dev/null 2>&1; then
+            printf '%s\n' 'fixture dangling Kimi default'
+            return 1
+        fi
+    fi
+    [[ "${FAKE_SCENARIO:-}" != health-fail ]]
+}
 build_provider_env() { PROVIDER_ENV_ARRAY=(); }
 start_quota_watcher() { :; }
 stop_quota_watcher() { :; }
@@ -455,6 +468,22 @@ else
 fi
 unset FAKE_SCENARIO
 
+source "$PROJECT_ROOT/scripts/lib/kimi.sh"
+kimi_config_bin="$TEST_TMP_DIR/kimi-config-bin"
+mkdir -p "$kimi_config_bin"
+cat > "$kimi_config_bin/kimi" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    __plugin_run_node) shift; exec "${KIMI_TEST_NODE:?}" "$@" ;;
+    doctor|provider) exec "${KIMI_TEST_NODE:?}" "${KIMI_TEST_DRIVER:?}" "$@" ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 755 "$kimi_config_bin/kimi"
+export KIMI_TEST_NODE="$(command -v node)"
+export KIMI_TEST_DRIVER="$PROJECT_ROOT/tests/fixtures/kimi-code-cli-mock.mjs"
+PATH="$kimi_config_bin:$PATH"
+
 test_case "real supervised success follows the complete contract"
 run_external_fixture success external-success
 external_success_model="$(jq -r '.seats[] | select(.seat_id == "spawn-external-success") | .resolved.model' \
@@ -573,6 +602,53 @@ if [[ "$exact_fable_ran" == true ]] && \
 else
     test_fail "background exact Fable execution retried or lost its lifecycle identity"
 fi
+test_case "real supervised Kimi dispatch runs registered health and adds trust boundaries"
+: > "$TEST_TMP_DIR/background-health-calls"
+export FAKE_SCENARIO=success
+kimi_pid="$(spawn_agent kimi-research "External Kimi fixture" external-kimi reviewer probe)"
+wait "$kimi_pid" 2>/dev/null || true
+kimi_result="$RESULTS_DIR/kimi-research-external-kimi.md"
+if [[ "$(grep -cx 'kimi' "$TEST_TMP_DIR/background-health-calls")" -eq 1 ]] && \
+   [[ "$(cat "$TEST_TMP_DIR/background-kimi-health-model")" == fixture-model ]] && \
+   grep -q '<!-- trust=untrusted provider=kimi-research -->' "$kimi_result" && \
+   grep -q '<!-- BEGIN-UNTRUSTED:provider=kimi-research:' "$kimi_result" && \
+   grep -q '<!-- END-UNTRUSTED:provider=kimi-research:' "$kimi_result"; then
+    test_pass
+else
+    test_fail "Kimi async health or trust-boundary contract was not enforced"
+fi
+
+test_case "real supervised Kimi health failure prevents provider dispatch"
+: > "$TEST_TMP_DIR/background-health-calls"
+export FAKE_SCENARIO=health-fail
+set +e
+spawn_agent kimi "Kimi health failure" external-kimi-health reviewer probe >/dev/null
+kimi_health_rc=$?
+set -e
+if [[ "$kimi_health_rc" -ne 0 ]] && \
+   [[ "$(grep -cx 'kimi' "$TEST_TMP_DIR/background-health-calls")" -eq 1 ]] && \
+   [[ ! -e "$RESULTS_DIR/kimi-external-kimi-health.md" ]]; then
+    test_pass
+else
+    test_fail "Kimi async health failure did not fail closed before dispatch"
+fi
+unset FAKE_SCENARIO
+
+test_case "background Kimi health rejects a dangling default before dispatch"
+: > "$TEST_TMP_DIR/background-health-calls"
+export FAKE_SCENARIO=kimi-dangling-default
+set +e
+spawn_agent kimi "Kimi dangling default" external-kimi-dangling reviewer probe >/dev/null
+kimi_dangling_rc=$?
+set -e
+if [[ "$kimi_dangling_rc" -ne 0 ]] && \
+   [[ "$(grep -cx 'kimi' "$TEST_TMP_DIR/background-health-calls")" -eq 1 ]] && \
+   [[ ! -e "$RESULTS_DIR/kimi-external-kimi-dangling.md" ]]; then
+    test_pass
+else
+    test_fail "Kimi dangling default reached background provider dispatch"
+fi
+unset FAKE_SCENARIO
 
 test_case "background model-resolution failure terminalizes before provider execution"
 set +e

@@ -694,7 +694,7 @@ CODEX_SUBAGENT_PREAMBLE="IMPORTANT: You are running as a non-interactive subagen
 
 "
 
-AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context agy agy-research antigravity codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek orcarouter openai-compatible openai-tools openai-compatible-agent perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research cursor-agent vibe vibe-research"
+AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context agy agy-research antigravity codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek orcarouter openai-compatible openai-tools openai-compatible-agent perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research kimi kimi-research cursor-agent vibe vibe-research"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # USAGE TRACKING & COST REPORTING (v4.1)
@@ -809,28 +809,6 @@ _PROVIDER_CONFIG_MIGRATED="${_PROVIDER_CONFIG_MIGRATED:-false}"
 # v8.19.0 FEATURE: TOOL POLICY RBAC FOR PERSONAS (Veritas-inspired)
 # Role-based tool access restrictions enforced via prompt injection.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-get_tool_policy() {
-    local role="$1"
-
-    case "$role" in
-        researcher|ai-engineer|business-analyst|research-synthesizer|ux-researcher)
-            echo "read_search"
-            ;;
-        implementer|tdd-orchestrator|debugger|python-pro|typescript-pro|frontend-developer)
-            echo "full"
-            ;;
-        code-reviewer|security-auditor|performance-engineer|test-automator)
-            echo "read_exec"
-            ;;
-        synthesizer|orchestrator|context-manager|docs-architect|exec-communicator|academic-writer|product-writer)
-            echo "read_communicate"
-            ;;
-        *)
-            echo "full"
-            ;;
-    esac
-}
 
 # [EXTRACTED to lib/dispatch.sh in v9.7.7]
 
