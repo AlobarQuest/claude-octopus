@@ -4,6 +4,8 @@
 name: Probe macOS shard 1
 
 on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
   workflow_dispatch:
 
 permissions:
