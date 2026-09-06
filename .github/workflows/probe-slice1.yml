@@ -1,0 +1,59 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# One macOS job per suite in slice 1 of shard 1/2. Slice 1 was the only slice of
+# eight that did not finish quickly, so this attributes the stall to a single
+# suite with no possibility of one suite's damage bleeding into the next.
+name: Probe slice1 per suite
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: ${{ matrix.suite }}
+    runs-on: macos-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        suite:
+          - unit/test-council-command.sh
+          - unit/test-agy-parallel-synthesis.sh
+          - unit/test-ci-changed.sh
+          - unit/test-command-prd-score.sh
+          - unit/test-cost-pricing.sh
+          - unit/test-dependency-wbs.sh
+          - unit/test-execution-mechanism.sh
+          - unit/test-grok-provider.sh
+          - unit/test-lockout-integration.sh
+          - unit/test-ollama-provider.sh
+          - unit/test-phases-1-2-3.sh
+          - unit/test-progress-tracking-consistency.sh
+          - unit/test-provider-registry-governance.sh
+          - unit/test-response-mode.sh
+          - unit/test-routing-features-consumers.sh
+          - unit/test-shell-safe-provider-snippets.sh
+          - unit/test-tangle-context-review-loop.sh
+          - unit/test-tangle-run-worktree.sh
+          - unit/test-v8.25.0-dark-factory.sh
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run one suite with a per-suite cap
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '600'
+        run: ./tests/run-all-tests.sh --suite=${{ matrix.suite }}
