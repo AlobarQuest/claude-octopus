@@ -1,6 +1,8 @@
 # THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
-# Reproduces `Unit Tests (macos-latest, shard 1/2)` alone, with a per-suite
-# cap so the job COMPLETES and names the hung suite. Delete with the branch.
+# Splits `Unit Tests (macos-latest, shard 1/2)` into 8 small macOS jobs so each
+# one COMPLETES and its log is retained. A whole-shard probe died at 49 minutes
+# with "the hosted runner lost communication with the server", so no log and no
+# artifact survived. Small jobs + per-suite caps + resource telemetry.
 name: Probe macOS shard 1
 
 on:
@@ -13,9 +15,13 @@ permissions:
 
 jobs:
   probe:
-    name: Probe Unit Tests (macos-latest, shard 1/2)
+    name: Probe shard1 slice ${{ matrix.slice }}/8
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -28,15 +34,42 @@ jobs:
       - name: Install adapter test dependencies
         run: make test-deps
 
-      - name: Run unit tests (shard 1/2) with a per-suite cap
+      - name: Select this slice of shard 1/2
+        id: select
         env:
-          OCTOPUS_SUITE_TIMEOUT_SECONDS: '900'
-        run: ./tests/run-all.sh unit --shard-index=0 --shard-count=2
+          SLICE: ${{ matrix.slice }}
+        run: |
+          set -euo pipefail
+          ./tests/run-all-tests.sh --unit --shard-index=0 --shard-count=2 --list \
+            | sed 's/\x1b\[[0-9;]*m//g' \
+            | sed -n 's/^  - \(unit\/.*\.sh\)$/\1/p' > /tmp/shard1-suites.txt
+          total=$(wc -l < /tmp/shard1-suites.txt | tr -d ' ')
+          echo "shard 1/2 has $total suites"
+          if [ "$total" -lt 100 ]; then
+            echo "::error::suite extraction produced only $total suites — parser is wrong"
+            exit 1
+          fi
+          awk -v k="$SLICE" 'NR % 8 == k { printf "--suite=%s\n", $0 }' /tmp/shard1-suites.txt > /tmp/slice-args.txt
+          n=$(wc -l < /tmp/slice-args.txt | tr -d ' ')
+          echo "slice $SLICE runs $n suites"
+          if [ "$n" -lt 1 ]; then echo "::error::empty slice"; exit 1; fi
+          cat /tmp/slice-args.txt
+
+      - name: Run this slice with a per-suite cap
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '480'
+        run: |
+          set -euo pipefail
+          args=""
+          while IFS= read -r a; do args="$args $a"; done < /tmp/slice-args.txt
+          # shellcheck disable=SC2086
+          ./tests/run-all-tests.sh $args
 
       - name: Upload suite logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: probe-suite-logs
-          path: /tmp/test_*.log
+          name: probe-slice-${{ matrix.slice }}-logs
+          path: /tmp/test_probe_*.log
           retention-days: 7
+          if-no-files-found: ignore

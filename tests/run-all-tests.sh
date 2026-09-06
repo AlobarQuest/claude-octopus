@@ -81,6 +81,21 @@ EOF
 # Bash 3.2 only: no associative arrays, no namerefs, no `wait -n`.
 # ---------------------------------------------------------------------------
 
+# Runner resource telemetry. The 45-minute kills and the "runner lost
+# communication" death both point at starvation rather than one blocked read,
+# so every suite boundary records process count, load, and free memory.
+probe_telemetry() {
+    local procs load freemb
+    procs="$(ps -ax 2>/dev/null | wc -l | tr -d ' ')"
+    load="$(uptime 2>/dev/null | sed 's/.*load average[s]*: //' | awk '{print $1}' | tr -d ',')"
+    if command -v vm_stat >/dev/null 2>&1; then
+        freemb="$(vm_stat 2>/dev/null | awk '/Pages free/ {gsub(/\./,"",$3); printf "%d", $3*4096/1048576}')"
+    else
+        freemb="$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)"
+    fi
+    printf '[procs=%s load=%s freeMB=%s]' "${procs:-?}" "${load:-?}" "${freemb:-?}"
+}
+
 descendant_pids() {
     local parent="$1"
     local child
@@ -148,7 +163,7 @@ run_suite_with_timeout() {
     log="/tmp/test_probe_${safe}.log"
     rm -f "$log"
 
-    echo "PROBE-START $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} (cap ${limit}s)"
+    echo "PROBE-START $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} (cap ${limit}s) $(probe_telemetry)"
 
     if [[ "$test_file" == "$SCRIPT_DIR/live/"* ]]; then
         bash "$test_file" >"$log" 2>&1 &
@@ -173,7 +188,7 @@ run_suite_with_timeout() {
     rc=0
     wait "$pid" 2>/dev/null || rc=$?
     cat "$log" 2>/dev/null
-    echo "PROBE-END $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} rc=${rc} elapsed=${elapsed}s"
+    echo "PROBE-END $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} rc=${rc} elapsed=${elapsed}s $(probe_telemetry)"
     return "$rc"
 }
 
