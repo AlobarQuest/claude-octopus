@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   treatment:
-    name: TREATMENT: council then the other 18
+    name: "TREATMENT - council then the other 18"
     runs-on: macos-latest
     timeout-minutes: 35
     steps:
@@ -94,7 +94,7 @@ jobs:
 
 
   control:
-    name: CONTROL: the other 18 only
+    name: "CONTROL - the other 18 only"
     runs-on: macos-latest
     timeout-minutes: 35
     steps:
