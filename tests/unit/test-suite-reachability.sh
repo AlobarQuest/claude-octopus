@@ -68,7 +68,13 @@ ci_categories() {
         cat=$(awk -v t="^${target}:" '
             $0 ~ t { f = 1; next }
             f && /^[a-zA-Z0-9_.-]+:/ { exit }
-            f && /run-all\.sh/ { print $NF; exit }
+            f && /run-all\.sh/ {
+                command = $0
+                sub(/^.*run-all\.sh[[:space:]]+/, "", command)
+                split(command, args, /[[:space:]]+/)
+                print args[1]
+                exit
+            }
         ' "$MAKEFILE")
         [[ -n "$cat" ]] && printf '%s\n' "$cat"
     done < <(workflow_make_targets) | sort -u
@@ -192,9 +198,9 @@ else
     test_fail "found only ${n_targets} 'make test-*' invocations in the workflow — the grep or the workflow changed, so the assertion above would be vacuous"
 fi
 
-test_case "the unit matrix keeps full coverage in two bounded macOS shards"
+test_case "ordinary PRs use focused units while safety-net changes keep full core shards"
 unit_timeout_setting="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^    timeout-minutes:[[:space:]]/ {
         sub(/^    timeout-minutes:[[:space:]]*/, "")
@@ -203,13 +209,13 @@ unit_timeout_setting="$(awk '
     }
 ' "$WORKFLOW")"
 macos_entry_count="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^[[:space:]]+- os:[[:space:]]+macos-latest[[:space:]]*$/ { count++ }
     END { print count + 0 }
 ' "$WORKFLOW")"
 macos_timeout_count="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^[[:space:]]+- os:[[:space:]]+macos-latest[[:space:]]*$/ { in_macos = 1; next }
     in_macos && /^[[:space:]]+- os:/ { in_macos = 0 }
@@ -217,14 +223,14 @@ macos_timeout_count="$(awk '
     END { print count + 0 }
 ' "$WORKFLOW")"
 macos_shard_indexes="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^[[:space:]]+- os:[[:space:]]+macos-latest[[:space:]]*$/ { in_macos = 1; next }
     in_macos && /^[[:space:]]+- os:/ { in_macos = 0 }
     in_macos && /^[[:space:]]+shard_index:[[:space:]]/ { print $2 }
 ' "$WORKFLOW" | LC_ALL=C sort | tr '\n' ',' | sed 's/,$//')"
 macos_shard_count_rows="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^[[:space:]]+- os:[[:space:]]+macos-latest[[:space:]]*$/ { in_macos = 1; next }
     in_macos && /^[[:space:]]+- os:/ { in_macos = 0 }
@@ -232,7 +238,7 @@ macos_shard_count_rows="$(awk '
     END { print count + 0 }
 ' "$WORKFLOW")"
 ubuntu_timeout_minutes="$(awk '
-    /^  unit:/ { in_unit = 1; next }
+    /^  unit-full:/ { in_unit = 1; next }
     in_unit && /^  [[:alnum:]_-]+:/ { exit }
     in_unit && /^[[:space:]]+- os:[[:space:]]+ubuntu-latest[[:space:]]*$/ { in_ubuntu = 1; next }
     in_ubuntu && /^[[:space:]]+- os:/ { exit }
@@ -244,19 +250,42 @@ if [[ "$unit_timeout_setting" == '${{ matrix.timeout_minutes }}' ]] \
    && [[ "$macos_shard_indexes" == "0,1" ]] \
    && [[ "$macos_shard_count_rows" == "2" ]] \
    && [[ "$ubuntu_timeout_minutes" == "25" ]] \
-   && grep -Fq -- '--shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}' "$WORKFLOW"; then
+   && grep -Fq -- '--exclude=unit/test-council-command.sh' "$WORKFLOW" \
+   && grep -Fq -- '--shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}' "$WORKFLOW" \
+   && grep -Fq 'unit-focused:' "$WORKFLOW" \
+   && grep -Fq 'github.event_name == '\''pull_request'\''' "$WORKFLOW" \
+   && grep -Fq "needs.classify-changes.outputs.full_unit != 'true'" "$WORKFLOW" \
+   && grep -Fq 'ci-changed.sh --base "$BASE_SHA" --unit-only --skip-smoke' "$WORKFLOW"; then
     test_pass
 else
-    test_fail "unit matrix must be one full Ubuntu run plus deterministic macOS shards 0 and 1 of 2 with 45-minute bounds"
+    test_fail "ordinary PRs must use the focused selector while safety-net changes retain full deterministic shards"
 fi
 
-test_case "required Unit Tests aggregates the symlink lane"
+test_case "deep council coverage is explicit outside ordinary PRs"
+deep_job="$(awk '
+    /^  unit-deep:/ { in_job = 1 }
+    in_job && /^  [[:alnum:]_-]+:/ && $0 !~ /^  unit-deep:/ { exit }
+    in_job { print }
+' "$WORKFLOW")"
+if [[ "$deep_job" == *'name: Unit Tests (deep council)'* ]] &&
+   [[ "$deep_job" == *"github.event_name == 'schedule'"* ]] &&
+   [[ "$deep_job" == *"github.event_name == 'workflow_dispatch'"* ]] &&
+   [[ "$deep_job" == *"github.event_name == 'merge_group'"* ]] &&
+   [[ "$deep_job" == *"github.ref == 'refs/heads/main'"* ]] &&
+   [[ "$deep_job" == *'./tests/run-all-tests.sh --suite=unit/test-council-command.sh'* ]] &&
+   grep -Fq 'unit-deep' "$WORKFLOW"; then
+    test_pass
+else
+    test_fail "deep council suite is not explicitly reachable from a deliberate non-PR lane"
+fi
+
+test_case "required Unit Tests aggregates the symlink and deep lanes"
 symlink_job="$(awk '
     /^  symlinked-path:/ { in_job = 1 }
     in_job && /^  [[:alnum:]_-]+:/ && $0 !~ /^  symlinked-path:/ { exit }
     in_job { print }
 ' "$WORKFLOW")"
-if grep -Fq 'needs: [classify-changes, unit, symlinked-path]' "$WORKFLOW" &&
+if grep -Fq 'needs: [classify-changes, unit-focused, unit-full, unit-deep, symlinked-path]' "$WORKFLOW" &&
    grep -Fq 'needs.symlinked-path.result' "$WORKFLOW" &&
    [[ "$symlink_job" == *'GITHUB_EVENT_NAME: ${{ github.event_name }}'* ]] &&
    [[ "$symlink_job" == *'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then'* ]] &&
@@ -279,6 +308,14 @@ if grep -Fq "github.event_name == 'workflow_dispatch'" <<< "$integration_job"; t
     test_pass
 else
     test_fail "workflow_dispatch selects heavy tests but skips integration-heavy"
+fi
+
+test_case "integration-heavy runs after a successful unit aggregate despite skipped optional lanes"
+if [[ "$integration_job" == *'if: always() &&'* ]] &&
+   [[ "$integration_job" == *"needs.unit-required.result == 'success'"* ]]; then
+    test_pass
+else
+    test_fail "integration-heavy must bypass optional skipped lanes but remain blocked by a failed Unit Tests aggregate"
 fi
 
 test_case "at least one test is actually discovered (guards a silent empty set)"

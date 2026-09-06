@@ -24,9 +24,9 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 
 ⚡ **Spec in, software out.** Dark Factory mode takes a spec and autonomously runs the full pipeline — research, define, develop, deliver. You review the output, not every step.
 
-🔄 **Four-phase methodology, not just tools.** Every task moves through Discover → Define → Develop → Deliver, with quality gates between phases. Other orchestrators give you infrastructure. Octopus gives you the workflows.
+🔄 **Choose the workflow the task needs.** Use a focused method for architecture, debugging, or TDD. Use `/octo:embrace` for Discover → Define → Develop → Deliver, with quality gates between phases.
 
-🐙 **31 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **53 commands** (slash commands you type), **62 skills** (reusable workflow modules). Explicit workflows select the experts they need; ordinary Claude requests do not activate Octopus.
+🐙 **31 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **53 commands** (slash commands you type), **63 skills** (reusable workflow modules). Explicit workflows select the experts they need; ordinary Claude requests do not activate Octopus.
 
 🐙 **Works with just Claude. Adds up to twelve external provider integrations.** Zero external providers are needed to start. Add them one at a time — each becomes available when detected and runs only inside an explicit workflow.
 
@@ -35,6 +35,20 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 ---
 
 ## What's New
+
+### Unreleased workflow improvements
+
+This branch adds eight engineering methods adapted from
+[Matt Pocock's skills](THIRD_PARTY_NOTICES.md). Routine architecture, TDD, and
+debugging use your current host. Request `--peer-review` when a separate reviewer
+would help. Plans capture domain terms and blocking decisions, compare interface
+designs, and can propose a time-limited prototype.
+
+Setup can resume an interrupted configuration and rechecks readiness before
+reporting success. Developers can inspect routing with an offline JSON preview.
+These changes are on this development branch and are not included in the
+published v11.0.1 release. See [workflow methods](docs/WORKFLOW-METHODS.md)
+for examples and [the changelog](CHANGELOG.md#unreleased) for details.
 
 <!-- BEGIN CURRENT RELEASE -->
 > 🆕 **v11.0.1 — Remove the unused OpenClaw integration and simplify MCP setup.**
@@ -425,6 +439,21 @@ Or type `/octo:auto <what you want>` and the smart router picks for you. Plain-p
 
 ## How It Works
 
+### Focused engineering methods
+
+Architecture, TDD, and debugging now run on the current host by default. This
+keeps routine work fast and avoids a provider call that adds little value. Add
+`--peer-review` when one bounded independent review would materially improve the
+decision. Explicit debate, council, and multi-model commands are unchanged.
+
+Planning can propose a time-boxed prototype for one risky assumption. Setup can
+resume an interrupted human login without treating old authentication evidence as
+current. Maintainers can also inspect policy or production provider selection with
+the offline routing preview. The preview never claims to verify the final model,
+entitlement, quota, fallback, or dispatch.
+
+See [Workflow methods](docs/WORKFLOW-METHODS.md) for the contracts and limits.
+
 ### How 12 External Providers Work Together
 
 Claude Octopus coordinates twelve external provider integrations alongside the built-in Claude Code host. The optional `claude-sdk` route is a second Anthropic seat, so it is shown below but is not counted as a separate provider family.
@@ -471,7 +500,7 @@ Specialized agents selected by explicit Octopus workflows. `/octo:security` can 
 
 Categories span Software Engineering, Specialized Development, Documentation & Communication, Research & Strategy, Business & Compliance, and Creative & Design.
 
-[Full persona reference](docs/AGENTS.md) | [All 62 skills](docs/COMMAND-REFERENCE.md)
+[Full persona reference](docs/AGENTS.md) | [All 63 skills](docs/COMMAND-REFERENCE.md)
 
 ### Built-in Reaction Engine
 
@@ -708,6 +737,11 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
 ---
 
 ## Attribution
+
+Selected workflow methods adapt patterns from
+[mattpocock/skills](https://github.com/mattpocock/skills) under the MIT License.
+The distribution includes the complete license and a source-to-destination map in
+[Third-party notices](THIRD_PARTY_NOTICES.md).
 
 - **[wolverin0/claude-skills](https://github.com/wolverin0/claude-skills)** — AI Debate Hub. MIT License.
 - **[obra/superpowers](https://github.com/obra/superpowers)** — Discipline skills patterns, verification-before-completion philosophy, two-stage review approach, and review response patterns. MIT License.
