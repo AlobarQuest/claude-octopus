@@ -1,0 +1,185 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 6 AM UTC daily (midnight-2 AM Eastern)
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Mint a short-lived GitHub App installation token. PRs/pushes made with
+      # this token are attributed to the app (a real, non-GITHUB_TOKEN actor),
+      # so the sync PR's pull_request CI triggers normally instead of being
+      # parked in action_required (GitHub suppresses workflow runs for events
+      # caused by the default GITHUB_TOKEN). App needs contents:write,
+      # pull-requests:write, workflows:write (the branch carries .github/workflows/).
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/nyldn/claude-octopus.git || true
+          git fetch upstream main
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          # Gate on real upstream commits the fork is MISSING, not on SHA
+          # inequality. Fork main is permanently diverged from upstream (it
+          # carries fork-owned CI commits upstream will never have), so the
+          # SHAs are never equal — comparing them fired a "phantom" sync PR
+          # every night even when upstream shipped nothing. rev-list counts
+          # only commits in upstream/main not reachable from origin/main, so
+          # it is 0 once a real sync has been merged.
+          COUNT=$(git rev-list origin/main..upstream/main --count)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No new upstream commits — nothing to do."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Found $COUNT new upstream commit(s)."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or reset sync branch
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git checkout -B upstream-sync upstream/main
+          # Preserve our own workflow and script files — we control our own CI, not upstream
+          git checkout origin/main -- .github/workflows/ .github/scripts/
+          git commit -m "ci: preserve fork workflow and script files" --allow-empty
+          git push origin upstream-sync --force
+
+      # `continue-on-error` so the hardening steps and the pull request still run -- the state
+      # must stay VISIBLE. The run is failed at the end instead, by the gate at the bottom.
+      - name: Generate AI security review
+        id: review
+        if: steps.check.outputs.has_changes == 'true'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 .github/scripts/ai_security_review.py
+
+      # Gate the hardener's own logic before it rewrites real hooks. The unit
+      # tests pin invariants (e.g. session flock keys off the canonical file,
+      # never the .tmp staging path) that have silently regressed twice before.
+      - name: Self-test hardening logic
+        if: steps.check.outputs.has_changes == 'true'
+        run: python3 .github/scripts/test_security_harden.py
+
+      - name: Apply security hardening patches
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 .github/scripts/security-harden.py
+
+      # Guard: the hardening pass rewrites shell scripts textually. If any rewrite
+      # produces invalid bash, fail loudly here instead of opening a clean PR that
+      # silently ships broken hooks (regression: harden bot emitted unbalanced
+      # quotes / a comment inside [[ ]], breaking 3 hooks — caught only post-merge).
+      - name: Validate shell syntax after hardening
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          status=0
+          while IFS= read -r -d '' f; do
+            if ! bash -n "$f" 2>/tmp/synerr; then
+              echo "::error file=$f::invalid bash syntax after hardening"
+              sed 's/^/    /' /tmp/synerr
+              status=1
+            fi
+          done < <(find hooks .claude-plugin/hooks .claude/hooks bin scripts \
+                     -type f \( -name '*.sh' -o -name '*.bash' \) -print0 2>/dev/null)
+          if [ "$status" -ne 0 ]; then
+            echo "Shell syntax validation failed — see errors above. Not opening PR."
+            exit 1
+          fi
+          echo "All shell scripts pass bash -n."
+
+      - name: Open or update PR
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          COMMITS=$(git log origin/main..upstream/main --oneline)
+          DATE=$(date +%Y-%m-%d)
+
+          cat > /tmp/pr_body.md << 'BODYEOF'
+          ## Upstream Sync
+
+          **New commits from [nyldn/claude-octopus](https://github.com/nyldn/claude-octopus)**
+
+          BODYEOF
+
+          echo '```' >> /tmp/pr_body.md
+          echo "$COMMITS" >> /tmp/pr_body.md
+          echo '```' >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo "---" >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo "## AI Security Review" >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          cat /tmp/ai_review.md >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo "---" >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          cat /tmp/hardening_report.md >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo "---" >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo '**After merging:**' >> /tmp/pr_body.md
+          echo '1. `cd ~/Developer/devon-plugins/octo && git pull` — serving clone (what Claude Code actually loads)' >> /tmp/pr_body.md
+          echo '2. Bump `version` in `~/Developer/devon-plugins/.claude-plugin/marketplace.json` to the new plugin version' >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo "*Auto-generated by upstream-sync workflow*" >> /tmp/pr_body.md
+
+          EXISTING=$(gh pr list \
+            --repo alobarquest/claude-octopus \
+            --base main \
+            --head upstream-sync \
+            --json number \
+            --jq '.[0].number' 2>/dev/null)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh pr edit "$EXISTING" \
+              --repo alobarquest/claude-octopus \
+              --title "Upstream sync — ${DATE}" \
+              --body-file /tmp/pr_body.md
+            echo "Updated PR #${EXISTING}"
+          else
+            gh pr create \
+              --repo alobarquest/claude-octopus \
+              --base main \
+              --head upstream-sync \
+              --title "Upstream sync — ${DATE}" \
+              --body-file /tmp/pr_body.md
+          fi
+
+      # THE GATE, and it goes last so the pull request exists before the run goes red.
+      #
+      # Added while this repository's key still WORKED. The sibling repository ran six consecutive
+      # green days with its review answering HTTP 401, because the failure was caught, written into
+      # a pull-request body, and the step exited 0. The right moment for this guard is before that
+      # happens here, not after.
+      - name: Fail the run if the security review did not happen
+        if: steps.check.outputs.has_changes == 'true' && steps.review.outcome == 'failure'
+        run: |
+          echo "::error::the AI security review did not run; the pull request body says why."
+          echo "The pull request was still opened or updated so the state is visible, and this"
+          echo "run fails so it is not silently green. Read the body, fix the cause, re-run."
+          exit 1
