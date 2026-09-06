@@ -103,7 +103,19 @@ test_multi_agent_parallel_execution() {
     # Check probe function code directly to avoid dry-run hang
     local probe_code=""
     if [[ -f "$ALL_SRC" ]]; then
-        probe_code=$(grep -A 80 "probe_discover()" "$ALL_SRC" 2>/dev/null) || probe_code=""
+        # Search for the function definition rather than the explanatory
+        # probe_discover() references that precede it in the concatenated
+        # source. The implementation has grown beyond a fixed line window.
+        probe_code=$(awk '
+            /^[[:space:]]*probe_discover\(\)[[:space:]]*\{/ { capture=1; depth=0 }
+            capture {
+                print
+                opens=gsub(/\{/, "{")
+                closes=gsub(/\}/, "}")
+                depth += opens - closes
+                if (depth == 0) exit
+            }
+        ' "$ALL_SRC") || probe_code=""
     fi
 
     ((TESTS_RUN++)) || true
@@ -131,28 +143,44 @@ test_quality_gates_validation() {
     echo "Validates that tangle phase includes quality validation"
     echo ""
 
-    # Check tangle function code directly
-    local tangle_code=""
+    # Check the public wrapper and its delegated implementation contract. The
+    # wrapper owns isolation/safety preflight; _tangle_develop_in_workspace owns
+    # decomposition and validation, so line-proximity to tangle_develop() is not
+    # a stable integration boundary.
+    local tangle_entry_code="" tangle_workspace_code="" tangle_validation_wrapper_code=""
     if [[ -f "$ALL_SRC" ]]; then
-        tangle_code=$(grep -A 80 "tangle_develop()" "$ALL_SRC" 2>/dev/null) || tangle_code=""
+        tangle_entry_code=$(awk '
+            /^tangle_develop\(\) \{/ { capture=1 }
+            capture { print }
+            capture && /^}$/ { exit }
+        ' "$ALL_SRC")
+        tangle_workspace_code=$(awk '
+            /^_tangle_develop_in_workspace\(\) \{/ { capture=1 }
+            capture { print }
+            capture && /^}$/ { exit }
+        ' "$ALL_SRC")
+        tangle_validation_wrapper_code=$(awk '
+            /^tangle_validate_results_with_scope_contract\(\) \{/ { capture=1 }
+            capture { print }
+            capture && /^}$/ { exit }
+        ' "$ALL_SRC")
     fi
 
-    ((TESTS_RUN++)) || true
-    if echo "$tangle_code" | grep -qE "validation|validate"; then
-        echo -e "${GREEN}✓${NC} Tangle includes validation step"
-        ((TESTS_PASSED++)) || true
+    test_case "Tangle includes validation step"
+    if grep -c "_tangle_develop_in_workspace" >/dev/null <<< "$tangle_entry_code" && \
+       grep -c 'tangle_validate_results_with_scope_contract "$task_group"' >/dev/null <<< "$tangle_workspace_code" && \
+       grep -c 'validate_tangle_results "$task_group"' >/dev/null <<< "$tangle_validation_wrapper_code"; then
+        test_pass
     else
-        echo -e "${RED}✗${NC} Tangle includes validation step"
-        ((TESTS_FAILED++)) || true
+        test_fail "Tangle validation wrapper/delegation contract is missing"
     fi
 
-    ((TESTS_RUN++)) || true
-    if echo "$tangle_code" | grep -qE "decompose|subtask"; then
-        echo -e "${GREEN}✓${NC} Tangle decomposes tasks for parallel execution"
-        ((TESTS_PASSED++)) || true
+    test_case "Tangle decomposes tasks for parallel execution"
+    if grep -c "_tangle_develop_in_workspace" >/dev/null <<< "$tangle_entry_code" && \
+       grep -c 'Decompose this task into subtasks that can be executed in parallel' >/dev/null <<< "$tangle_workspace_code"; then
+        test_pass
     else
-        echo -e "${RED}✗${NC} Tangle decomposes tasks for parallel execution"
-        ((TESTS_FAILED++)) || true
+        test_fail "Tangle parallel decomposition prompt is missing"
     fi
 }
 
@@ -165,7 +193,16 @@ test_multi_perspective_research() {
     # Check probe function for multi-perspective logic
     local probe_code=""
     if [[ -f "$ALL_SRC" ]]; then
-        probe_code=$(grep -A 100 "probe_discover()" "$ALL_SRC" 2>/dev/null) || probe_code=""
+        probe_code=$(awk '
+            /^[[:space:]]*probe_discover\(\)[[:space:]]*\{/ { capture=1; depth=0 }
+            capture {
+                print
+                opens=gsub(/\{/, "{")
+                closes=gsub(/\}/, "}")
+                depth += opens - closes
+                if (depth == 0) exit
+            }
+        ' "$ALL_SRC") || probe_code=""
     fi
 
     ((TESTS_RUN++)) || true
@@ -348,6 +385,10 @@ test_async_performance
 test_tmux_visualization
 
 # Summary
+# This integration file still has legacy assertions that increment TESTS_RUN
+# directly. Add those to framework-native TESTS_TOTAL until the remaining
+# assertions are migrated to test_case/test_pass/test_fail.
+TESTS_TOTAL=$((TESTS_RUN + TESTS_TOTAL))
 echo ""
 echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${YELLOW}Test Summary${NC}"

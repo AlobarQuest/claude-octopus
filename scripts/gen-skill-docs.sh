@@ -5,11 +5,15 @@
 # Templates use {{PLACEHOLDER}} syntax. Shared blocks from skills/blocks/
 # are resolved first, then metadata placeholders (COMMAND_COUNT, etc.).
 # --dry-run exits non-zero if any generated file differs from committed file.
+#
+# GEN_SKILL_DOCS_ROOT overrides the plugin root the generator reads from and
+# writes into — used by tests to run the generator against a throwaway
+# fixture instead of the tracked checkout.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
+PLUGIN_ROOT="${GEN_SKILL_DOCS_ROOT:-$(dirname "$SCRIPT_DIR")}"
 SKILLS_DIR="$PLUGIN_ROOT/.claude/skills"
 BLOCKS_DIR="$PLUGIN_ROOT/skills/blocks"
 DRY_RUN=false
@@ -18,7 +22,7 @@ DRY_RUN=false
 
 # ── Collect metadata from source ─────────────────────────────────────────────
 
-COMMAND_COUNT=$(find "$PLUGIN_ROOT/.claude/commands" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+COMMAND_COUNT=$(find "$PLUGIN_ROOT/commands" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 FLAT_SKILL_COUNT=$(find "$SKILLS_DIR" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 DIR_SKILL_COUNT=$(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' 2>/dev/null | wc -l | tr -d ' ')
 SKILL_COUNT=$((FLAT_SKILL_COUNT + DIR_SKILL_COUNT))
@@ -35,7 +39,7 @@ VERSION=$(grep '"version"' "$PLUGIN_ROOT/package.json" | head -1 | sed 's/.*"ver
 # ── Generate command list ────────────────────────────────────────────────────
 
 COMMAND_LIST=""
-for cmd in "$PLUGIN_ROOT/.claude/commands/"*.md; do
+for cmd in "$PLUGIN_ROOT/commands/"*.md; do
     [[ -f "$cmd" ]] || continue
     name="${cmd##*/}"
     name="${name%.md}"

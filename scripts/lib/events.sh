@@ -24,6 +24,23 @@ octo_event_enabled() {
 _octo_json_string() {
     local value="$1"
 
+    # Fast path: pure-bash escaping for values with no control characters, which
+    # covers essentially every real event attribute. The python3/jq paths below
+    # each cost a process spawn (~20ms), and octo_event_emit calls this helper
+    # 5+ times per record — that was ~175ms per emitted event. Only `"` and `\`
+    # need escaping here; control chars fall through to the slow paths.
+    # [[:cntrl:]] (not a $'\x01'-$'\x1f' range): bracket ranges collate by
+    # locale, so under a UTF-8 locale the range silently fails to match TAB/LF
+    # and raw control characters would reach the output as invalid JSON.
+    case "$value" in
+        *[[:cntrl:]]*) : ;;
+        *)
+            local _fast="${value//\\/\\\\}"
+            printf '"%s"\n' "${_fast//\"/\\\"}"
+            return 0
+            ;;
+    esac
+
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$value" <<'PY' 2>/dev/null && return 0
 import json
@@ -64,20 +81,51 @@ PY
 }
 
 # Portable best-effort exclusive lock. flock is Linux-only; mkdir is atomic on
-# every POSIX filesystem. Bounded spin (~1s) so a dead lock holder degrades to a
-# lockless write rather than hanging the caller. Returns 0 if acquired, 1 if not.
+# every POSIX filesystem. Owner metadata lets a later caller reclaim a lock
+# leaked by SIGKILL without stealing a live holder's lock.
+_octo_event_reclaim_stale_lock() {
+    local lockdir="$1" stale_secs="${OCTO_EVENT_LOCK_STALE_SECS:-30}"
+    local owner="" timestamp="" now
+    [[ "$stale_secs" =~ ^[0-9]+$ ]] || stale_secs=30
+    [[ -d "$lockdir" ]] || return 1
+
+    [[ -f "$lockdir/pid" ]] && IFS= read -r owner < "$lockdir/pid" || true
+    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+        return 1
+    fi
+    [[ -f "$lockdir/ts" ]] && IFS= read -r timestamp < "$lockdir/ts" || true
+    if [[ ! "$timestamp" =~ ^[0-9]+$ ]]; then
+        timestamp="$(stat -f %m "$lockdir" 2>/dev/null || stat -c %Y "$lockdir" 2>/dev/null || printf '0')"
+    fi
+    now="$(date +%s)"
+    [[ "$timestamp" =~ ^[0-9]+$ && $((now - timestamp)) -ge "$stale_secs" ]] || return 1
+
+    rm -f "$lockdir/pid" "$lockdir/ts" 2>/dev/null || return 1
+    rmdir "$lockdir" 2>/dev/null
+}
+
 _octo_event_lock() {
     local lockdir="$1.lock"
     local tries=0
     while ! mkdir "$lockdir" 2>/dev/null; do
         tries=$((tries + 1))
-        [[ "$tries" -ge 50 ]] && return 1
+        if [[ "$tries" -ge 50 ]]; then
+            _octo_event_reclaim_stale_lock "$lockdir" || return 1
+            tries=0
+        fi
         sleep 0.02 2>/dev/null || return 1
     done
+    if ! printf '%s\n' "${BASHPID:-$$}" > "$lockdir/pid" 2>/dev/null ||
+       ! date +%s > "$lockdir/ts" 2>/dev/null; then
+        rm -f "$lockdir/pid" "$lockdir/ts" 2>/dev/null || true
+        rmdir "$lockdir" 2>/dev/null || true
+        return 1
+    fi
     return 0
 }
 
 _octo_event_unlock() {
+    rm -f "$1.lock/pid" "$1.lock/ts" 2>/dev/null || true
     rmdir "$1.lock" 2>/dev/null || true
 }
 
@@ -129,7 +177,7 @@ octo_event_emit() {
 
     local dir
     dir="$(dirname "$log_file")"
-    mkdir -p "$dir" 2>/dev/null || return 1
+    mkdir -p "$dir" 2>/dev/null || return 0
 
     local record
     printf -v record '{"timestamp":%s,"event":%s,"source":%s,"pid":%s,"session_id":%s,"attributes":{%s}}\n' \
@@ -145,13 +193,15 @@ octo_event_emit() {
     # can't be acquired (~1s spin), fall back to a lockless write — same
     # best-effort behavior as before, and it never blocks the caller.
     if _octo_event_lock "$log_file"; then
-        { printf '%s' "$record" >> "$log_file" && _octo_event_trim "$log_file"; } || {
+        { printf '%s' "$record" 2>/dev/null >> "$log_file" && _octo_event_trim "$log_file"; } || {
             _octo_event_unlock "$log_file"
-            return 1
+            return 0
         }
         _octo_event_unlock "$log_file"
     else
-        printf '%s' "$record" >> "$log_file" || return 1
-        _octo_event_trim "$log_file"
+        printf '%s' "$record" 2>/dev/null >> "$log_file" || return 0
+        _octo_event_trim "$log_file" || return 0
     fi
+
+    return 0
 }

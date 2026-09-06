@@ -12,6 +12,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+log() {
+    local level="$1"
+    shift
+    printf '[%s] %s\n' "$level" "$*" >&2
+}
+
 errors=0
 warnings=0
 
@@ -25,6 +31,13 @@ echo ""
 echo "🔒 Checking plugin names..."
 
 PLUGIN_NAME=$(grep '"name"' "$ROOT_DIR/.claude-plugin/plugin.json" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+CODEX_PLUGIN_JSON="$ROOT_DIR/.codex-plugin/plugin.json"
+if [[ ! -f "$CODEX_PLUGIN_JSON" ]]; then
+    log ERROR "CRITICAL: Codex plugin manifest not found at $CODEX_PLUGIN_JSON"
+    exit 1
+fi
+CODEX_PLUGIN_NAME=$(grep '"name"' "$CODEX_PLUGIN_JSON" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+EXPECTED_CODEX_PLUGIN_NAME="claude-octopus"
 MARKETPLACE_PLUGIN_NAME=$(sed -n '/"plugins"/,/]/p' "$ROOT_DIR/.claude-plugin/marketplace.json" | grep '"name"' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
 
 if [[ "$PLUGIN_NAME" != "octo" ]]; then
@@ -41,6 +54,14 @@ if [[ "$MARKETPLACE_PLUGIN_NAME" != "octo" ]]; then
     ((errors++)) || true
 else
     echo -e "  ${GREEN}✓ marketplace.json plugin name: octo (matches plugin.json for /plugin UI)${NC}"
+fi
+
+if [[ "$CODEX_PLUGIN_NAME" != "$EXPECTED_CODEX_PLUGIN_NAME" ]]; then
+    log ERROR "CRITICAL: Codex plugin name '$CODEX_PLUGIN_NAME' - MUST remain '$EXPECTED_CODEX_PLUGIN_NAME'"
+    log ERROR "Existing Codex installs and the Codex marketplace use '$EXPECTED_CODEX_PLUGIN_NAME'"
+    ((errors++)) || true
+else
+    log INFO "Codex plugin name: $CODEX_PLUGIN_NAME (stable Codex marketplace selector)"
 fi
 
 echo ""
@@ -108,7 +129,6 @@ EOF
 .codex-plugin/
 .cursor-plugin/
 .factory-plugin/
-.gemini/
 .opencode/
 .mcp.json
 bin/
@@ -284,10 +304,10 @@ echo ""
 echo "📝 Checking command registration..."
 
 # Get all .md files in commands directory
-COMMAND_FILES=$(ls "$ROOT_DIR/.claude/commands/"*.md 2>/dev/null | xargs -n1 basename | sort)
+COMMAND_FILES=$(ls "$ROOT_DIR/commands/"*.md 2>/dev/null | xargs -n1 basename | sort)
 
 # Get commands registered in plugin.json
-REGISTERED_COMMANDS=$(grep -o '\.claude/commands/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/commands/||' | sort)
+REGISTERED_COMMANDS=$(grep -o 'commands/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*commands/||' | sort)
 
 # Plugin commands are namespaced by .claude-plugin/plugin.json (`octo`), so
 # command: doctor exposes /octo:doctor rather than a bare /doctor command.
@@ -323,7 +343,7 @@ echo ""
 echo "📛 Checking command frontmatter format..."
 
 invalid_frontmatter=0
-for cmd_file in "$ROOT_DIR/.claude/commands/"*.md; do
+for cmd_file in "$ROOT_DIR/commands/"*.md; do
     cmd_name=$(sed -n '2p' "$cmd_file" | grep -o 'command: .*' | sed 's/command: //' || true)
     # Commands should NOT have "octo:" prefix in frontmatter (Claude Code adds it automatically)
     if [[ -n "$cmd_name" ]] && [[ "$cmd_name" == *":"* ]]; then
@@ -345,8 +365,15 @@ echo ""
 # ============================================================================
 echo "🎯 Checking skill registration..."
 
+# Skills normally live at skills/<name>/SKILL.md (depth 2 below skills/), but
+# supported packs nest one level deeper at skills/<pack>/<name>/SKILL.md (see
+# skills/octopus-starter-pack/, issue #829) — search both depths.
+find_skill_md_files() {
+    find "$1" -mindepth 2 -maxdepth 3 -name "SKILL.md" -type f 2>/dev/null
+}
+
 if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
-    SKILL_FILES=$(find "$ROOT_DIR/skills" -mindepth 2 -maxdepth 2 -name "SKILL.md" -type f 2>/dev/null | sed "s|^$ROOT_DIR/skills/||;s|/SKILL.md$||" | sort)
+    SKILL_FILES=$(find_skill_md_files "$ROOT_DIR/skills" | sed "s|^$ROOT_DIR/skills/||;s|/SKILL.md$||" | sort)
     REGISTERED_SKILLS=$(jq -r '.skills[]? | select(startswith("./skills/")) | sub("^\\./skills/"; "") | sub("/$"; "")' "$ROOT_DIR/.claude-plugin/plugin.json" | sort)
 else
     SKILL_FILES=$({
@@ -356,24 +383,27 @@ else
     REGISTERED_SKILLS=$(grep -o '\.claude/skills/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/skills/||' | sort)
 fi
 
+skill_registration_errors=0
 for skill_file in $SKILL_FILES; do
-    if ! echo "$REGISTERED_SKILLS" | grep -q "^${skill_file}$"; then
-        echo -e "  ${RED}ERROR: Skill file '$skill_file' not registered in plugin.json${NC}"
+    if ! grep -Fxc -- "$skill_file" <<< "$REGISTERED_SKILLS" >/dev/null; then
+        log ERROR "Skill file '$skill_file' not registered in plugin.json"
         ((errors++)) || true
+        ((skill_registration_errors++)) || true
     fi
 done
 
 for reg_skill in $REGISTERED_SKILLS; do
-    if ! echo "$SKILL_FILES" | grep -q "^${reg_skill}$"; then
-        echo -e "  ${RED}ERROR: Registered skill '$reg_skill' does not exist${NC}"
+    if ! grep -Fxc -- "$reg_skill" <<< "$SKILL_FILES" >/dev/null; then
+        log ERROR "Registered skill '$reg_skill' does not exist"
         ((errors++)) || true
+        ((skill_registration_errors++)) || true
     fi
 done
 
 skill_count=$(echo "$SKILL_FILES" | wc -l | tr -d ' ')
 reg_skill_count=$(echo "$REGISTERED_SKILLS" | wc -l | tr -d ' ')
 
-if [[ "$skill_count" == "$reg_skill_count" ]] && [[ $errors -eq 0 ]]; then
+if [[ "$skill_count" == "$reg_skill_count" ]] && [[ $skill_registration_errors -eq 0 ]]; then
     echo -e "  ${GREEN}✓ All $skill_count skills properly registered${NC}"
 fi
 
@@ -386,6 +416,10 @@ echo "🏷️  Checking skill frontmatter format..."
 
 invalid_skill_names=0
 if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+    # Intentionally NOT find_skill_md_files: nested skills/octopus-starter-pack/*
+    # skills use bare frontmatter names (no skill-/flow-/octopus-/sys- prefix,
+    # namespaced by directory instead) and are out of scope for issue #829,
+    # which is only about the registration check below.
     SKILL_FRONTMATTER_FILES=("$ROOT_DIR"/skills/*/SKILL.md)
 else
     mapfile -t SKILL_FRONTMATTER_FILES < <({
@@ -445,6 +479,10 @@ can_create_release_artifacts() {
     [[ "$CURRENT_BRANCH" == "main" && -z "$WORKTREE_DIRTY" ]]
 }
 
+tag_mismatch_is_fatal() {
+    [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == release/* ]]
+}
+
 # ============================================================================
 # 9. GIT TAG CHECK & AUTO-CREATE
 # ============================================================================
@@ -457,12 +495,15 @@ if git tag -l "$EXPECTED_TAG" | grep -q "$EXPECTED_TAG"; then
 
     if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
         echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG exists and points to HEAD${NC}"
-    else
+    elif tag_mismatch_is_fatal; then
         echo -e "  ${RED}ERROR: Tag $EXPECTED_TAG exists but doesn't point to HEAD${NC}"
         echo -e "  ${RED}  Tag points to: ${TAG_COMMIT:0:7}${NC}"
         echo -e "  ${RED}  HEAD is:       ${HEAD_COMMIT:0:7}${NC}"
         echo -e "  ${RED}  Refusing to move an existing release tag automatically${NC}"
         ((errors++)) || true
+    else
+        echo -e "  ${YELLOW}NOTE: Tag $EXPECTED_TAG points to a different commit; this branch is validation-only${NC}"
+        echo -e "  ${GREEN}✓ Existing release tag remains unchanged${NC}"
     fi
 else
     echo -e "  ${YELLOW}NOTE: Tag $EXPECTED_TAG not yet created${NC}"

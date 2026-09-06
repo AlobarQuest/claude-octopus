@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Test v7.22.0 lifecycle command skills exist and are properly structured
+# Validates: skill-status, skill-issues, skill-rollback, skill-resume, skill-ship
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "v7.22.0 lifecycle command skills exist and are properly structured"
+
+TEST_COUNT=0
+PASS_COUNT=0
+FAIL_COUNT=0
+
+echo -e "${BLUE}🧪 Testing v7.22.0 Lifecycle Commands${NC}"
+echo ""
+
+pass() { test_case "$1"; test_pass; }
+
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
+
+info() { echo "$1"; }
+
+LIFECYCLE_SKILLS=(
+    "skill-status"
+    "skill-issues"
+    "skill-rollback"
+    "skill-resume"
+    "skill-ship"
+)
+
+echo "Test 1: Checking lifecycle skill files exist..."
+for skill in "${LIFECYCLE_SKILLS[@]}"; do
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
+        pass "$skill exists"
+    else
+        fail "$skill not found" "Expected: $skill_file"
+    fi
+done
+
+echo ""
+echo "Test 2: Checking skill files have proper frontmatter..."
+for skill in "${LIFECYCLE_SKILLS[@]}"; do
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
+        if head -1 "$skill_file" | grep -q "^---$"; then
+            pass "$skill has frontmatter delimiter"
+        else
+            fail "$skill missing frontmatter" "Should start with ---"
+        fi
+    fi
+done
+
+echo ""
+echo "Test 3: Checking skills reference octo-state.sh..."
+for skill in "${LIFECYCLE_SKILLS[@]}"; do
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
+        if grep -q "octo-state.sh" "$skill_file"; then
+            pass "$skill references octo-state.sh"
+        else
+            info "$skill does not reference octo-state.sh (may be intentional)"
+        fi
+    fi
+done
+
+echo ""
+echo "Test 4: Checking skills are registered in plugin.json..."
+PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
+for skill in "${LIFECYCLE_SKILLS[@]}"; do
+    skill_path="./skills/$skill"
+    if grep -q "\"$skill_path\"" "$PLUGIN_JSON"; then
+        pass "$skill registered in plugin.json"
+    else
+        fail "$skill not registered" "Should be in plugin.json skills array"
+    fi
+done
+
+echo ""
+echo "Test 5: Checking skill-status.md content..."
+STATUS_SKILL="$(resolve_claude_skill_path "skill-status")"
+if [[ -f "$STATUS_SKILL" ]]; then
+    if grep -qi "status\|dashboard\|progress" "$STATUS_SKILL"; then
+        pass "skill-status.md mentions status/dashboard/progress"
+    else
+        fail "skill-status.md missing key content" "Should mention status, dashboard, or progress"
+    fi
+fi
+
+echo ""
+echo "Test 6: Checking skill-issues.md content..."
+ISSUES_SKILL="$(resolve_claude_skill_path "skill-issues")"
+if [[ -f "$ISSUES_SKILL" ]]; then
+    if grep -qi "issue\|track\|CRUD\|add\|resolve" "$ISSUES_SKILL"; then
+        pass "skill-issues.md mentions issue tracking"
+    else
+        fail "skill-issues.md missing key content" "Should mention issue tracking operations"
+    fi
+fi
+
+echo ""
+echo "Test 7: Checking skill-rollback.md content..."
+ROLLBACK_SKILL="$(resolve_claude_skill_path "skill-rollback")"
+if [[ -f "$ROLLBACK_SKILL" ]]; then
+    if grep -qi "rollback\|checkpoint\|restore\|git.*tag" "$ROLLBACK_SKILL"; then
+        pass "skill-rollback.md mentions rollback/checkpoint"
+    else
+        fail "skill-rollback.md missing key content" "Should mention rollback or checkpoint"
+    fi
+fi
+
+echo ""
+echo "Test 8: Checking skill-resume.md content..."
+RESUME_SKILL="$(resolve_claude_skill_path "skill-resume")"
+if [[ -f "$RESUME_SKILL" ]]; then
+    if grep -qi "resume\|restore\|session\|context" "$RESUME_SKILL"; then
+        pass "skill-resume.md mentions resume/session"
+    else
+        fail "skill-resume.md missing key content" "Should mention resume or session restoration"
+    fi
+fi
+
+echo ""
+echo "Test 9: Checking skill-ship.md content..."
+SHIP_SKILL="$(resolve_claude_skill_path "skill-ship")"
+if [[ -f "$SHIP_SKILL" ]]; then
+    if grep -qi "ship\|deliver\|multi-ai\|validation" "$SHIP_SKILL"; then
+        pass "skill-ship.md mentions ship/deliver"
+    else
+        fail "skill-ship.md missing key content" "Should mention ship or delivery validation"
+    fi
+fi
+
+echo ""
+echo "Test 10: Checking templates directory..."
+TEMPLATES_DIR="$PROJECT_ROOT/config/templates"
+EXPECTED_TEMPLATES=(
+    "PROJECT.md.template"
+    "ROADMAP.md.template"
+    "STATE.md.template"
+    "config.json.template"
+    "ISSUES.md.template"
+    "LESSONS.md.template"
+)
+
+for template in "${EXPECTED_TEMPLATES[@]}"; do
+    if [[ -f "$TEMPLATES_DIR/$template" ]]; then
+        pass "$template exists"
+    else
+        fail "$template not found" "Expected: $TEMPLATES_DIR/$template"
+    fi
+done
+
+echo ""
+echo "Test 11: Checking CHANGELOG.md has version entries..."
+CHANGELOG="$PROJECT_ROOT/CHANGELOG.md"
+if [[ -f "$CHANGELOG" ]]; then
+    if grep -q '\[8\.' "$CHANGELOG"; then
+        pass "CHANGELOG.md has version entries"
+    else
+        fail "CHANGELOG.md missing version entries" "Should have at least one version"
+    fi
+fi
+
+echo ""
+echo "Test 12: Checking COMMAND-REFERENCE.md updated..."
+CMD_REF="$PROJECT_ROOT/docs/COMMAND-REFERENCE.md"
+if [[ -f "$CMD_REF" ]]; then
+    lifecycle_features=("Status" "Issues" "Rollback" "Resume" "Ship")
+    if grep -q "These are manual-only plugin skills, not standalone.*commands" "$CMD_REF"; then
+        pass "COMMAND-REFERENCE.md marks lifecycle features as explicit-only skills"
+    else
+        fail "COMMAND-REFERENCE.md missing lifecycle note" "Should explain these are explicit-only skills"
+    fi
+    for feature in "${lifecycle_features[@]}"; do
+        if grep -q "### \`$feature\`" "$CMD_REF"; then
+            pass "COMMAND-REFERENCE.md documents $feature lifecycle feature"
+        else
+            fail "COMMAND-REFERENCE.md missing $feature section" "Should document the lifecycle feature"
+        fi
+    done
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${BLUE}Test Summary${NC}"
+test_summary

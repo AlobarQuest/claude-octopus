@@ -12,10 +12,29 @@
 # Source-safe: no main execution block.
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# count_words() lives in lib/utils.sh; pull it in when this file is sourced
+# standalone (tests do) rather than through orchestrate.sh's load order.
+if ! declare -f count_words >/dev/null 2>&1; then
+    if ! source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/utils.sh"; then
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY: Result integrity verification (v8.7.0)
 # SHA-256 hash recording and verification for agent result files
 # ═══════════════════════════════════════════════════════════════════════════════
+# Portable mtime in epoch seconds. GNU form first, and the result is validated
+# as numeric: on Linux `stat -f` is --file-system, so `stat -f %m` SUCCEEDS and
+# prints the mount point. Probing BSD-style first therefore returned "/" on
+# Linux and every age comparison built on it silently misbehaved.
+_octo_file_mtime() {
+    local f="$1" v
+    v="$(stat -c %Y "$f" 2>/dev/null)" || v=""
+    [[ "$v" =~ ^[0-9]+$ ]] || v="$(stat -f %m "$f" 2>/dev/null)" || v=""
+    [[ "$v" =~ ^[0-9]+$ ]] && printf '%s\n' "$v" || printf '0\n'
+}
+
 record_result_hash() {
     local result_file="$1"
     local manifest_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
@@ -31,7 +50,7 @@ record_result_hash() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# EFFORT LEVEL MAPPING (v8.32.0; refreshed for Opus 4.8 in v9.42.0)
+# EFFORT LEVEL MAPPING (v8.32.0; refreshed for Opus 5)
 # Maps phase + complexity to Claude SDK effort levels.
 # Gated by SUPPORTS_SDK_MODEL_CAPS (Claude Code v2.1.49+)
 # Override: OCTOPUS_EFFORT_OVERRIDE=low|medium|high|xhigh|max
@@ -55,15 +74,24 @@ get_effort_level() {
             return 0
         fi
         case "$OCTOPUS_EFFORT_OVERRIDE" in
-            low|medium|high|xhigh|max) echo "$OCTOPUS_EFFORT_OVERRIDE"; return ;;
+            low|medium|high|xhigh|max)
+                # v9.51: Fable 5 clamp applies to explicit overrides too.
+                if declare -f fable5_clamp_effort >/dev/null 2>&1; then
+                    fable5_clamp_effort "$OCTOPUS_EFFORT_OVERRIDE"
+                else
+                    echo "$OCTOPUS_EFFORT_OVERRIDE"
+                fi
+                return ;;
             *) log "WARN" "Invalid OCTOPUS_EFFORT_OVERRIDE='$OCTOPUS_EFFORT_OVERRIDE' — ignoring (use low|medium|high|xhigh|max)" ;;
         esac
     fi
 
-    # v9.42: Opus 4.8 defaults to high. Use xhigh only for difficult
-    # implementation, deep review, and long-running asynchronous workflows.
+    # Opus 5 defaults to high. Automatic xhigh remains available for legacy
+    # Opus hosts and can be re-enabled on Opus 5 with
+    # OCTOPUS_OPUS5_AUTO_XHIGH=1. Explicit OCTOPUS_EFFORT_OVERRIDE always wins.
     local _deep="high"
-    if [[ "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" ]]; then
+    if [[ "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" \
+          && ( "${SUPPORTS_OPUS_5:-false}" != "true" || "${OCTOPUS_OPUS5_AUTO_XHIGH:-0}" == "1" ) ]]; then
         _deep="xhigh"
     fi
 
@@ -71,7 +99,7 @@ get_effort_level() {
     local effort=""
     case "$phase" in
         probe|discover)
-            # Research: Opus 4.8 high is the balanced default.
+            # Research: Opus high is the balanced default.
             effort="high"
             ;;
         grasp|define)
@@ -103,6 +131,14 @@ get_effort_level() {
 
     # Defensive default
     effort="${effort:-high}"
+
+    # v9.51: Fable 5 effort clamp — xhigh/max → high when the opus seat is
+    # pinned to claude-fable-5 (applies to user overrides too; that is the
+    # point of the guard). No-op when lib/fable5.sh is not loaded.
+    if declare -f fable5_clamp_effort >/dev/null 2>&1; then
+        effort="$(fable5_clamp_effort "$effort")"
+    fi
+
     echo "$effort"
 }
 
@@ -111,10 +147,19 @@ get_effort_level() {
 # Update agent status in progress file
 update_agent_status() {
     local agent_name="$1"
-    local status="$2"  # waiting, running, completed, failed
+    local status="$2"  # waiting, running, completed, ok, degraded, failed, timeout, skipped
     local elapsed_ms="${3:-0}"
     local cost="${4:-0.0}"
     local timeout_secs="${5:-${TIMEOUT:-300}}"  # Use provided or global timeout
+    local task_id="${6:-legacy-${agent_name}}"
+    local phase="${7:-}"
+    local output_file="${8:-}"
+
+    # Legacy rows and optional integrations can supply blank, null, or textual
+    # metrics. Normalize before arithmetic and jq --argjson so progress updates
+    # remain fail-safe instead of aborting the caller.
+    [[ "$elapsed_ms" =~ ^[0-9]+$ ]] || elapsed_ms=0
+    [[ "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]] || cost=0.0
 
     # Skip if progress tracking disabled or no progress file
     if [[ "$PROGRESS_TRACKING_ENABLED" != "true" ]]; then
@@ -127,12 +172,13 @@ update_agent_status() {
     fi
 
     # Calculate timeout tracking (v7.16.0 Feature 3)
+    [[ "$timeout_secs" =~ ^[0-9]+$ ]] || timeout_secs=0
     local timeout_ms=$((timeout_secs * 1000))
     local timeout_warning="false"
     local remaining_ms=0
     local timeout_pct=0
 
-    if [[ "$status" == "running" && $elapsed_ms -gt 0 ]]; then
+    if [[ "$status" == "running" && $elapsed_ms -gt 0 && $timeout_ms -gt 0 ]]; then
         # Calculate percentage of timeout used
         timeout_pct=$((elapsed_ms * 100 / timeout_ms))
 
@@ -148,33 +194,67 @@ update_agent_status() {
     local agent_record
     agent_record=$(jq -n \
         --arg name "$agent_name" \
+        --arg task_id "$task_id" \
+        --arg phase "$phase" \
         --arg status "$status" \
         --arg started "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --arg updated "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --arg output_file "$output_file" \
         --argjson elapsed "$elapsed_ms" \
         --argjson cost "$cost" \
         --argjson timeout_ms "$timeout_ms" \
         --arg timeout_warning "$timeout_warning" \
         --argjson remaining_ms "$remaining_ms" \
         --argjson timeout_pct "$timeout_pct" \
-        '{name: $name, status: $status, started_at: $started, elapsed_ms: $elapsed, cost: $cost, timeout_ms: $timeout_ms, timeout_warning: ($timeout_warning == "true"), remaining_ms: $remaining_ms, timeout_pct: $timeout_pct}')
+        '{name: $name, task_id: $task_id, phase: $phase, status: $status, started_at: $started, updated_at: $updated, output_file: $output_file, elapsed_ms: $elapsed, cost: $cost, timeout_ms: $timeout_ms, timeout_warning: ($timeout_warning == "true"), remaining_ms: $remaining_ms, timeout_pct: $timeout_pct}')
 
-    # Use atomic_json_update for race-free updates
+    # Upsert by task identity, then derive totals from the terminal rows. This
+    # makes retries/idempotent hook updates safe and prevents stale running rows.
     atomic_json_update "$PROGRESS_FILE" \
         --argjson agent "$agent_record" \
-        '.agents += [$agent]' || {
+        '
+        def terminal:
+          .status as $status
+          | (["completed", "ok", "degraded", "failed", "timeout", "skipped"] | index($status)) != null;
+        def phase_rank($phase):
+          if ($phase == "probe" or $phase == "discover") then 1
+          elif ($phase == "grasp" or $phase == "define") then 2
+          elif ($phase == "tangle" or $phase == "develop") then 3
+          elif ($phase == "ink" or $phase == "deliver") then 4
+          else 0 end;
+        def canonical_phase($phase):
+          if phase_rank($phase) == 1 then "discover"
+          elif phase_rank($phase) == 2 then "define"
+          elif phase_rank($phase) == 3 then "develop"
+          elif phase_rank($phase) == 4 then "deliver"
+          else $phase end;
+        ([.agents[]? | select(.task_id == $agent.task_id)] | first) as $previous
+        | .phase = (
+            if phase_rank($agent.phase) >= phase_rank(.phase) and phase_rank($agent.phase) > 0
+            then canonical_phase($agent.phase)
+            else .phase end)
+        | .updated_at = $agent.updated_at
+        | .agents = (
+            if $previous == null then
+              (.agents // []) + [$agent]
+            else
+              [(.agents // [])[] |
+                if .task_id == $agent.task_id then
+                  ($agent + {started_at: ($previous.started_at // $agent.started_at)})
+                else . end]
+            end)
+        | .total_agents = ([.total_agents // 0, (.agents | length)] | max)
+        | .completed_agents = ([.agents[] | select(terminal)] | length)
+        | .successful_agents = ([.agents[] | select(.status == "completed" or .status == "ok" or .status == "degraded")] | length)
+        | .failed_agents = ([.agents[] | select(.status == "failed")] | length)
+        | .timeout_agents = ([.agents[] | select(.status == "timeout")] | length)
+        | .skipped_agents = ([.agents[] | select(.status == "skipped")] | length)
+        | .total_time_ms = ([.agents[] | select(terminal) | .elapsed_ms] | add // 0)
+        | .total_cost = ([.agents[] | select(terminal) | .cost] | add // 0)
+        ' || {
         log WARN "Failed to update agent status for $agent_name"
         return 1
     }
-
-    # Update totals if completed
-    if [[ "$status" == "completed" ]]; then
-        atomic_json_update "$PROGRESS_FILE" \
-            --argjson elapsed "$elapsed_ms" \
-            --argjson cost "$cost" \
-            '.completed_agents += 1 | .total_time_ms += $elapsed | .total_cost += $cost' || {
-            log WARN "Failed to update progress totals"
-        }
-    fi
 
     log DEBUG "Updated agent status: $agent_name -> $status (${elapsed_ms}ms, \$${cost})"
 }
@@ -192,11 +272,7 @@ save_agent_checkpoint() {
     # Debounce: skip if checkpoint < 5 minutes old
     if [[ -f "$checkpoint_file" ]]; then
         local mod_time now age
-        if stat -f %m "$checkpoint_file" &>/dev/null; then
-            mod_time=$(stat -f %m "$checkpoint_file")
-        else
-            mod_time=$(stat -c %Y "$checkpoint_file")
-        fi
+        mod_time="$(_octo_file_mtime "$checkpoint_file")"
         now=$(date +%s)
         age=$((now - mod_time))
         if [[ $age -lt 300 ]]; then
@@ -245,11 +321,7 @@ load_agent_checkpoint() {
 
     # Check age: expire after 24h
     local mod_time now age
-    if stat -f %m "$checkpoint_file" &>/dev/null; then
-        mod_time=$(stat -f %m "$checkpoint_file")
-    else
-        mod_time=$(stat -c %Y "$checkpoint_file")
-    fi
+    mod_time="$(_octo_file_mtime "$checkpoint_file")"
     now=$(date +%s)
     age=$((now - mod_time))
 
@@ -310,6 +382,38 @@ get_agent_config() {
             exit
         }
     ' "$AGENTS_CONFIG"
+}
+
+# Resolve a curated persona name to the provider used by `orchestrate.sh spawn`.
+# Direct provider names return non-zero so the caller preserves its existing path.
+resolve_persona_spawn_target() {
+    local persona="$1"
+    local primary fallback
+
+    case "$persona" in
+        ''|*[!a-zA-Z0-9_-]*) return 1 ;;
+    esac
+    if [[ -n "${AVAILABLE_AGENTS:-}" && " $AVAILABLE_AGENTS " == *" $persona "* ]]; then
+        return 1
+    fi
+
+    primary="$(get_agent_config "$persona" "cli" 2>/dev/null | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//' || true)"
+    [[ -n "$primary" ]] || return 1
+
+    if ! declare -f is_agent_available_v2 >/dev/null 2>&1 || is_agent_available_v2 "$primary"; then
+        printf '%s\n' "$primary"
+        return 0
+    fi
+
+    fallback="$(get_agent_config "$persona" "fallback_cli" 2>/dev/null | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//' || true)"
+    if [[ -n "$fallback" ]] && is_agent_available_v2 "$fallback"; then
+        printf '%s\n' "$fallback"
+        return 0
+    fi
+
+    # Preserve the configured primary so normal dispatch reports its concrete
+    # availability/authentication failure when no configured fallback can run.
+    printf '%s\n' "$primary"
 }
 
 # v8.2.0: Get agent memory scope from config (project/none)
@@ -592,10 +696,10 @@ get_codex_agent_for_phase() {
 get_agent_for_task() {
     local task_type="$1"
     case "$task_type" in
-        image) echo "gemini-image" ;;
+        image) echo "agy" ;;
         review) echo "codex-review" ;;
         coding) echo "codex" ;;
-        design) echo "agy" ;;          # Antigravity (Google seat) — Gemini CLI sunset 2026-06-18
+        design) echo "agy" ;;          # Antigravity Google seat
         copywriting) echo "agy" ;;     # Antigravity — creative writing
         research) echo "agy" ;;        # Antigravity — analysis/synthesis
         general) echo "codex" ;;       # Default to codex for general tasks
@@ -627,10 +731,17 @@ show_agent_recommendations() {
     [[ "$CI_MODE" == "true" ]] && return
     [[ "$DRY_RUN" == "true" ]] && return
 
-    # Count recommendations
+    # Split into an array. Globbing is disabled around the split so an agent
+    # name list containing `*` or `?` cannot expand into matching filenames.
+    local _had_noglob=false
+    case "$-" in *f*) _had_noglob=true ;; esac
+    set -f
+    local IFS=$' \t\n'
+    # shellcheck disable=SC2206 # deliberate word splitting; globbing disabled above
     local rec_array=($recommendations)
-    local count=${#rec_array[@]}
+    [[ "$_had_noglob" == "true" ]] || set +f
 
+    local count=${#rec_array[@]}
     [[ $count -lt 2 ]] && return
 
     echo ""
@@ -670,8 +781,8 @@ get_tiered_agent() {
 
     case "$task_type" in
         image)
-            # Image generation always uses gemini-image
-            agent="gemini-image"
+            # Antigravity selects the compatible image-capable service model.
+            agent="agy"
             ;;
         review)
             # Reviews use standard tier (already cost-effective)
@@ -687,7 +798,7 @@ get_tiered_agent() {
             esac
             ;;
         design|copywriting|research)
-            # Antigravity (agy) is the Google seat (Gemini CLI sunset 2026-06-18).
+            # Antigravity (agy) is the Google seat.
             # Model tier is selected via OCTOPUS_AGY_MODEL, not separate agents.
             agent="agy"
             ;;
@@ -704,6 +815,7 @@ get_tiered_agent() {
             ;;
     esac
 
-    # Apply API key fallback (v4.5)
-    get_fallback_agent "$agent" "$task_type" 2>/dev/null || echo "$agent"
+    # Apply API key fallback (v4.5). Resolver failure is terminal: returning
+    # the known-unavailable preferred identity would defer the error to dispatch.
+    get_fallback_agent "$agent" "$task_type"
 }

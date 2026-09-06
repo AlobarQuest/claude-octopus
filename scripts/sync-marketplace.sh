@@ -11,6 +11,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
+log() {
+    local level="$1"
+    shift
+    printf '[%s] %s\n' "$level" "$*" >&2
+}
+
 CHECK_ONLY=false
 [[ "${1:-}" == "--check" ]] && CHECK_ONLY=true
 
@@ -27,33 +33,70 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-# Read current marketplace description
+# Read the current marketplace description (compared against expected below)
 CURRENT_DESC=$(python3 -c "
 import json, sys
 m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
 for p in m.get('plugins', []):
     if p.get('name') == 'octo':
-        desc = p.get('description', '')
-        if not desc:
-            print('ERROR: octo plugin description is empty', file=sys.stderr)
-            sys.exit(1)
-        print(desc)
+        print(p.get('description', ''))
         break
 else:
     print('ERROR: octo plugin entry not found', file=sys.stderr)
     sys.exit(1)
 ")
 
-# Extract the feature summary (first part before counts)
-# Format: "Feature summary. <personas> personas, <commands> commands, <skills> skills. Run /octo:setup."
-# We preserve the feature summary but regenerate the counts
-# Strip any legacy version prefix, counts suffix, and trailing "Run /octo:setup." (we re-append it)
-FEATURE_SUMMARY=$(echo "$CURRENT_DESC" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+ [-—] //' | sed -E 's/[.,] [0-9]+ personas,.*//' | sed -E 's/\.? *Run \/octo:setup\.?$//')
+# Derive the feature summary from plugin.json (the source of truth), NOT from
+# marketplace.json's previous description. Sourcing it from marketplace.json
+# made the summary self-referential: it could only change via a hand-edit to a
+# file documented as never-hand-edit, which is how the v9.50 summary survived
+# into v9.51 and how a hand-written "42 agents, ..." fragment stacked with the
+# generated counts. Strip: version prefix, any counts fragments (agents or
+# personas variants), and the trailing "Run /octo:setup." (re-appended below).
+PLUGIN_DESC=$(python3 -c "import json; print(json.load(open('$PLUGIN_JSON')).get('description', ''))")
+if [[ -z "$PLUGIN_DESC" ]]; then
+    log ERROR "description missing in $PLUGIN_JSON"
+    exit 1
+fi
+PLUGIN_KEYWORDS=$(python3 -c "import json; print(json.dumps(json.load(open('$PLUGIN_JSON')).get('keywords', []), separators=(',', ':')))")
+CURRENT_KEYWORDS=$(python3 -c "
+import json, sys
+m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
+for p in m.get('plugins', []):
+    if p.get('name') == 'octo':
+        print(json.dumps(p.get('keywords', []), separators=(',', ':')))
+        break
+else:
+    sys.exit(1)
+")
+CURRENT_ENTRY_VERSION=$(python3 -c "
+import json, sys
+m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
+for p in m.get('plugins', []):
+    if p.get('name') == 'octo':
+        print(p.get('version', ''))
+        break
+else:
+    sys.exit(1)
+")
+CURRENT_METADATA_VERSION=$(python3 -c "
+import json
+m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
+print(m.get('metadata', {}).get('version', ''))
+")
+# Note: match the dash via alternation, not a `[-—]` bracket expression — under
+# the C/POSIX locale (no LANG/LC_ALL set), sed's bracket-expression handling of
+# the multi-byte em-dash is unreliable and silently fails to match, leaving the
+# version prefix unstripped and doubling it when EXPECTED_DESC is assembled below.
+FEATURE_SUMMARY=$(echo "$PLUGIN_DESC" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+ (-|—) //' | sed -E 's/[.,] [0-9]+ (agents|personas),[^.]*\.//g' | sed -E 's/\.? *Run \/octo:setup\.?$//' | sed -E 's/\.$//')
 
 # Build expected description — version prefix derived from version field
 EXPECTED_DESC="v${VERSION} - ${FEATURE_SUMMARY}. ${PERSONA_COUNT} personas, ${COMMAND_COUNT} commands, ${SKILL_COUNT} skills. Run /octo:setup."
 
-if [[ "$CURRENT_DESC" == "$EXPECTED_DESC" ]]; then
+if [[ "$CURRENT_DESC" == "$EXPECTED_DESC" &&
+      "$CURRENT_KEYWORDS" == "$PLUGIN_KEYWORDS" &&
+      "$CURRENT_ENTRY_VERSION" == "$VERSION" &&
+      "$CURRENT_METADATA_VERSION" == "$VERSION" ]]; then
     echo "✓ marketplace.json is up to date (${PERSONA_COUNT} personas, ${COMMAND_COUNT} commands, ${SKILL_COUNT} skills)"
     exit 0
 fi
@@ -62,20 +105,26 @@ if $CHECK_ONLY; then
     echo "✗ marketplace.json is out of date"
     echo "  Current:  $CURRENT_DESC"
     echo "  Expected: $EXPECTED_DESC"
+    [[ "$CURRENT_KEYWORDS" == "$PLUGIN_KEYWORDS" ]] || echo "  Plugin keywords differ from plugin.json"
+    [[ "$CURRENT_ENTRY_VERSION" == "$VERSION" ]] || log WARN "Plugin version: $CURRENT_ENTRY_VERSION (expected $VERSION)"
+    [[ "$CURRENT_METADATA_VERSION" == "$VERSION" ]] || log WARN "Metadata version: $CURRENT_METADATA_VERSION (expected $VERSION)"
     exit 1
 fi
 
 # Update marketplace.json
-python3 -c "
-import json
+OCTO_MARKETPLACE_KEYWORDS_JSON="$PLUGIN_KEYWORDS" python3 -c "
+import json, os
 
 with open('$ROOT_DIR/.claude-plugin/marketplace.json') as f:
     m = json.load(f)
+
+m.setdefault('metadata', {})['version'] = '$VERSION'
 
 for p in m.get('plugins', []):
     if p.get('name') == 'octo':
         p['description'] = '''$EXPECTED_DESC'''
         p['version'] = '$VERSION'
+        p['keywords'] = json.loads(os.environ['OCTO_MARKETPLACE_KEYWORDS_JSON'])
         break
 
 with open('$ROOT_DIR/.claude-plugin/marketplace.json', 'w') as f:

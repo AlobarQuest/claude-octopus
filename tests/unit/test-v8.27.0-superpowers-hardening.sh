@@ -1,0 +1,273 @@
+#!/bin/bash
+# Test suite for v8.27.0 — Superpowers-Inspired Hardening
+# Tests context reinforcement, description trap fixes, HARD-GATE tags,
+# human_only flags, staged review pipeline, plan mode interceptor, and version bumps.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "for v8.27.0 — Superpowers-Inspired Hardening"
+
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$PLUGIN_DIR"
+
+PASS=0
+FAIL=0
+TOTAL=0
+
+pass() { test_case "$1"; test_pass; }
+
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
+
+suite() {
+  echo ""
+  echo "━━━ $1 ━━━"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 1: Context Reinforcement
+# ─────────────────────────────────────────────────────────────────────
+suite "1. Context Reinforcement Hook"
+
+# 1.1 Hook file exists
+if [[ -f "$PLUGIN_DIR/hooks/context-reinforcement.sh" ]]; then
+  pass "context-reinforcement.sh exists"
+else
+  fail "context-reinforcement.sh missing"
+fi
+
+# 1.2 Hook is executable
+if [[ -x "$PLUGIN_DIR/hooks/context-reinforcement.sh" ]]; then
+  pass "context-reinforcement.sh is executable"
+else
+  fail "context-reinforcement.sh is not executable"
+fi
+
+# 1.3 hooks.json has SessionStart entry for context-reinforcement
+if grep -q "context-reinforcement.sh" "$PLUGIN_DIR/hooks/hooks.json"; then
+  pass "hooks.json references context-reinforcement.sh"
+else
+  fail "hooks.json missing context-reinforcement.sh reference"
+fi
+
+# 1.4 Hook stays dormant without an active, matching workflow
+HOOK_OUTPUT=$(echo '{}' | bash "$PLUGIN_DIR/hooks/context-reinforcement.sh" 2>/dev/null || true)
+if [[ -z "$HOOK_OUTPUT" ]]; then
+  pass "context-reinforcement.sh is silent outside an active workflow"
+else
+  fail "context-reinforcement.sh engaged outside an active workflow" "$HOOK_OUTPUT"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 2: Description Trap Audit
+# ─────────────────────────────────────────────────────────────────────
+suite "2. Description Trap (Opaque Descriptions)"
+
+# 2.1 skill-debug — no process details in description
+DEBUG_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-debug")" | head -1)
+if echo "$DEBUG_DESC" | grep -qiE "(phase|investigate|analyze|hypothesize|implement)"; then
+  fail "skill-debug description leaks process details"
+else
+  pass "skill-debug description is opaque"
+fi
+
+# 2.2 skill-tdd — no process details
+TDD_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-tdd")" | head -1)
+if echo "$TDD_DESC" | grep -qiE "(discipline|write.*first|failing test|red.green)"; then
+  fail "skill-tdd description leaks process details"
+else
+  pass "skill-tdd description is opaque"
+fi
+
+# 2.3 skill-factory — no process details
+FACTORY_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-factory")" | head -1)
+if echo "$FACTORY_DESC" | grep -qiE "(dark factory|spec.in|software.out|holdout|satisfaction)"; then
+  fail "skill-factory description leaks process details"
+else
+  pass "skill-factory description is opaque"
+fi
+
+# 2.4 skill-deep-research — no process details
+RESEARCH_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-deep-research")" | head -1)
+if echo "$RESEARCH_DESC" | grep -qiE "(multi.ai|parallel|cost transparency|provider)"; then
+  fail "skill-deep-research description leaks process details"
+else
+  pass "skill-deep-research description is opaque"
+fi
+
+# 2.5 flow-parallel — no process details
+PARALLEL_DESC=$(grep '^description:' "$(resolve_claude_skill_path "flow-parallel")" | head -1)
+if echo "$PARALLEL_DESC" | grep -qiE "(team of teams|claude instances|independent|compound)"; then
+  fail "flow-parallel description leaks process details"
+else
+  pass "flow-parallel description is opaque"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 3: HARD-GATE Tags
+# ─────────────────────────────────────────────────────────────────────
+suite "3. HARD-GATE XML Enforcement Tags"
+
+# 3.1-3.5 Check each skill for HARD-GATE tag
+for skill in skill-debug skill-tdd skill-factory skill-verify skill-deep-research; do
+  SKILL_FILE="$(resolve_claude_skill_path "$skill")"
+  # skill-verify uses the canonical skill directory format.
+  [[ ! -f "$SKILL_FILE" ]] && SKILL_FILE="$PLUGIN_DIR/skills/${skill}/SKILL.md"
+  if grep -q '<HARD-GATE>' "$SKILL_FILE" 2>/dev/null && grep -q '</HARD-GATE>' "$SKILL_FILE" 2>/dev/null; then
+    pass "${skill} contains HARD-GATE tags"
+  else
+    fail "${skill} missing HARD-GATE tags"
+  fi
+done
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 4: Human-Only Flag
+# ─────────────────────────────────────────────────────────────────────
+suite "4. Human-Only Invocation Flag"
+
+# 4.1-4.5 Check each skill for human_only
+for skill in skill-factory skill-deep-research skill-security-audit flow-parallel skill-ship; do
+  SKILL_FILE="$(resolve_claude_skill_path "$skill")"
+  if grep -q 'disable-model-invocation: true' "$SKILL_FILE"; then
+    pass "${skill} has native manual-only invocation"
+  else
+    fail "${skill} missing disable-model-invocation: true"
+  fi
+done
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 5: Staged Review Pipeline
+# ─────────────────────────────────────────────────────────────────────
+suite "5. Staged Review Pipeline"
+
+# 5.1 Skill file exists
+STAGED_REVIEW_SKILL="$(resolve_claude_skill_path "skill-staged-review")"
+if [[ -f "$STAGED_REVIEW_SKILL" ]]; then
+  pass "skill-staged-review.md exists"
+else
+  fail "skill-staged-review.md missing"
+fi
+
+# 5.2 Command file exists
+if [[ -f "$PLUGIN_DIR/commands/staged-review.md" ]]; then
+  pass "staged-review command exists"
+else
+  fail "staged-review command missing"
+fi
+
+# 5.3 plugin.json references skill
+if grep -q '"\./skills/skill-staged-review"' "$PLUGIN_DIR/.claude-plugin/plugin.json"; then
+  pass "plugin.json registers staged-review skill"
+else
+  fail "plugin.json missing staged-review skill"
+fi
+
+# 5.4 Two-stage structure (contains Stage 1 and Stage 2)
+if grep -q "Stage 1" "$STAGED_REVIEW_SKILL" && \
+   grep -q "Stage 2" "$STAGED_REVIEW_SKILL"; then
+  pass "staged-review has two-stage structure"
+else
+  fail "staged-review missing two-stage structure"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 6: Plan Mode Interceptor
+# ─────────────────────────────────────────────────────────────────────
+suite "6. Plan Mode Interceptor"
+
+# 6.1 Hook file exists
+if [[ -f "$PLUGIN_DIR/hooks/plan-mode-interceptor.sh" ]]; then
+  pass "plan-mode-interceptor.sh exists"
+else
+  fail "plan-mode-interceptor.sh missing"
+fi
+
+# 6.2 Hook is executable
+if [[ -x "$PLUGIN_DIR/hooks/plan-mode-interceptor.sh" ]]; then
+  pass "plan-mode-interceptor.sh is executable"
+else
+  fail "plan-mode-interceptor.sh is not executable"
+fi
+
+# 6.3 hooks.json has EnterPlanMode matcher
+if grep -q '"EnterPlanMode"' "$PLUGIN_DIR/hooks/hooks.json"; then
+  pass "hooks.json has EnterPlanMode matcher"
+else
+  fail "hooks.json missing EnterPlanMode matcher"
+fi
+
+# 6.4 Hook outputs valid JSON
+PLAN_OUTPUT=$(echo '{}' | bash "$PLUGIN_DIR/hooks/plan-mode-interceptor.sh" 2>/dev/null || true)
+if echo "$PLAN_OUTPUT" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+  pass "plan-mode-interceptor.sh outputs valid JSON"
+else
+  fail "plan-mode-interceptor.sh does not output valid JSON"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Suite 7: Version Bumps
+# ─────────────────────────────────────────────────────────────────────
+suite "7. Version Consistency"
+
+# 7.1 package.json has valid semver >= 8.27.0
+PKG_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/package.json'))['version'])" 2>/dev/null || echo "")
+if [[ -n "$PKG_VER" ]] && python3 -c "exit(0 if tuple(int(x) for x in '$PKG_VER'.split('.')) >= (8,27,0) else 1)" 2>/dev/null; then
+  pass "package.json version >= 8.27.0 (is $PKG_VER)"
+else
+  fail "package.json version not >= 8.27.0 (is $PKG_VER)"
+fi
+
+# 7.2 plugin.json has valid semver >= 8.27.0
+PLG_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))['version'])" 2>/dev/null || echo "")
+if [[ -n "$PLG_VER" ]] && python3 -c "exit(0 if tuple(int(x) for x in '$PLG_VER'.split('.')) >= (8,27,0) else 1)" 2>/dev/null; then
+  pass "plugin.json version >= 8.27.0 (is $PLG_VER)"
+else
+  fail "plugin.json version not >= 8.27.0 (is $PLG_VER)"
+fi
+
+# 7.3 marketplace.json has valid semver >= 8.27.0
+MKT_VER=$(python3 -c "import json; [print(p['version']) for p in json.load(open('$PLUGIN_DIR/.claude-plugin/marketplace.json')).get('plugins',[]) if p.get('name')=='octo']" 2>/dev/null | head -1 || echo "")
+if [[ -n "$MKT_VER" ]] && python3 -c "exit(0 if tuple(int(x) for x in '$MKT_VER'.split('.')) >= (8,27,0) else 1)" 2>/dev/null; then
+  pass "marketplace.json version >= 8.27.0 (is $MKT_VER)"
+else
+  fail "marketplace.json version not >= 8.27.0 (is $MKT_VER)"
+fi
+
+# 7.4 README.md badge has valid version >= 8.27.0
+README_VER=$(python3 - "$PLUGIN_DIR/README.md" <<'PY'
+import re
+import sys
+
+match = re.search(r"Version-(\d+\.\d+\.\d+)-blue", open(sys.argv[1], encoding="utf-8").read())
+print(match.group(1) if match else "")
+PY
+)
+if [[ -n "$README_VER" ]] && python3 -c "exit(0 if tuple(int(x) for x in '$README_VER'.split('.')) >= (8,27,0) else 1)" 2>/dev/null; then
+  pass "README.md badge shows valid version (is $README_VER)"
+else
+  fail "README.md badge missing version badge"
+fi
+
+# 7.5 CHANGELOG.md has entry
+if grep -q '\[8.27.0\]' "$PLUGIN_DIR/CHANGELOG.md"; then
+  pass "CHANGELOG.md has 8.27.0 entry"
+else
+  fail "CHANGELOG.md missing 8.27.0 entry"
+fi
+
+# 7.6 No stale 8.26.0 in version fields (only in changelog history)
+STALE_PACKAGE=$(grep '"version"' "$PLUGIN_DIR/package.json" | grep -c '8.26.0' || true)
+STALE_PLUGIN=$(grep '"version"' "$PLUGIN_DIR/.claude-plugin/plugin.json" | grep -c '8.26.0' || true)
+STALE_MARKET=$(grep '"version"' "$PLUGIN_DIR/.claude-plugin/marketplace.json" | grep -c '8.26.0' || true)
+if [[ "$STALE_PACKAGE" -eq 0 && "$STALE_PLUGIN" -eq 0 && "$STALE_MARKET" -eq 0 ]]; then
+  pass "No stale 8.26.0 in version fields"
+else
+  fail "Stale 8.26.0 found in version fields"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Summary
+# ─────────────────────────────────────────────────────────────────────
+test_summary

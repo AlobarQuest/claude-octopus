@@ -6,7 +6,7 @@ This document explains how Claude Octopus orchestrates multiple AI providers and
 
 ## Overview
 
-Claude Octopus coordinates **nine AI providers** to give you multi-perspective analysis:
+Claude Octopus coordinates **twelve external AI integrations** alongside its built-in Claude host to give you multi-perspective analysis. The diagram shows the representative execution path; the full roster follows it.
 
 ```
     +------------------+
@@ -32,36 +32,39 @@ Claude Octopus coordinates **nine AI providers** to give you multi-perspective a
 
 | Provider | CLI Tool | Underlying Model | Cost Source |
 |----------|----------|------------------|-------------|
-| **Codex CLI** | `codex exec --model gpt-5.4` | GPT-5.4 | Your `OPENAI_API_KEY` |
-| **Gemini CLI** | `gemini -y -m gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | Your `GEMINI_API_KEY` |
-| **Antigravity CLI** | `agy --print --sandbox` | Antigravity default model | Your Antigravity CLI auth |
-| **Claude** | Built-in | Claude Sonnet 4.6 / Opus 4.7 | Your Claude Code subscription |
+| **Codex CLI** | `codex exec --model gpt-5.6-sol` | GPT-5.6 Sol/Terra/Luna | ChatGPT OAuth or your `OPENAI_API_KEY` |
+| **Antigravity CLI** | `agy --print --sandbox` | `default`/`agy/default`, or an exact label from `agy models` | Your Antigravity CLI auth |
+| **Claude** | Built-in | Claude Sonnet 5 / Opus 5 | Your Claude Code subscription or API account |
 | **Perplexity** | API-only | Sonar Pro / Sonar | Your `PERPLEXITY_API_KEY` |
 | **OpenRouter** | API-only | 100+ models (GLM-5, Kimi K2.5, DeepSeek R1, etc.) | Your `OPENROUTER_API_KEY` |
+| **OrcaRouter** | API-only | Namespaced Claude models via an OpenAI-compatible gateway | Your `ORCAROUTER_API_KEY` |
 | **Ollama** *(optional)* | `ollama run <model>` | Local models (llama3.3, mistral, etc.) | Free (local) |
-| **Copilot** *(optional)* | `copilot -p` | GitHub models (Claude/GPT/Gemini) | GitHub Copilot subscription |
+| **Copilot** *(optional)* | `copilot -p` | GitHub models (Claude/GPT/Google models) | GitHub Copilot subscription |
 | **Qwen** *(optional)* | `qwen -p` | Qwen3-Coder | `QWEN_API_KEY` or Coding-Plan auth |
 | **OpenCode** *(optional)* | `opencode run` | Multi-provider router | Your OpenCode auth |
+| **Cursor CLI** *(optional)* | `agent -p --mode ask\|plan` for read-only roles; `agent -p --force` for implementers | `auto` (Cursor's pick) or any flat ID from `agent models` (Composer, GPT-5.6, Claude, Gemini, Grok) | Cursor subscription (`agent login`) or `CURSOR_API_KEY` |
+| **Grok** *(optional)* | `grok -p` (standalone xAI CLI) | Grok models | Your `XAI_API_KEY` or `grok login` |
+| **Kimi Code** *(optional)* | `kimi -p` | Model alias selected from Kimi Code `config.toml` | Provider credential or OAuth login configured in Kimi Code |
 
-> **Note:** Models are as of April 2026. The orchestrate.sh script uses the latest available models. Only Claude is required — all others are optional and auto-detected.
+> **Note:** Models are as of July 2026. The orchestrate.sh script uses the latest supported models. Only Claude is required — all others are optional and auto-detected.
 
 ### Role → Model Mapping (v9.29+)
 
-Role defaults refreshed based on April 2026 benchmark consensus. See [GPT-5.4 prompting guide](./GPT-5.4-PROMPTING.md) for dispatcher patterns.
+Role defaults follow the accepted [frontier model routing strategy](./MODEL-ROUTING-STRATEGY.md).
 
 | Role                 | Default Model         | Why                                                                 |
 |----------------------|-----------------------|---------------------------------------------------------------------|
-| `architect`          | Claude Opus 4.7       | SWE-bench Pro 64.3, MCP-Atlas +9.2, LMArena #1; UI/UX taste         |
-| `strategist`         | Claude Opus 4.7       | Premium arbitration, architecture tradeoffs                         |
-| `security-reviewer`  | Claude Opus 4.7       | Adversarial reasoning                                               |
-| `code-reviewer`      | GPT-5.4               | Edge-case hunting; Terminal-Bench 75.1                              |
+| `architect`          | Claude Opus 5         | Architecture, planning, product and UI judgment                     |
+| `strategist`         | Claude Opus 5         | Premium arbitration, architecture tradeoffs                         |
+| `security-reviewer`  | Claude Opus 5         | Adversarial reasoning                                               |
+| `code-reviewer`      | GPT-5.6 Sol           | Independent edge-case and implementation review                     |
 | `reviewer` (alias)   | → `code-reviewer`     | Back-compat for v9.28 callers                                       |
-| `implementer`        | GPT-5.4               | Terminal-heavy execution, iterative patch/test loops                |
-| `implementer-heavy`  | Claude Opus 4.7       | Opt-in only; greenfield / large refactors / UI-heavy builds         |
-| `synthesizer`        | Claude Sonnet 4.6     | Best aggregator price/quality                                       |
-| `researcher`         | Gemini 3.1 Pro Preview| Broad research + synthesis                                          |
+| `implementer`        | GPT-5.6 Sol           | Terminal-heavy execution, iterative patch/test loops                |
+| `implementer-heavy`  | Claude Opus 5         | Opt-in only; greenfield / large refactors / UI-heavy builds         |
+| `synthesizer`        | Claude Sonnet 5       | Standard aggregator price/quality                                   |
+| `researcher`         | Antigravity           | Independent broad research + synthesis                              |
 
-**Opt-out:** `OCTOPUS_LEGACY_ROLES=1` restores the v9.28 mapping (GPT-5.4 everywhere for architect/reviewer/implementer, Opus 4.6 for strategist).
+**Opt-out:** `OCTOPUS_LEGACY_ROLES=1` restores the preserved pre-frontier mapping (GPT-5.5 for architect/reviewer/implementer, Sonnet 4.6 for synthesis, and Opus 4.6 for strategy).
 
 **Graceful fallback:** when the preferred CLI is unavailable (e.g. no Anthropic auth for architect), `lib/agents.sh` silently downshifts and logs a single notice instead of failing.
 
@@ -69,18 +72,38 @@ Role defaults refreshed based on April 2026 benchmark consensus. See [GPT-5.4 pr
 
 | Provider | Strengths | Best For |
 |----------|-----------|----------|
-| **Codex (OpenAI, GPT-5.4)** | Edge-case hunting, terminal execution, patch/test loops | Code review (`code-reviewer`), default implementation (`implementer`) |
-| **Gemini (Google)** | Research synthesis, documentation, broad knowledge | Ecosystem research, best practices, alternative perspectives |
-| **Claude (Opus 4.7)** | Planning, architecture, adversarial reasoning, UI/UX taste | `architect`, `strategist`, `security-reviewer`, `implementer-heavy` |
-| **Claude (Sonnet 4.6)** | Aggregation, final synthesis, workhorse summarization | `synthesizer`; included with Claude Code subscription |
+| **Codex (OpenAI, GPT-5.6)** | Edge-case hunting, terminal execution, patch/test loops | Code review (`code-reviewer`), default implementation (`implementer`) |
+| **Antigravity (Google)** | Research synthesis, documentation, broad knowledge | Ecosystem research, best practices, alternative perspectives |
+| **Claude (Opus 5)** | Planning, architecture, adversarial reasoning, UI/UX taste | `architect`, `strategist`, `security-reviewer`, `implementer-heavy` |
+| **Claude (Sonnet 5)** | Aggregation, final synthesis, workhorse summarization | `synthesizer`; included where the user's Claude Code subscription covers it |
 | **Perplexity** | Live web search, CVE lookups, current docs | Discover phase research, dependency analysis |
 | **OpenRouter** | Access to 100+ models, cost routing | Alternative perspectives, budget-conscious workflows |
+| **OrcaRouter** | Policy-enforced gateway routing | Governed fallback dispatch and independent model perspectives |
 | **Ollama** *(optional)* | Zero-cost, offline, privacy | Brainstorming, fallback, air-gapped environments |
 | **Qwen** *(optional)* | Qwen3-Coder via API-key or Coding-Plan auth, Chinese language support | Research and code review when Qwen credentials are configured |
+| **Kimi Code** *(optional)* | Independent coding-agent execution with config-scoped credentials | Write-capable implementation through the standalone Kimi Code CLI; read-only roles are rejected because print mode auto-approves tools |
 
 ---
 
 ## Execution Flow by Workflow
+
+### V10 execution contract
+
+All synchronous, supervised background, and Agent Teams provider seats share
+one append-only state machine in `scripts/lib/run-contract.sh`. Dispatch records
+requested identity before resolution, the actual provider/model/effort before
+execution, process and source attribution while running, and artifacts plus an
+exact terminal reason at completion. Synthesis accepts only validated eligible
+records; a successful process exit is not proof of a usable result.
+
+Each transition refreshes `runs/<run-id>/run.json`. `runs/latest` is an atomic
+compatibility symlink to the latest complete run directory, so legacy status
+snapshots and the v10 `status` and `explain` readers share one pointer without
+overwriting each other's format.
+
+Shared provider identity and policy come from Provider Registry 2.0. Concrete
+command syntax, credentials, and environment isolation remain provider-specific
+adapters selected by that registry.
 
 ### Discover Phase (probe)
 
@@ -99,7 +122,7 @@ User Request
     |           |
     v           v
 +-------+   +-------+
-| Codex |   |Gemini |   <- Run in PARALLEL
+| Codex |   |Antigravity |   <- Run in PARALLEL
 | CLI   |   | CLI   |
 +---+---+   +---+---+
     |           |
@@ -121,7 +144,7 @@ User Request
 ```
 
 **Execution:**
-1. Codex CLI and Gemini CLI run **in parallel** with the research prompt
+1. Codex CLI and Antigravity CLI run **in parallel** with the research prompt
 2. Both responses are collected
 3. Claude synthesizes both perspectives into a unified report
 
@@ -149,17 +172,17 @@ User Request
           |
           v
     +-----------+
-    |  Gemini   |   <- Step 2: Success criteria
+    |  Antigravity   |   <- Step 2: Success criteria
     +-----------+
           |
           v
     +-----------+
-    |  Gemini   |   <- Step 3: Constraints
+    |  Antigravity   |   <- Step 3: Constraints
     +-----------+
           |
           v
     +-----------+
-    |  Gemini   |   <- Step 4: Build consensus
+    |  Antigravity   |   <- Step 4: Build consensus
     | Consensus |
     +-----------+
           |
@@ -170,9 +193,9 @@ User Request
 
 **Execution:** (Sequential for coherent problem definition)
 1. Codex defines the core problem statement (2-3 sentences)
-2. Gemini defines success criteria (3-5 measurable criteria)
-3. Gemini defines constraints and boundaries
-4. Gemini synthesizes all perspectives into unified requirements
+2. Antigravity defines success criteria (3-5 measurable criteria)
+3. Antigravity defines constraints and boundaries
+4. Antigravity synthesizes all perspectives into unified requirements
 
 ---
 
@@ -192,7 +215,7 @@ User Request
     |           |
     v           v
 +-------+   +-------+
-| Codex |   |Gemini |   <- PARALLEL: Implementation proposals
+| Codex |   |Antigravity |   <- PARALLEL: Implementation proposals
 +---+---+   +---+---+
     |           |
     v           v
@@ -219,7 +242,7 @@ User Request
 ```
 
 **Execution:**
-1. Available external providers such as Codex, Gemini, and Antigravity each propose implementation approaches
+1. Available external providers such as Codex and Antigravity each propose implementation approaches
 2. Claude merges the best elements from the provider responses
 3. **Quality Gate** checks if merged approach meets 75% consensus threshold
 4. If failed: Loop back for revision
@@ -249,7 +272,7 @@ User Request
     |           |
     v           v
 +-------+   +-------+
-| Codex |   |Gemini |   <- PARALLEL: Different review angles
+| Codex |   |Antigravity |   <- PARALLEL: Different review angles
 +---+---+   +---+---+
     |           |
     v           v
@@ -277,7 +300,7 @@ User Request
 
 **Execution:**
 1. Codex reviews code quality, patterns, maintainability
-2. Gemini reviews security, edge cases, compliance
+2. Antigravity reviews security, edge cases, compliance
 3. Claude synthesizes into validation report
 4. Quality score determines go/no-go recommendation
 
@@ -388,14 +411,14 @@ All four phases run sequentially. Each phase uses the output of the previous pha
 
 ### Per-Query Estimates
 
-| Workflow | Codex Cost | Gemini Cost | Total |
+| Workflow | Codex Cost | Antigravity Cost | Total |
 |----------|------------|-------------|-------|
-| discover | $0.01-0.02 | $0.01-0.02 | $0.02-0.04 |
-| define | $0.01-0.02 | $0.01-0.02 | $0.02-0.04 |
-| develop | $0.02-0.05 | $0.02-0.05 | $0.04-0.10 |
-| deliver | $0.01-0.03 | $0.01-0.03 | $0.02-0.06 |
-| debate | $0.02-0.05 | $0.02-0.05 | $0.05-0.15 |
-| embrace | $0.05-0.10 | $0.05-0.10 | $0.10-0.30 |
+| discover | $0.01-0.02 | Included with access | $0.01-0.02 |
+| define | $0.01-0.02 | Included with access | $0.01-0.02 |
+| develop | $0.02-0.05 | Included with access | $0.02-0.05 |
+| deliver | $0.01-0.03 | Included with access | $0.01-0.03 |
+| debate | $0.02-0.05 | Included with access | $0.02-0.05 |
+| embrace | $0.05-0.10 | Included with access | $0.05-0.10 |
 
 **Note:** Claude costs are included in your Claude Code subscription (Pro, Max 5x, Max 20x).
 
@@ -403,7 +426,7 @@ All four phases run sequentially. Each phase uses the output of the previous pha
 
 | Strategy | How |
 |----------|-----|
-| **Use one provider** | Only install Codex OR Gemini (not both) |
+| **Use one provider** | Only install Codex OR Antigravity (not both) |
 | **Skip unnecessary phases** | Use `/octo:develop` instead of `/octo:embrace` for simple tasks |
 | **Use Claude-only** | For simple tasks, don't use "octo" prefix - just ask directly |
 
@@ -420,7 +443,6 @@ Claude Octopus auto-detects which providers are available:
 # Output example:
 # Providers:
 #   Codex CLI: ready (OPENAI_API_KEY found)
-#   Gemini CLI: ready (OAuth authenticated)
 #   Antigravity CLI: ready (agy authenticated)
 ```
 
@@ -431,7 +453,6 @@ Claude Octopus auto-detects which providers are available:
 | Three or more external providers | Full multi-AI orchestration with broad external perspective coverage |
 | Any one or two external providers | Multi-AI orchestration with available perspectives |
 | Codex only | Dual perspective (Codex + Claude) |
-| Gemini only | Dual perspective (Gemini + Claude) |
 | Antigravity only | Dual perspective (Antigravity + Claude) |
 | Neither | Claude-only mode (basic functionality) |
 
@@ -445,7 +466,7 @@ When multi-AI mode is active, you'll see these indicators:
 |-----------|---------|
 | 🐙 | Claude Octopus orchestration active |
 | 🔴 | Codex CLI executing (OpenAI) |
-| 🟡 | Gemini CLI executing (Google) |
+| 🟡 | Antigravity CLI executing (Google) |
 | 🔵 | Claude subagent processing |
 
 **Example output:**
@@ -454,7 +475,7 @@ When multi-AI mode is active, you'll see these indicators:
 🔍 Discover Phase: Researching authentication patterns
 
 🔴 Codex CLI: Analyzing implementation patterns...
-🟡 Gemini CLI: Researching ecosystem best practices...
+🟡 Antigravity CLI: Researching ecosystem best practices...
 🔵 Claude: Synthesizing perspectives...
 
 [Final synthesis report]

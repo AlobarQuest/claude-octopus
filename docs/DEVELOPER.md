@@ -38,6 +38,36 @@ Skills that invoke orchestrate.sh MUST use the **Validation Gate Pattern** to en
 
 See `.claude/skills/skill-deep-research/SKILL.md` for reference implementation.
 
+### Enforcement patterns that hold under pressure
+
+Prefer the three patterns in `skills/blocks/enforcement-patterns.md` over adding more
+capitalized emphasis: one **Iron Law** per discipline, a **rationalization table**
+pre-refuting the model's observed excuses, and a **terminal state** that names the
+successor skill instead of offering a next-steps menu. Emphasis inflation
+("MANDATORY" on every step) decays over long sessions; these do not.
+
+---
+
+## Skill Quality Gate (new or substantially changed skills)
+
+Ship a skill only after it clears an eval pass. Thresholds adopted from the strongest
+public skill factories (alirezarezvani SKILL_PIPELINE, obra writing-skills):
+
+1. **Baseline first** — run 3-5 representative task prompts in a fresh session WITHOUT
+   the skill; save the transcripts. A skill that cannot beat its baseline is deleted,
+   not shipped.
+2. **With-skill pass rate ≥ 85%** on the same prompts, and a visible improvement over
+   baseline on the behaviors the skill exists to change.
+3. **Description trigger test** — descriptions state ONLY triggering conditions, never a
+   workflow summary (a summarized workflow becomes a shortcut the model takes instead of
+   loading the skill). Test with ~10 should-trigger and ~10 should-not-trigger phrasings;
+   the skill must load on the former and stay quiet on the latter.
+4. **Rationalization capture** — when the skill fails in the field, record the exact
+   excuse the model generated and add a row to the skill's rationalization table, then
+   re-run the failing scenario.
+5. **Budget** — frontmatter description under ~100 tokens; skill body under 500 lines;
+   frequently auto-loaded content under 200 words.
+
 ---
 
 ## Modular Configuration (Claude Code v2.1.20+)
@@ -50,10 +80,10 @@ claude-octopus/
 ├── config/
 │   ├── providers/
 │   │   ├── codex/CLAUDE.md     # Codex-specific
-│   │   ├── gemini/CLAUDE.md    # Gemini-specific
 │   │   ├── claude/CLAUDE.md    # Claude orchestrator
 │   │   ├── ollama/CLAUDE.md    # Ollama local LLM
-│   │   └── copilot/CLAUDE.md   # GitHub Copilot CLI
+│   │   ├── copilot/CLAUDE.md   # GitHub Copilot CLI
+│   │   └── cursor-agent/CLAUDE.md  # Cursor CLI (`agent`)
 │   └── workflows/CLAUDE.md      # Double Diamond methodology
 ```
 
@@ -61,27 +91,70 @@ claude-octopus/
 
 ```bash
 claude --add-dir=config/providers/codex    # Codex context
-claude --add-dir=config/providers/gemini   # Gemini context
 claude --add-dir=config/workflows          # Double Diamond
 ```
 
 | Module | When to Load |
 |--------|--------------|
 | `providers/codex` | Working with Codex CLI integration |
-| `providers/gemini` | Working with Gemini CLI integration |
 | `providers/claude` | Understanding Claude's orchestrator role |
 | `providers/ollama` | Working with Ollama local LLM |
 | `providers/copilot` | Working with GitHub Copilot CLI |
+| `providers/cursor-agent` | Working with Cursor CLI (`agent`) |
 | `workflows` | Learning about Double Diamond methodology |
+
+---
+
+## Local CI Gates
+
+Use the smallest gate that matches the delivery stage:
+
+| Stage | Command | Contract |
+|-------|---------|----------|
+| Edit loop | affected test files | Fast feedback while the change is still moving |
+| Ordinary branch push | `make ci-changed` | Always runs sync and all smoke checks, then audited suites from `tests/changed-scope.tsv` |
+| Merge or release | `make ci-local` | Complete smoke, unit, integration, and CI-only matrix |
+
+Inspect a selection without executing it with `scripts/ci-changed.sh --list`.
+The selector fails closed to `make ci-local` for shared orchestration,
+generators, manifests, unknown paths, missing bases, or stale mappings. When a
+new source surface has a proven focused regression set, add its path and suites
+to `tests/changed-scope.tsv`; otherwise leave it unmapped so the full matrix
+remains mandatory.
+
+## Tangle Input and Migration Safety
+
+Keep `OCTOPUS_TANGLE_RUN_WORKTREE=true` (the default). A clean source checkout
+may contain one explicit untracked context input: reference a bare
+`PLAN.md`, `SPEC.md`, or `BRIEF.md` name, or prefix another Markdown path with
+`plan:`, `spec:`, or `brief:`. Octopus injects that file's contents into the
+isolated run; it does not admit unrelated dirty paths or copy the input into the
+implementation branch. Additional untracked context files are unsupported;
+commit or stash every other source change.
+
+Tangle does not authorize agents to apply, push, or repair migrations on a
+persistent local, linked, remote, or shared database by default. When a run
+changes `supabase/migrations/*.sql` and the Supabase CLI is available, validation
+runs the read-only `supabase migration list --local` check and fails if applied
+versions differ from disk. Use a project-owned disposable reset/test workflow.
+`OCTOPUS_TANGLE_ALLOW_DB_APPLY=true` authorizes application but never permits
+history drift; `OCTOPUS_TANGLE_ALLOW_UNVERIFIED_MIGRATIONS=true` explicitly
+accepts the risk when local history cannot be queried.
 
 ---
 
 ## E2E Testing Infrastructure
 
+V10 includes a hermetic failure-injection suite that drives the real
+`scripts/orchestrate.sh spawn` entrypoint. Its expected exit codes, lifecycle
+transitions, provider-call counts, contribution eligibility, and required or
+forbidden artifacts live in `tests/fixtures/v10-failure-oracles.tsv`; do not
+weaken an oracle to accommodate an implementation.
+
 Automated smoke testing runs on a remote VPS, checking for new releases every 2 hours.
 
 - **Phase A (Docker):** Install → structure verify → unit tests → uninstall
-- **Phase B (Native):** Live command tests with authed Claude Code, Codex, Gemini
+- **Phase B (Native):** Live command tests with authenticated Claude Code, Codex, and Antigravity
 
 E2E test scripts are in the private dev repo (`docs/e2e/`), not in this public plugin.
 

@@ -1,10 +1,11 @@
 ---
 name: skill-copilot-provider
+disable-model-invocation: true
 version: 2.0.0
 aliases: [copilot-provider, github-copilot, copilot]
 description: GitHub Copilot CLI as optional zero-cost provider via copilot -p programmatic mode
 trigger: |
-  AUTOMATICALLY ACTIVATE when user says:
+  EXPLICITLY USE when user says:
   "copilot provider" or "add copilot" or "github copilot" or "use copilot"
   DO NOT activate for general copilot IDE usage or copilot chat in editor.
 paths:
@@ -98,14 +99,14 @@ When Copilot is active in a multi-provider workflow:
 ```
 Providers:
 🔴 Codex CLI - Implementation
-🟡 Gemini CLI - Security review
+🟡 Antigravity CLI - Security review
 🟢 Copilot CLI - Research perspective
 🔵 Claude - Synthesis
 ```
 
 Indicator legend:
 - 🔴 = Codex CLI
-- 🟡 = Gemini CLI
+- 🟡 = Antigravity CLI
 - 🟢 = Copilot CLI
 - 🟣 = Perplexity
 - 🔵 = Claude
@@ -114,7 +115,7 @@ Indicator legend:
 
 ## Doctor Integration
 
-The `/octo:doctor` providers check reports Copilot availability and auth method:
+The `octopus doctor providers` check reports Copilot availability and auth method:
 
 ```
 Providers:
@@ -132,7 +133,7 @@ When missing: `ℹ Copilot CLI not installed (optional)`
 2. **Premium request quota** — Each `copilot -p` prompt = 1 premium request from your monthly allowance
 3. **Graceful degradation** — When unavailable, silently skip with no errors or warnings
 4. **No provider cascade** — If unavailable, the role is reassigned to another provider
-5. **Model selection** — Copilot CLI selects the model internally (default: Claude Sonnet 4.5, configurable via `/model`)
+5. **Model selection** — Octopus uses Copilot's `auto` selector by default; pin `OCTOPUS_COPILOT_MODEL` to pass an explicit `--model` value
 6. **Multi-model access** — Copilot subscription includes access to Claude, GPT, and Gemini models
 
 ---
@@ -147,7 +148,7 @@ When missing: `ℹ Copilot CLI not installed (optional)`
 
 Providers:
 🔴 Codex CLI - Technical implementation analysis
-🟡 Gemini CLI - Ecosystem research
+🟡 Antigravity CLI - Ecosystem research
 🟢 Copilot CLI - Research perspective
 🔵 Claude - Strategic synthesis
 ```
@@ -160,7 +161,7 @@ Providers:
 
 Providers:
 🔴 Codex CLI - Technical implementation analysis
-🟡 Gemini CLI - Ecosystem research
+🟡 Antigravity CLI - Ecosystem research
 🔵 Claude - Strategic synthesis
 ```
 

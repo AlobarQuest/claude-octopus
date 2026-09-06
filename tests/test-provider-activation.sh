@@ -157,9 +157,10 @@ echo ""
 echo -e "\033[0;34mTest Group 4: Model name consistency — no stale defaults (P1-B)\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 4.1: resolve_octopus_model uses gpt-5.5 for codex default
-if grep -rA 10 "case \"\$agent_type\" in" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.5'; then
-    pass "4.1 resolve_octopus_model returns gpt-5.5 for codex default"
+# 4.1: resolve_octopus_model uses the GPT-5.6 Sol current-model picker
+if grep -rA 3 '^codex_default_model()' $SCRIPTS_ALL | grep -q 'gpt-5\.6-sol' &&
+   grep -rA 10 "case \"\$agent_type\" in" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'codex_default_model'; then
+    pass "4.1 resolve_octopus_model returns gpt-5.6-sol for codex default"
 else
     fail "4.1 resolve_octopus_model uses stale model for codex default"
 fi
@@ -192,9 +193,9 @@ else
     fail "4.4 resolve_octopus_model missing role routing"
 fi
 
-# 4.5: codex fallbacks use gpt-5.5
-if grep -rA 20 "Fallback to hard-coded defaults" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.5'; then
-    pass "4.5 codex fallback uses gpt-5.5"
+# 4.5: codex fallbacks use the GPT-5.6 Sol current-model picker
+if grep -rA 20 "Fallback to hard-coded defaults" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'codex_default_model'; then
+    pass "4.5 codex fallback uses gpt-5.6-sol"
 else
     fail "4.5 codex fallback uses stale model"
 fi
@@ -207,17 +208,17 @@ echo -e "\033[0;34mTest Group 5: Probe agent slot configuration\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 5.1: smart dispatch includes codex for review/security workflows
-if grep -rc 'codex.*gemini.*claude-sonnet\|codex,claude-sonnet' $SCRIPTS_ALL >/dev/null 2>&1; then
+if grep -rc 'codex.*agy.*claude-sonnet\|codex,claude-sonnet' $SCRIPTS_ALL >/dev/null 2>&1; then
     pass "5.1 smart dispatch includes codex for review/security"
 else
     fail "5.1 smart dispatch missing codex for review/security"
 fi
 
-# 5.2: smart dispatch includes gemini for research workflows
-if grep -rc 'gemini,claude-sonnet' $SCRIPTS_ALL >/dev/null 2>&1; then
-    pass "5.2 smart dispatch includes gemini for research"
+# 5.2: smart dispatch includes Antigravity for research workflows
+if grep -rc 'agy,claude-sonnet' $SCRIPTS_ALL >/dev/null 2>&1; then
+    pass "5.2 smart dispatch includes Antigravity for research"
 else
-    fail "5.2 smart dispatch missing gemini for research"
+    fail "5.2 smart dispatch missing Antigravity for research"
 fi
 
 # 5.3: get_dispatch_strategy function exists
@@ -228,8 +229,11 @@ else
 fi
 
 # 5.4: synthesis admits short-but-usable probe findings instead of using a hard byte cutoff
-if grep -rA 30 'synthesize_probe_results()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable' && \
-   grep -rA 80 'build_probe_synthesis_context()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable'; then
+heuristics_file="$PROJECT_ROOT/scripts/lib/heuristics.sh"
+synthesis_body=$(bash -c 'source "$1"; declare -f synthesize_probe_results' _ "$heuristics_file") || synthesis_body=""
+context_body=$(bash -c 'source "$1"; declare -f build_probe_synthesis_context' _ "$heuristics_file") || context_body=""
+if grep -q 'probe_result_file_is_usable' <<<"$synthesis_body" && \
+   grep -q 'probe_result_file_is_usable' <<<"$context_body"; then
     pass "5.4 Synthesis classifies non-empty probe results without a hard byte cutoff"
 else
     fail "5.4 Synthesis should classify usable probe results before synthesis"

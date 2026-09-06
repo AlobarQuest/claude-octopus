@@ -1,5 +1,6 @@
 ---
-description: "\"Development phase - Build solutions with multi-AI implementation and quality gates\""
+description: "Development phase - Build solutions with multi-AI implementation and quality gates"
+disable-model-invocation: true
 ---
 
 # Develop - Development Phase 🛠️
@@ -56,7 +57,7 @@ Use the actual preflight output to display the workflow indicator before dispatc
 List available providers and mark missing providers as `(unavailable - skipping)`. If `OCTOPUS_COMPACT_BANNERS=true`, use this compact single-line format:
 
 ```text
-🐙 develop — Multi-provider implementation mode | codex ✓ | gemini (unavailable - skipping)
+🐙 develop — Multi-provider implementation mode | codex ✓ | agy (unavailable - skipping)
 ```
 
 If no external provider is available, stop and tell the user to run `/octo:setup`; do not fall back to Claude-native implementation.
@@ -104,10 +105,9 @@ AskUserQuestion({
 
 ### Model and Effort Policy
 
-- For develop/tangle work on Opus 4.8, use `xhigh` for complex implementation and `high` for ordinary work.
-- Fast Opus 4.8 mode is 2x standard cost ($10/$50 per MTok vs $5/$25 standard) and trades cost for lower latency. Legacy Opus 4.6 fast remains 6x standard cost.
-- Default to Opus 4.8 standard mode for multi-phase workflows; use fast mode only for interactive single-shot requests when explicitly selected.
-- Respect user overrides: `OCTOPUS_OPUS_MODE`, `OCTOPUS_OPUS_MODEL`, and `OCTOPUS_EFFORT_OVERRIDE`.
+- For develop/tangle work on Opus 5, use `high` by default. Raise effort only for a bounded capability-sensitive step; `OCTOPUS_OPUS5_AUTO_XHIGH=1` restores legacy automatic xhigh routing.
+- `OCTOPUS_OPUS_MODE=fast` is a recognized legacy preference. It logs a compatibility warning and uses standard subprocess dispatch because Claude's spawned CLI has no supported `--fast` flag.
+- Respect `OCTOPUS_OPUS_MODEL` and `OCTOPUS_EFFORT_OVERRIDE`. Treat `OCTOPUS_OPUS_MODE` only as the legacy compatibility preference described above.
 - Record durable project memory for autonomy mode, provider availability, frequently used commands, prior project context, and model preferences.
 - If Claude Code dynamic workflows are available and the task is a huge single-Claude migration, prefer the native workflow path. Use Octopus develop when multi-provider implementation or validation is the value.
 
@@ -129,7 +129,7 @@ The **Develop** phase of the Double Diamond methodology (divergent thinking for 
 
 ## What You Get
 
-- Multi-AI implementation (Claude + Gemini + Codex)
+- Multi-AI implementation (Claude + Antigravity + Codex)
 - Multiple implementation approaches
 - Quality gate validation (75% consensus threshold)
 - Security checks (OWASP compliance)

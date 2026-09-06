@@ -7,7 +7,7 @@
 #   1. Reads tool output from stdin (hook protocol)
 #   2. If output > threshold, detects content type (JSON, logs, HTML, text)
 #   3. Generates a compressed summary
-#   4. Outputs {"decision":"continue","additionalContext":"<summary>"}
+#   4. Outputs {"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"<summary>"}
 #   5. Logs before/after sizes to analytics file
 #
 # Note: PostToolUse hooks CANNOT replace tool output — they add context.
@@ -119,7 +119,7 @@ fi
 # Log/verbose output detection (many lines with repeated patterns)
 if [[ "$content_type" == "text" && $line_count -gt 40 ]]; then
     # Check for timestamp patterns (common in logs)
-    ts_lines=$(echo "$OUTPUT" | head -20 | grep -cE '^\[?[0-9]{4}[-/][0-9]{2}|^[0-9]{2}:[0-9]{2}|^\w{3}\s+\d{1,2}' || echo 0)
+    ts_lines=$(echo "$OUTPUT" | head -20 | grep -cE '^\[?[0-9]{4}[-/][0-9]{2}|^[0-9]{2}:[0-9]{2}|^\w{3}\s+\d{1,2}') || ts_lines=0
     if [[ $ts_lines -gt 5 ]]; then
         content_type="logs"
     else
@@ -152,7 +152,7 @@ echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"session\":\"${SESSION}\",\"ty
 summary="[🐙] compressed ${content_type}: ~${before_tokens}→~${after_tokens} tokens (${ratio}% saved)"
 
 cat <<EOFJSON
-{"decision":"continue","additionalContext":"${summary}"}
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"${summary}"}}
 EOFJSON
 
 exit 0

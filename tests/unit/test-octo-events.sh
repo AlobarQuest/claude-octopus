@@ -53,6 +53,31 @@ PY
     test_pass
 }
 
+test_stale_lock_recovery() {
+    test_case "event locks recover a dead stale owner without stealing a live lock"
+    local target="$FIXTURE/stale-event" lockdir="$FIXTURE/stale-event.lock"
+    mkdir -p "$lockdir"
+    printf '99999999\n' > "$lockdir/pid"
+    printf '%s\n' "$(( $(date +%s) - 60 ))" > "$lockdir/ts"
+    if ! OCTO_EVENT_LOCK_STALE_SECS=1 _octo_event_lock "$target"; then
+        test_fail "dead stale lock was not reclaimed"
+        return
+    fi
+    _octo_event_unlock "$target"
+
+    mkdir -p "$lockdir"
+    printf '%s\n' "$$" > "$lockdir/pid"
+    printf '%s\n' "$(( $(date +%s) - 60 ))" > "$lockdir/ts"
+    if OCTO_EVENT_LOCK_STALE_SECS=1 _octo_event_lock "$target"; then
+        _octo_event_unlock "$target"
+        test_fail "live stale-looking lock was stolen"
+        return
+    fi
+    rm -f "$lockdir/pid" "$lockdir/ts"
+    rmdir "$lockdir"
+    test_pass
+}
+
 test_auto_log_path() {
     test_case "OCTO_EVENT_LOG=auto writes under WORKSPACE_DIR/.octo"
     export WORKSPACE_DIR="$FIXTURE/workspace"
@@ -188,6 +213,67 @@ test_circuit_breaker_events() {
     fi
 }
 
+test_json_escaping_round_trips() {
+    test_case "attribute values survive JSON escaping (fast path + control chars)"
+    local log="$TEST_TMP_DIR/escaping.jsonl"
+    rm -f "$log" "$log.lock"
+    OCTO_EVENT_LOG="$log" octo_event_emit "escape.test" \
+        plain="hello world" \
+        quote='he said "hi"' \
+        backslash='a\b' \
+        tabbed="$(printf 'a\tb')" \
+        unicode="café"
+
+    if ! python3 -c "
+import json,sys
+line = open('$log').readline()
+rec = json.loads(line)
+a = rec['attributes']
+assert a['plain'] == 'hello world', a['plain']
+assert a['quote'] == 'he said \"hi\"', a['quote']
+assert a['backslash'] == 'a\\\\b', a['backslash']
+assert a['tabbed'] == 'a\tb', repr(a['tabbed'])
+assert a['unicode'] == 'café', a['unicode']
+" 2>"$TEST_TMP_DIR/escaping.err"; then
+        test_fail "escaped attributes did not round-trip: $(cat "$TEST_TMP_DIR/escaping.err")"
+        return
+    fi
+    test_pass
+}
+
+test_review_finding_events() {
+    test_case "review.finding emits once per structured finding and never twice (oco-aek)"
+    # shellcheck source=/dev/null
+    source "$PROJECT_ROOT/scripts/lib/review.sh" 2>/dev/null || true
+    if ! declare -f review_emit_finding_events >/dev/null 2>&1; then
+        test_fail "review_emit_finding_events is not defined"
+        return
+    fi
+    local log="$TEST_TMP_DIR/review-findings-events.jsonl"
+    local ff="$TEST_TMP_DIR/rf.json"
+    rm -f "$log" "$log.lock" "$ff" "$ff.events-emitted"
+    cat > "$ff" <<'JSON'
+{"findings":[{"severity":"normal","file":"a.sh","line":12,"title":"Missing null check","category":"logic","confidence":0.9,"detail":"secret detail"},
+             {"severity":"nit","file":"b.sh","line":3,"title":"Style","category":"style","confidence":0.4,"detail":"x"}]}
+JSON
+    OCTO_EVENT_LOG="$log" review_emit_finding_events "$ff"
+    # render_terminal_report also runs on the inline-comment fallback path, so a
+    # second pass over the same findings file must not double-count.
+    OCTO_EVENT_LOG="$log" review_emit_finding_events "$ff"
+
+    local n
+    n=$(grep -c '"event":"review.finding"' "$log" 2>/dev/null | tr -d ' ')
+    if [[ "$n" != "2" ]]; then
+        test_fail "expected 2 review.finding events, got ${n:-0}"
+        return
+    fi
+    if grep -q 'secret detail' "$log" 2>/dev/null; then
+        test_fail "finding detail text leaked into the event stream"
+        return
+    fi
+    test_pass
+}
+
 test_provider_selected_event_wired() {
     test_case "spawn.sh emits provider.selected after the circuit check (oco-aek)"
     grep -q 'octo_event_emit "provider.selected"' "$PROJECT_ROOT/scripts/lib/spawn.sh" \
@@ -196,6 +282,7 @@ test_provider_selected_event_wired() {
 
 test_no_log_when_disabled
 test_emit_jsonl_event
+test_stale_lock_recovery
 test_auto_log_path
 test_trim_event_log
 test_invalid_event_rejected
@@ -204,6 +291,8 @@ test_concurrent_emit_no_clobber
 test_dispatch_lifecycle_events
 test_orchestrate_enables_telemetry_by_default
 
+test_json_escaping_round_trips
+test_review_finding_events
 test_circuit_breaker_events
 test_provider_selected_event_wired
 

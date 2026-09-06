@@ -1,5 +1,6 @@
 ---
-description: "\"Discovery phase - Multi-AI research and exploration\""
+description: "Discovery phase - Multi-AI research and exploration"
+disable-model-invocation: true
 ---
 
 # Discover - Discovery Phase 🔍
@@ -144,7 +145,7 @@ The **Discover** phase of the Double Diamond methodology:
 
 ## What You Get
 
-- Multi-AI research (Claude + Gemini + Codex)
+- Multi-AI research (Claude + Antigravity + Codex)
 - Comprehensive analysis of options
 - Trade-off evaluation
 - Best practice identification

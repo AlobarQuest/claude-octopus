@@ -49,8 +49,10 @@ else
     pass "Old CACHE_ collision-prone pattern removed"
 fi
 
-# Verify per-field sanitization variables exist
-if grep -q 'safe_p="\${provider//\[^a-zA-Z0-9\]/_}"' "$_ORCH_ALL_TMP"; then
+# Verify per-field sanitization variables exist. The provider field is sanitized
+# from its canonical form (alias-resolved), so accept both `provider` and
+# `canonical_provider` — the resolver keys the cache on the canonical name.
+if grep -qE 'safe_p="\$\{(canonical_)?provider//\[\^a-zA-Z0-9\]/_\}"' "$_ORCH_ALL_TMP"; then
     pass "Per-field sanitization for cache keys present"
 else
     fail "Missing per-field sanitization for cache keys"
@@ -71,7 +73,7 @@ else
 fi
 
 # Verify set_provider_model clears cache
-if grep -A 5 'Set default model' "$_ORCH_ALL_TMP" | grep -q 'rm -f.*persistent_cache\|rm -f.*octo-model-cache'; then
+if grep -A 120 '^set_provider_model()' "$_ORCH_ALL_TMP" | grep -q 'rm -f.*persistent_cache\|rm -f.*octo-model-cache'; then
     pass "set_provider_model() clears model cache after change"
 else
     fail "set_provider_model() does not clear cache after change"
@@ -85,7 +87,7 @@ else
 fi
 
 # Verify migrate_provider_config clears cache
-if grep -A 5 'Migration to v3.0 complete' "$_ORCH_ALL_TMP" | grep -q 'rm -f.*octo-model-cache'; then
+if grep -A 15 'Migration to v3.0 complete' "$_ORCH_ALL_TMP" | grep -q 'rm -f.*_octo_cache_to_clear\|rm -f.*octo-model-cache'; then
     pass "migrate_provider_config() clears cache after migration"
 else
     fail "migrate_provider_config() does not clear cache after migration"
@@ -106,7 +108,7 @@ else
 fi
 
 # Verify provider dispatch validates agent types (acts as implicit whitelist)
-if grep -q 'codex' "$_ORCH_ALL_TMP" && grep -q 'gemini' "$_ORCH_ALL_TMP" && grep -q 'perplexity' "$_ORCH_ALL_TMP"; then
+if grep -q 'codex' "$_ORCH_ALL_TMP" && grep -q 'agy' "$_ORCH_ALL_TMP" && grep -q 'perplexity' "$_ORCH_ALL_TMP"; then
     pass "Provider whitelist validation present (via dispatch cases)"
 else
     fail "Provider whitelist validation missing"
@@ -199,7 +201,7 @@ else
 fi
 
 # Verify atomic_json_update is used in reset_provider_model
-reset_calls=$(grep -A 20 'reset_provider_model()' "$_ORCH_ALL_TMP" | grep -c 'atomic_json_update' 2>/dev/null || echo "0")
+reset_calls=$(grep -A 45 'reset_provider_model()' "$_ORCH_ALL_TMP" | grep -c 'atomic_json_update' 2>/dev/null || echo "0")
 if [[ "$reset_calls" -ge 2 ]]; then
     pass "reset_provider_model() uses atomic_json_update ($reset_calls calls)"
 else
@@ -307,9 +309,12 @@ else
     fail "get_model_catalog() function missing"
 fi
 
-# Verify catalog covers key models
-for model in gpt-5.4 gpt-5.4 gemini-3.1-pro-preview claude-sonnet-4.6 sonar-pro o3; do
-    if grep -A 60 'get_model_catalog()' "$_ORCH_ALL_TMP" | grep -q "$model"; then
+# Verify catalog covers key models through the canonical model-ID enumerator.
+# Fixed source windows become stale as valid entries are added.
+# shellcheck source=../scripts/lib/models.sh
+source "$SCRIPT_DIR/../scripts/lib/models.sh"
+for model in gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna agy/default claude-sonnet-5 claude-opus-5 sonar-pro o3; do
+    if grep -Fqx "$model" < <(octo_model_ids); then
         pass "Catalog includes $model"
     else
         fail "Catalog missing $model"
@@ -358,8 +363,8 @@ else
 fi
 
 # Verify health checks cover all 5 providers
-for provider in codex gemini claude perplexity openrouter; do
-    if grep -A 120 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -q "$provider)"; then
+for provider in codex agy claude perplexity openrouter; do
+    if grep -A 120 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -Eq "(^|[|[:space:]])${provider}([|)]|$)"; then
         pass "Health check covers $provider"
     else
         fail "Health check missing $provider"
@@ -373,11 +378,19 @@ else
     fail "check_all_providers() function missing"
 fi
 
-# Verify health check is wired into run_agent_sync
-if grep -A 160 'run_agent_sync()' "$_ORCH_ALL_TMP" | grep -q 'check_provider_health'; then
-    pass "run_agent_sync() calls check_provider_health() before dispatch"
+# Verify health check is wired into run_agent_sync through Provider Registry 2.0.
+# The resolved handler is normally check_provider_health, but keeping dispatch
+# indirect prevents this legacy contract from fighting the registry metadata.
+run_agent_sync_body=$(sed -n '/^run_agent_sync()/,/^}/p' "$_ORCH_ALL_TMP")
+health_handler_line=$(awk 'index($0, "\"$_health_handler\" \"$_provider_for_health\"") { print NR; exit }' <<< "$run_agent_sync_body")
+dispatch_line=$(awk 'index($0, "get_agent_command \"$agent_type\"") { print NR; exit }' <<< "$run_agent_sync_body")
+if grep -q 'octo_provider_health_handler' <<< "$run_agent_sync_body" &&
+   [[ "$health_handler_line" =~ ^[0-9]+$ ]] &&
+   [[ "$dispatch_line" =~ ^[0-9]+$ ]] &&
+   (( health_handler_line < dispatch_line )); then
+    pass "run_agent_sync() invokes the registry health handler before dispatch"
 else
-    fail "run_agent_sync() not wired to health check"
+    fail "run_agent_sync() does not invoke the registry health handler before dispatch"
 fi
 
 echo ""
@@ -413,8 +426,26 @@ else
     fail "find_capable_fallback() missing reasoning check"
 fi
 
+if grep -A 50 'find_capable_fallback()' "$_ORCH_ALL_TMP" | grep -q 'c_ctx < req_ctx'; then
+    pass "find_capable_fallback() preserves context capacity"
+else
+    fail "find_capable_fallback() can downgrade required context capacity"
+fi
+
+fallback_model="$(bash -c '
+    log(){ :; }
+    source "$1/models.sh"
+    source "$1/dispatch.sh"
+    find_capable_fallback claude-opus-5 claude
+' _ "${SCRIPT_DIR}/../scripts/lib")"
+if [[ "$fallback_model" == "claude-sonnet-5" ]]; then
+    pass "1M Claude fallback skips 200K Haiku and selects a 1M candidate"
+else
+    fail "1M Claude fallback selected '$fallback_model' instead of claude-sonnet-5"
+fi
+
 # Verify validate_model_allowed uses find_capable_fallback
-if grep -A 35 'validate_model_allowed()' "$_ORCH_ALL_TMP" | grep -q 'find_capable_fallback'; then
+if grep -A 60 'validate_model_allowed()' "$_ORCH_ALL_TMP" | grep -q 'find_capable_fallback'; then
     pass "validate_model_allowed() uses capability-aware fallback"
 else
     fail "validate_model_allowed() not wired to capability-aware fallback"
@@ -448,6 +479,13 @@ if grep -q 'models) cmd_models' "$HELPER"; then
     pass "models subcommand wired in main dispatch"
 else
     fail "models subcommand not wired in dispatch"
+fi
+
+model_catalog_output="$(env "HOME=${TMPDIR:-/tmp}/octopus-model-config-v849-$$" bash "$HELPER" models 2>/dev/null)"
+if grep -q 'claude-fable-5.*1000K.*yes.*yes.*yes.*claude.*premium.*active' <<< "$model_catalog_output"; then
+    pass "interactive model catalog includes active claude-fable-5"
+else
+    fail "interactive model catalog omits claude-fable-5"
 fi
 
 echo ""

@@ -36,12 +36,12 @@ check_provider() {
                 return 1
             fi
             ;;
-        gemini)
-            if command -v gemini &>/dev/null; then
-                log "INFO" "Gemini CLI available"
+        agy)
+            if command -v agy &>/dev/null; then
+                log "INFO" "Antigravity CLI available"
                 return 0
             else
-                log "WARN" "Gemini CLI not found"
+                log "WARN" "Antigravity CLI not found"
                 return 1
             fi
             ;;
@@ -60,12 +60,12 @@ parse_workflow_command() {
 
     # Detect workflow type
     if [[ "$command" =~ (probe|discover) ]]; then
-        log "INFO" "Discover workflow detected - will use Codex + Gemini"
+        log "INFO" "Discover workflow detected - will use Codex + Antigravity"
         check_provider "codex" || echo "⚠️  Codex CLI unavailable - workflow will run in degraded mode"
-        check_provider "gemini" || echo "⚠️  Gemini CLI unavailable - workflow will run in degraded mode"
+        check_provider "agy" || echo "⚠️  Antigravity CLI unavailable - workflow will run in degraded mode"
     elif [[ "$command" =~ (grasp|define) ]]; then
-        log "INFO" "Define workflow detected - will use Gemini + Claude"
-        check_provider "gemini" || echo "⚠️  Gemini CLI unavailable - workflow will run in degraded mode"
+        log "INFO" "Define workflow detected - will use Antigravity + Claude"
+        check_provider "agy" || echo "⚠️  Antigravity CLI unavailable - workflow will run in degraded mode"
     elif [[ "$command" =~ (tangle|develop) ]]; then
         log "INFO" "Develop workflow detected - will use Codex"
         check_provider "codex" || echo "⚠️  Codex CLI unavailable - workflow will run in degraded mode"
@@ -74,7 +74,7 @@ parse_workflow_command() {
     elif [[ "$command" =~ embrace ]]; then
         log "INFO" "Full embrace workflow detected - will use all providers"
         check_provider "codex" || echo "⚠️  Codex CLI unavailable - some phases will run in degraded mode"
-        check_provider "gemini" || echo "⚠️  Gemini CLI unavailable - some phases will run in degraded mode"
+        check_provider "agy" || echo "⚠️  Antigravity CLI unavailable - some phases will run in degraded mode"
     fi
 }
 
@@ -103,12 +103,10 @@ check_smoke_test_status() {
 
 # Main validation logic
 main() {
-    log "INFO" "Provider routing validation hook triggered"
-
     # Read hook input from stdin (CC hook protocol: JSON with tool_input.command)
     local stdin_data=""
     if [[ ! -t 0 ]]; then
-        stdin_data=$(cat 2>/dev/null || true)
+        IFS= read -r stdin_data || true
     fi
 
     # Extract the bash command from hook JSON input
@@ -127,10 +125,11 @@ print(d.get('tool_input', {}).get('command', ''))" 2>/dev/null) || true
     # Fallback to positional arg (for manual testing)
     [[ -z "$bash_command" ]] && bash_command="${1:-}"
 
-    if [[ -z "$bash_command" ]]; then
-        log "DEBUG" "No command to validate, proceeding"
-        exit 0
-    fi
+    # Defense in depth for hosts that do not support hook-level `if`: unrelated
+    # Bash commands are silent and never probe providers.
+    [[ "$bash_command" == *"orchestrate.sh"* ]] || exit 0
+
+    log "INFO" "Provider routing validation hook triggered"
 
     # Check smoke test status (non-blocking warning)
     check_smoke_test_status

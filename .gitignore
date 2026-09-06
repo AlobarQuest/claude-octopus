@@ -29,7 +29,6 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-!openclaw/dist/
 !mcp-server/dist/
 downloads/
 eggs/
@@ -72,6 +71,12 @@ logs/
 results/
 .parallel-agents/
 
+# Auto-memory preferences written by hooks/session-end.sh / read by
+# hooks/session-start-memory.sh when CLAUDE_PROJECT_DIR resolves to this repo
+# (e.g. developing on the plugin itself). Per-machine session state, not a
+# shared artifact.
+/memory/
+
 # Temporary files
 tmp/
 temp/
@@ -99,6 +104,12 @@ PHASE*_COMPLETE.md
 *_NOTES.md
 scratch_*.md
 temp_*.md
+
+# Harness-local session handoff written by scripts/write-handoff.sh into CWD and
+# read back by skill-resume. It is per-machine, per-run state, never a shared
+# artifact, and a committed copy would point every checkout at one machine's
+# half-finished workflow.
+.octo-continue.md
 WIP_*.md
 
 # Test artifacts (from test infrastructure)

@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Sourced by orchestrator scripts; keep nounset off so this file does not leak
-# stricter unset-variable handling into callers after returning.
-set -eo pipefail
+_provider_allowlist_registry_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_provider_allowlist_registry_dir" == "${BASH_SOURCE[0]}" ]] && _provider_allowlist_registry_dir="."
+_provider_allowlist_registry_dir="$(cd "$_provider_allowlist_registry_dir" && pwd)"
+source "${_provider_allowlist_registry_dir}/provider-registry.sh" || { echo "provider-allowlist: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
+# Sourced by orchestrator scripts. Deliberately sets NO shell options: `set -e`
+# and `set -o pipefail` in a sourced file leak into the caller's shell and stay
+# there after this file returns. Callers such as lib/providers.sh document
+# themselves as source-safe and run probe code where a nonzero exit is normal,
+# so inheriting errexit from here would abort them on the first failed probe.
 # provider-allowlist.sh - Shared provider allowlist helpers.
 #
 # OCTO_ALLOWED_PROVIDERS is a space/comma separated list of provider names.
@@ -84,9 +90,12 @@ octo_provider_allowlist_value() {
 }
 
 octo_provider_allowed() {
-    local provider
-    provider="$(octo_normalize_provider_name "${1:-}")"
+    local provider requested_canonical raw_provider
+    raw_provider="${1:-}"
+    raw_provider="${raw_provider%%:*}"
+    provider="$(octo_normalize_provider_name "$raw_provider")"
     [[ -n "$provider" ]] || return 1
+    requested_canonical="$(octo_provider_canonical "$provider" 2>/dev/null || printf '%s' "$provider")"
 
     local allowed
     allowed="$(octo_provider_allowlist_value)"
@@ -94,40 +103,24 @@ octo_provider_allowed() {
         return 0
     fi
 
-    local token normalized
+    local token normalized token_canonical
     # shellcheck disable=SC2086 # Intentional word splitting: space separated allowlist.
     for token in ${allowed//,/ }; do
         normalized="$(octo_normalize_provider_name "$token")"
         [[ -n "$normalized" ]] || continue
 
-        [[ "$provider" == "$normalized" ]] && return 0
+        token_canonical="$(octo_provider_canonical "$normalized" 2>/dev/null || printf '%s' "$normalized")"
+        [[ "$requested_canonical" == "$token_canonical" ]] && return 0
 
+        # Ambiguous organization/group aliases remain policy rather than
+        # provider identity. `google` authorizes the Antigravity Google seat;
+        # `xai` retains the historical Cursor/Grok grouping.
         case "$normalized" in
-            claude|anthropic|sonnet)
-                case "$provider" in
-                    claude|claude-sonnet|claude-opus|sonnet) return 0 ;;
-                esac
+            google)
+                [[ "$requested_canonical" == "agy" ]] && return 0
                 ;;
-            codex|openai)
-                case "$provider" in
-                    codex|codex-*) return 0 ;;
-                esac
-                ;;
-            gemini|google)
-                case "$provider" in
-                    gemini|gemini-*) return 0 ;;
-                esac
-                ;;
-            agy|antigravity)
-                case "$provider" in
-                    agy|agy-*|antigravity) return 0 ;;
-                esac
-                ;;
-            cursor|cursor-agent|xai)
-                [[ "$provider" == "cursor-agent" ]] && return 0
-                ;;
-            local)
-                [[ "$provider" == "ollama" ]] && return 0
+            xai)
+                case "$requested_canonical" in cursor-agent|grok) return 0 ;; esac
                 ;;
         esac
     done

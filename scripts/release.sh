@@ -5,7 +5,7 @@
 #   ./scripts/release.sh <version> "<summary>"
 #
 # Example:
-#   ./scripts/release.sh 8.22.6 "Fix OpenClaw register crash"
+#   ./scripts/release.sh 11.0.1 "Retire an unused compatibility adapter"
 #
 # What it does:
 #   1. Updates core version files plus public adapter manifests
@@ -31,7 +31,7 @@ source "$SCRIPT_DIR/lib/release-ci.sh"
 
 if [[ $# -lt 2 ]]; then
     echo "Usage: $0 <version> \"<summary>\""
-    echo "Example: $0 8.22.6 \"Fix OpenClaw register crash\""
+    echo "Example: $0 11.0.1 \"Retire an unused compatibility adapter\""
     exit 1
 fi
 
@@ -39,8 +39,27 @@ VERSION="$1"
 SUMMARY="$2"
 DATE=$(date +%Y-%m-%d)
 BRANCH="release/v${VERSION}"
+REMOTE="${OCTO_RELEASE_REMOTE:-origin}"
+CI_TIMEOUT_SECONDS="${OCTO_RELEASE_CI_TIMEOUT_SECONDS:-900}"
+
+if [[ ! "$CI_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: OCTO_RELEASE_CI_TIMEOUT_SECONDS must be a positive integer."
+    exit 1
+fi
 
 cd "$PLUGIN_ROOT"
+
+# gh infers the target repo from remotes independently of $REMOTE, so a dev
+# clone pointing $REMOTE at the canonical repo (with origin left on a fork)
+# would otherwise create the PR/release against the wrong repo. Pin it.
+REPO_SLUG="$(git remote get-url "$REMOTE" | sed -E 's#^(git@|https://)([^:/]+)[:/]##; s#\.git$##')"
+REPO_OWNER="${REPO_SLUG%%/*}"
+REPO_NAME="${REPO_SLUG#*/}"
+
+if [[ -z "$REPO_OWNER" || -z "$REPO_NAME" || "$REPO_OWNER" == "$REPO_NAME" ]]; then
+    echo "Error: could not parse owner/repository from remote ${REMOTE}: ${REPO_SLUG}"
+    exit 1
+fi
 
 # --- Preflight ---
 
@@ -49,12 +68,20 @@ if ! git diff --quiet 2>/dev/null; then
     exit 1
 fi
 
-if [[ "$(git branch --show-current)" != "main" ]]; then
-    echo "Error: must be on main branch."
+# RELEASING.md §0 allows two flows: run from main and let this script cut the
+# release branch, or (worktree flow) cut ${BRANCH} from origin/main yourself
+# and run this script already checked out on it.
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "$BRANCH" ]]; then
+    echo "Error: must be on main, or on ${BRANCH} cut from main (see RELEASING.md §0)."
     exit 1
 fi
+ON_RELEASE_BRANCH=false
+[[ "$CURRENT_BRANCH" == "$BRANCH" ]] && ON_RELEASE_BRANCH=true
 
-git pull --quiet origin main
+if [[ "$ON_RELEASE_BRANCH" == "false" ]]; then
+    git pull --quiet "$REMOTE" main
+fi
 
 CURRENT=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
 echo "Releasing: ${CURRENT} → ${VERSION}"
@@ -74,17 +101,19 @@ json.dump(p, open('package.json', 'w'), indent=2)
 print('   package.json')
 "
 
-# plugin.json — strip old version prefix, prepend new one from version field
-python3 -c "
-import json, re
+# plugin.json — use the release summary as the new marketplace source text
+python3 - "$VERSION" "$SUMMARY" <<'PY'
+import json
+import sys
+
+version, summary = sys.argv[1:]
+summary = summary.strip().rstrip(".")
 p = json.load(open('.claude-plugin/plugin.json'))
-p['version'] = '${VERSION}'
-# Strip any existing version prefix, then prepend the new one
-desc = re.sub(r'^v\d+\.\d+\.\d+\s*[\u2014\-]\s*', '', p['description'])
-p['description'] = 'v${VERSION} \u2014 ' + desc
+p['version'] = version
+p['description'] = f'v{version} \u2014 {summary}. Run /octo:setup.'
 json.dump(p, open('.claude-plugin/plugin.json', 'w'), indent=2)
 print('   .claude-plugin/plugin.json')
-"
+PY
 
 # marketplace.json — strip old version prefix, prepend new one
 python3 -c "
@@ -121,6 +150,20 @@ if persona_count == 0:
     print('ERROR: agents/personas contains no persona markdown files', file=sys.stderr)
     raise SystemExit(1)
 
+droid_dir = pathlib.Path('agents/droids')
+if not droid_dir.is_dir():
+    print('ERROR: agents/droids is missing; cannot calculate browse manifest counts', file=sys.stderr)
+    raise SystemExit(1)
+droid_count = len(list(droid_dir.glob('*.md')))
+
+with open('.claude-plugin/routines.json') as f:
+    routines = json.load(f)
+routine_count = len(routines.get('routines', []))
+
+with open('hooks/hooks.json') as f:
+    hooks = json.load(f)
+hook_event_count = len(hooks.get('hooks', hooks))
+
 count_phrase = f'{persona_count} personas, {command_count} commands, {skill_count} skills'
 expert_count_phrase = f'{persona_count} expert personas, {command_count} commands, {skill_count} skills'
 specialized_count_phrase = f'{command_count} commands, {skill_count} skills, {persona_count} specialized personas'
@@ -133,8 +176,36 @@ for path in ('README.md', '.claude-plugin/README.md'):
     text = re.sub(r'\*\*\d+ skills\*\*', f'**{skill_count} skills**', text)
     text = re.sub(r'\b\d+ commands, \d+ skills, \d+ specialized personas\b', specialized_count_phrase, text)
     text = re.sub(r'\ball \d+ commands\b', f'all {command_count} commands', text)
+    if path == 'README.md':
+        text = re.sub(r'Version-\d+\.\d+\.\d+-blue', f'Version-{version}-blue', text)
+        text = re.sub(r'Version \d+\.\d+\.\d+', f'Version {version}', text)
     readme_path.write_text(text)
 print('   README count surfaces')
+
+routines['\$comment'] = re.sub(r'\(v\d+\.\d+\.\d+\)', f'(v{version})', routines.get('\$comment', ''))
+with open('.claude-plugin/routines.json', 'w') as f:
+    json.dump(routines, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/routines.json')
+
+plugin_manifest_path = pathlib.Path('.claude-plugin/plugin-manifest.json')
+with plugin_manifest_path.open() as f:
+    plugin_manifest = json.load(f)
+plugin_manifest['version'] = version
+components = plugin_manifest.setdefault('components', {})
+components.setdefault('commands', {})['count'] = command_count
+agents = components.setdefault('agents', {})
+agents['count'] = persona_count + droid_count
+agent_breakdown = agents.setdefault('breakdown', {})
+agent_breakdown['personas'] = persona_count
+agent_breakdown['droids'] = droid_count
+components.setdefault('skills', {})['count'] = skill_count
+components.setdefault('hooks', {})['events'] = hook_event_count
+components.setdefault('routines', {})['count'] = routine_count
+with plugin_manifest_path.open('w') as f:
+    json.dump(plugin_manifest, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/plugin-manifest.json')
 
 path = pathlib.Path('.claude-plugin/marketplace.json')
 with open(path) as f:
@@ -178,20 +249,22 @@ with open(path, 'w') as f:
 print(f'   {path}')
 "
 
-# README badge
-sed -i '' "s/Version-[0-9]*\.[0-9]*\.[0-9]*-blue/Version-${VERSION}-blue/g" README.md
-sed -i '' "s/Version [0-9]*\.[0-9]*\.[0-9]*/Version ${VERSION}/g" README.md
-echo "   README.md"
-
 octo_release_update_changelog CHANGELOG.md "$VERSION" "$DATE" "$SUMMARY"
+
+# Regenerate README and marketplace artifacts from their source
+# files. The changelog entry must exist first so README sync can derive the
+# release date for PRODUCT.md.
+make sync
 
 echo ""
 
 # --- 2. Commit ---
 
 echo "2/8 Committing..."
-git checkout -b "$BRANCH" --quiet
-git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .factory-plugin/plugin.json .factory-plugin/marketplace.json README.md CHANGELOG.md
+if [[ "$ON_RELEASE_BRANCH" == "false" ]]; then
+    git checkout -b "$BRANCH" --quiet
+fi
+git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .claude-plugin/plugin-manifest.json .claude-plugin/routines.json .claude-plugin/README.md .codex-plugin/plugin.json .cursor-plugin/plugin.json .factory-plugin/plugin.json .factory-plugin/marketplace.json README.md PRODUCT.md docs/AGENTS.md docs/COMMAND-REFERENCE.md docs/README.md CHANGELOG.md
 git commit --quiet -m "chore: release v${VERSION} — ${SUMMARY}
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
@@ -202,7 +275,7 @@ echo ""
 
 echo "3/8 Pushing..."
 # --no-verify: skip pre-push hook (CI validates on PR; pre-push re-runs tests already run at commit)
-PUSH_OUTPUT=$(git push --quiet --no-verify -u origin "$BRANCH" 2>&1) || {
+PUSH_OUTPUT=$(git push --quiet --no-verify -u "$REMOTE" "$BRANCH" 2>&1) || {
     printf '%s\n' "$PUSH_OUTPUT" | grep -v "^remote:" || true
     echo "   ERROR: Push failed. Aborting release."
     exit 1
@@ -214,15 +287,18 @@ echo ""
 # --- 4. Create PR ---
 
 echo "4/8 Creating PR..."
-PR_URL=$(gh pr create \
-    --title "chore: release v${VERSION}" \
-    --body "## Release v${VERSION}
+PR_BODY="## Release v${VERSION}
 
 ${SUMMARY}
 
 ---
-🤖 Generated with release.sh" \
-    2>&1)
+🤖 Generated with release.sh"
+if ! PR_URL=$("$SCRIPT_DIR/safe-gh-comment.sh" \
+        --repo "$REPO_SLUG" pr-create "chore: release v${VERSION}" \
+        "$BRANCH" - <<< "$PR_BODY"); then
+    echo "   ERROR: PR creation was blocked or failed."
+    exit 1
+fi
 PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 echo "   PR #${PR_NUM}: ${PR_URL}"
 echo ""
@@ -230,10 +306,11 @@ echo ""
 # --- 5. Wait for CI ---
 
 echo "5/8 Waiting for CI..."
-# Poll until required checks finish (max 5 minutes)
-DEADLINE=$((SECONDS + 300))
+# macOS unit jobs routinely take around 10 minutes, so leave enough headroom
+# while keeping the wait configurable for slower or faster repositories.
+DEADLINE=$((SECONDS + CI_TIMEOUT_SECONDS))
 while [[ $SECONDS -lt $DEADLINE ]]; do
-    CHECKS=$(gh pr checks "$PR_NUM" --json name,state 2>&1 || true)
+    CHECKS=$(gh pr checks "$PR_NUM" -R "$REPO_SLUG" --json name,state 2>&1 || true)
     SMOKE=$(octo_pr_check_state "$CHECKS" "Smoke Tests")
     UNIT=$(octo_pr_check_state "$CHECKS" "Unit Tests")
     INTEG=$(octo_pr_check_state "$CHECKS" "Integration Tests")
@@ -245,7 +322,7 @@ while [[ $SECONDS -lt $DEADLINE ]]; do
 
     if [[ "$SMOKE" == "fail" || "$UNIT" == "fail" || "$INTEG" == "fail" ]]; then
         echo "   CI FAILED — Smoke: ${SMOKE} | Unit: ${UNIT} | Integration: ${INTEG}"
-        echo "   Fix failures, then run: gh pr merge ${PR_NUM} --merge"
+        echo "   Fix failures, then run: gh pr merge ${PR_NUM} --squash -R ${REPO_SLUG}"
         exit 1
     fi
 
@@ -253,22 +330,125 @@ while [[ $SECONDS -lt $DEADLINE ]]; do
 done
 
 if [[ $SECONDS -ge $DEADLINE ]]; then
-    echo "   CI timed out after 5 minutes."
-    echo "   Check manually: gh pr checks ${PR_NUM}"
-    echo "   Then merge: gh pr merge ${PR_NUM} --merge"
+    echo "   CI timed out after ${CI_TIMEOUT_SECONDS} seconds."
+    echo "   Check manually: gh pr checks ${PR_NUM} -R ${REPO_SLUG}"
+    echo "   Then merge: gh pr merge ${PR_NUM} --squash -R ${REPO_SLUG}"
     exit 1
 fi
+echo ""
+
+# Required checks can pass while a review still has actionable findings.
+# Fail closed instead of relying on an owner/admin merge bypass.
+echo "   Checking review gate..."
+if ! REVIEW_DECISION=$(gh pr view "$PR_NUM" -R "$REPO_SLUG" --json reviewDecision --jq '.reviewDecision // ""'); then
+    echo "   ERROR: Could not read the PR review decision."
+    exit 1
+fi
+if ! UNRESOLVED_THREADS=$(octo_release_unresolved_review_threads \
+    "$REPO_OWNER" "$REPO_NAME" "$PR_NUM"); then
+    echo "   ERROR: Could not read PR review threads."
+    exit 1
+fi
+if ! octo_release_review_gate "$REVIEW_DECISION" "$UNRESOLVED_THREADS"; then
+    echo "   REVIEW BLOCKED — decision=${REVIEW_DECISION:-none} | unresolved threads=${UNRESOLVED_THREADS}"
+    echo "   An explicit approval and zero unresolved threads are required."
+    exit 1
+fi
+echo "   Review: ${REVIEW_DECISION} | unresolved threads: 0"
 echo ""
 
 # --- 6. Merge + Release ---
 
 echo "6/8 Merging and creating release..."
-gh pr merge "$PR_NUM" --merge --quiet 2>/dev/null || gh pr merge "$PR_NUM" --merge
-git checkout main --quiet
-git pull --quiet origin main
-git branch -d "$BRANCH" --quiet 2>/dev/null || true
+merge_release_pr() {
+    gh pr merge "$PR_NUM" -R "$REPO_SLUG" --squash "$@"
+}
+
+read_release_pr_state() {
+    gh pr view "$PR_NUM" -R "$REPO_SLUG" --json state --jq '.state'
+}
+
+if ! merge_release_pr --quiet 2>/dev/null; then
+    if ! PR_STATE=$(read_release_pr_state); then
+        echo "   ERROR: Merge failed and the PR state could not be read."
+        exit 1
+    fi
+    if [[ "$PR_STATE" != "MERGED" ]]; then
+        if ! merge_release_pr; then
+            if ! PR_STATE=$(read_release_pr_state); then
+                echo "   ERROR: Merge retry failed and the PR state could not be read."
+                exit 1
+            fi
+            if [[ "$PR_STATE" != "MERGED" ]]; then
+                echo "   ERROR: Release PR is still ${PR_STATE} after the merge retry."
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+if ! MERGE_SHA=$(gh pr view "$PR_NUM" \
+    -R "$REPO_SLUG" \
+    --json state,mergeCommit \
+    --jq 'select(.state == "MERGED") | .mergeCommit.oid // empty'); then
+    echo "   ERROR: Could not read the merged PR commit."
+    exit 1
+fi
+if [[ ! "$MERGE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "   ERROR: Merged PR returned an invalid merge commit: ${MERGE_SHA:-empty}"
+    exit 1
+fi
+
+git fetch --quiet "$REMOTE" main
+if ! git merge-base --is-ancestor "$MERGE_SHA" FETCH_HEAD; then
+    echo "   ERROR: PR merge commit ${MERGE_SHA} is not present on ${REMOTE}/main."
+    exit 1
+fi
+
+if [[ "$ON_RELEASE_BRANCH" == "true" ]]; then
+    # main is normally still checked out in the worktree this release branch
+    # was cut from; don't touch this worktree's checkout or delete the branch
+    # we're standing on. The PR API above is the release SHA source of truth.
+    :
+else
+    git checkout main --quiet
+    git pull --quiet "$REMOTE" main
+    git branch -d "$BRANCH" --quiet 2>/dev/null || true
+fi
+
+# Do not publish a tag while the exact post-squash main commit is unverified.
+echo "   Waiting for main Test Suite on ${MERGE_SHA}..."
+MAIN_RUN_ID=""
+MAIN_RUN_DEADLINE=$((SECONDS + 120))
+while [[ -z "$MAIN_RUN_ID" && $SECONDS -lt $MAIN_RUN_DEADLINE ]]; do
+    MAIN_RUN_ID=$(gh run list \
+        -R "$REPO_SLUG" \
+        --workflow "Test Suite" \
+        --branch main \
+        --event push \
+        --limit 20 \
+        --json databaseId,headSha \
+        --jq ".[] | select(.headSha == \"${MERGE_SHA}\") | .databaseId" \
+        | head -n 1)
+    [[ -n "$MAIN_RUN_ID" ]] || sleep 5
+done
+if [[ -z "$MAIN_RUN_ID" ]]; then
+    echo "   ERROR: Main Test Suite run did not appear for ${MERGE_SHA}."
+    exit 1
+fi
+if ! octo_release_run_with_timeout "$CI_TIMEOUT_SECONDS" \
+    gh run watch "$MAIN_RUN_ID" -R "$REPO_SLUG" --exit-status; then
+    echo "   ERROR: Main Test Suite failed for ${MERGE_SHA}; tag and release were not created."
+    exit 1
+fi
+
+TAG_NAME="v${VERSION}"
+git tag -a "$TAG_NAME" "$MERGE_SHA" -m "${TAG_NAME}: ${SUMMARY}"
+git push --quiet "$REMOTE" "$TAG_NAME"
 
 gh release create "v${VERSION}" \
+    -R "$REPO_SLUG" \
+    --verify-tag \
     --title "v${VERSION} — ${SUMMARY}" \
     --notes "### Changed
 - ${SUMMARY}
@@ -276,6 +456,8 @@ gh release create "v${VERSION}" \
 **Full Changelog**: https://github.com/nyldn/claude-octopus/compare/v${CURRENT}...v${VERSION}" \
     --quiet 2>/dev/null || \
 gh release create "v${VERSION}" \
+    -R "$REPO_SLUG" \
+    --verify-tag \
     --title "v${VERSION} — ${SUMMARY}" \
     --notes "### Changed
 - ${SUMMARY}

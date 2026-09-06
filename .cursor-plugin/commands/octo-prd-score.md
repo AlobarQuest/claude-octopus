@@ -1,5 +1,6 @@
 ---
 description: "Score an existing PRD against the 100-point AI-optimization framework"
+disable-model-invocation: true
 ---
 
 ## STOP - DO NOT INVOKE /skill OR Skill() AGAIN
@@ -95,8 +96,7 @@ AskUserQuestion({
 
 Providers:
 🔴 Codex CLI — Implementation feasibility bias (catches vague technical specs)
-🟡 Gemini CLI — Completeness and industry standards bias (catches missing sections)
-🧭 Antigravity CLI — Alternate model perspective when installed
+🧭 Antigravity CLI — Completeness and industry standards bias (catches missing sections)
 🔵 Claude — AI-optimization and structure bias (catches poor phasing)
 
 **Rigorous workflow:**
@@ -105,7 +105,7 @@ Providers:
 3. Synthesize consensus: highlight where providers agree (high confidence) and where they diverge (areas to investigate)
 4. Present combined score with per-provider variance
 
-**Why this works:** Different models flag different weaknesses. Codex catches implementation gaps, Gemini catches industry-standard omissions, Antigravity adds another external-model challenge when installed, and consensus scoring reduces single-model bias.
+**Why this works:** Different models flag different weaknesses. Codex catches implementation gaps, Antigravity catches industry-standard omissions, and consensus scoring reduces single-model bias.
 
 ### Step 5: Offer Improvements
 

@@ -12,8 +12,45 @@ if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
     source "${_providers_lib_dir}/cursor-agent.sh" 2>/dev/null || true
 fi
 source "${_providers_lib_dir}/provider-allowlist.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/provider-registry.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/bounded-probe.sh" 2>/dev/null || true
+# Provider detection can run standalone in tests and helper scripts, before the
+# main orchestrator reaches its later provider-routing import. Load the shared
+# non-interactive credential resolver here so API-backed providers can discover
+# keys persisted in ~/.env without depending on caller source order.
+if ! declare -f resolve_provider_env >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/provider-routing.sh" 2>/dev/null || true
+fi
 source "${_providers_lib_dir}/auth.sh" 2>/dev/null || true
 source "${_providers_lib_dir}/qwen.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/openai-compatible.sh" 2>/dev/null || true
+if ! declare -f grok_is_available >/dev/null 2>&1 || ! declare -f grok_auth_method >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/grok.sh" 2>/dev/null || true
+fi
+if ! declare -f kimi_is_available >/dev/null 2>&1 || ! declare -f kimi_auth_method >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/kimi.sh" 2>/dev/null || true
+fi
+if ! declare -f copilot_is_available >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/copilot.sh" 2>/dev/null || true
+fi
+
+# Keep the Claude Code --bare authentication check from wedging every Octopus
+# command when the CLI is waiting on auth, Keychain, or a broken hook. The
+# dedicated runner keeps its termination grace inside the configured total cap
+# whether providers.sh is loaded by the orchestrator or sourced on its own.
+_octo_bare_auth_probe() {
+    local probe_timeout term_timeout kill_grace
+    read -r probe_timeout term_timeout kill_grace <<< \
+        "$(_octo_bare_probe_budget "${OCTOPUS_BARE_PROBE_TIMEOUT:-5}")"
+
+    if [[ "${OCTOPUS_SKIP_PROVIDER_PROBES:-false}" == "true" ]]; then
+        return 125
+    fi
+
+    printf 'x\n' | _octo_run_bare_probe_with_timeout \
+        "$probe_timeout" "$term_timeout" "$kill_grace" \
+        claude --bare --print --model claude-haiku-4-5-20251001
+}
 
 # Version comparison utility
 version_compare() {
@@ -45,9 +82,8 @@ version_compare() {
 }
 
 detect_claude_code_version() {
-    # v9.16.0: Non-Claude hosts skip CC version detection entirely
-    # Codex and Gemini have their own feature sets; CC version flags don't apply
-    if [[ "$OCTOPUS_HOST" == "codex" || "$OCTOPUS_HOST" == "gemini" ]]; then
+    # v9.16.0: Non-Claude hosts skip CC version detection entirely.
+    if [[ "$OCTOPUS_HOST" == "codex" ]]; then
         CLAUDE_CODE_VERSION=""
         log "INFO" "${OCTOPUS_HOST} host detected — skipping Claude Code version detection"
         # Enable basic capabilities that work on any host with bash
@@ -94,6 +130,25 @@ detect_claude_code_version() {
     if [[ -z "$CLAUDE_CODE_VERSION" ]]; then
         log "WARN" "Could not detect host platform version, using fallback mode"
         return 1
+    fi
+
+    # Version history proves the interactive /effort command, not necessarily
+    # the spawned CLI's --effort argv flag. Probe the configured executable's
+    # help once during capability detection so dispatch never guesses.
+    SUPPORTS_EFFORT_CLI_FLAG=false
+    local -a _claude_capability_cmd
+    local _claude_capability_help="" _claude_capability_timeout
+    read -r -a _claude_capability_cmd <<< "${OCTOPUS_CLAUDE_BIN:-claude}"
+    if [[ "${OCTOPUS_SKIP_PROVIDER_PROBES:-false}" != "true" &&
+       "${#_claude_capability_cmd[@]}" -gt 0 ]] &&
+       command -v "${_claude_capability_cmd[0]}" >/dev/null 2>&1; then
+        _claude_capability_timeout="$(_octo_bare_probe_timeout "${OCTOPUS_BARE_PROBE_TIMEOUT:-5}")"
+        _claude_capability_help="$(_octo_run_bare_probe_with_timeout \
+            "$_claude_capability_timeout" "$_claude_capability_timeout" 0 \
+            "${_claude_capability_cmd[@]}" --help 2>/dev/null || true)"
+        if grep -c -- '--effort' <<< "$_claude_capability_help" >/dev/null 2>&1; then
+            SUPPORTS_EFFORT_CLI_FLAG=true
+        fi
     fi
 
     # Check for v2.1.12+ features (bash wildcards, basic task management)
@@ -198,6 +253,13 @@ detect_claude_code_version() {
         SUPPORTS_WORKTREE_HOOKS=true
         SUPPORTS_AGENTS_CLI=true
         SUPPORTS_FAST_OPUS_1M=true
+    fi
+
+    # v9.50.0: worktree.bgIsolation opt-out — OCTOPUS_WORKTREE_BG_ISOLATION=false
+    # disables worktree cloning for background agents (fast direct-edit runs).
+    # Mirrors Claude Code's worktree.bgIsolation session flag.
+    if [[ "${OCTOPUS_WORKTREE_BG_ISOLATION:-true}" == "false" ]]; then
+        SUPPORTS_WORKTREE_ISOLATION=false
     fi
 
     # Check for v2.1.51+ features (remote control, npm registries, fast bash, disk persist, account env vars, managed settings)
@@ -486,6 +548,16 @@ detect_claude_code_version() {
         SUPPORTS_TOOL_DECISION_PARAMS_OTEL=true
     fi
 
+    # Claude Code v2.1.197+ adds the Sonnet 5 model alias/catalog.
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.197" ">="; then
+        SUPPORTS_SONNET_5=true
+    fi
+
+    # Claude Code v2.1.219+ adds Opus 5 and makes it the current Opus alias.
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.219" ">="; then
+        SUPPORTS_OPUS_5=true
+    fi
+
     log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
     log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
     log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
@@ -533,6 +605,7 @@ detect_claude_code_version() {
     log "INFO" "Bash Session ID Env: $SUPPORTS_BASH_SESSION_ID_ENV"
     log "INFO" "Opus 4.8: $SUPPORTS_OPUS_4_8 | Dynamic Workflows: $SUPPORTS_DYNAMIC_WORKFLOWS | Lean Prompt Default: $SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT"
     log "INFO" "Agent Settings Agent Field: $SUPPORTS_AGENT_SETTINGS_AGENT_FIELD | Skills Auto Plugin Load: $SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD | EnterWorktree Switch: $SUPPORTS_ENTER_WORKTREE_SWITCH | Tool Decision Params OTel: $SUPPORTS_TOOL_DECISION_PARAMS_OTEL"
+    log "INFO" "Sonnet 5: $SUPPORTS_SONNET_5 | Opus 5: $SUPPORTS_OPUS_5"
 
     # v8.29.0: Context window control
     OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
@@ -557,11 +630,15 @@ detect_claude_code_version() {
     # and honour OCTOPUS_DISABLE_BARE=1 opt-out.
     _BARE_OPT=""
     if [[ "$SUPPORTS_BARE_FLAG" == "true" && "${OCTOPUS_DISABLE_BARE:-0}" != "1" ]]; then
-        # Quick auth probe: pipe a trivial prompt and check for login nag
-        local _bare_probe
-        _bare_probe=$(echo "x" | claude --bare --print --model claude-haiku-4-5-20251001 2>/dev/null | head -1 || true)
+        # Quick bounded auth probe: a CLI waiting on Keychain, auth, or hooks
+        # must not wedge unrelated commands such as `octopus dev` or `status`.
+        local _bare_probe="" _bare_probe_rc=0
+        _bare_probe=$(_octo_bare_auth_probe 2>/dev/null) || _bare_probe_rc=$?
+        _bare_probe="${_bare_probe%%$'\n'*}"
         if [[ "$_bare_probe" == *"Not logged in"* || "$_bare_probe" == *"Please run /login"* ]]; then
             log "WARN" "--bare flag breaks subprocess auth on this install (issue #288) — disabled. Set OCTOPUS_DISABLE_BARE=1 to suppress this probe."
+        elif [[ "$_bare_probe_rc" -ne 0 ]]; then
+            log "WARN" "--bare authentication probe did not complete (exit ${_bare_probe_rc}) — disabled for this run. Set OCTOPUS_DISABLE_BARE=1 to skip it explicitly."
         else
             _BARE_OPT=" --bare"
             log "INFO" "Subprocess synthesis uses --bare flag for faster claude -p calls"
@@ -683,8 +760,33 @@ detect_fast_mode() {
 
 # Check if a provider is healthy (CLI available + credentials present)
 # Returns 0 if healthy, 1 if unhealthy. Prints diagnostic to stderr.
+_commandcode_auth_mode() {
+    local cc_bin="${OCTOPUS_COMMANDCODE_BIN:-}"
+    if [[ -z "$cc_bin" ]]; then
+        if command -v command-code >/dev/null 2>&1; then
+            cc_bin="command-code"
+        elif command -v cmd >/dev/null 2>&1; then
+            cc_bin="cmd"
+        else
+            printf '%s\n' "missing"
+            return 1
+        fi
+    fi
+    if [[ -n "${COMMAND_CODE_API_KEY:-}" ]]; then
+        printf '%s\n' "api-key"
+        return 0
+    fi
+    if "$cc_bin" status --json >/dev/null 2>&1; then
+        printf '%s\n' "cli"
+        return 0
+    fi
+    printf '%s\n' "none"
+    return 1
+}
+
 check_provider_health() {
     local provider="$1"
+    local resolved_model="${2:-}"
     local errors=0
 
     if declare -f octo_provider_allowed >/dev/null 2>&1 && ! octo_provider_allowed "$provider"; then
@@ -711,29 +813,26 @@ check_provider_health() {
                 fi
             fi
             ;;
-        gemini)
-            if ! command -v gemini &>/dev/null; then
-                echo "gemini CLI not found in PATH" >&2
-                return 1
-            fi
-            # v9.2.1: Check OAuth creds first (Issue #177)
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-                return 0
-            fi
-            # Try resolving env vars from profile/.env for non-interactive shells
-            if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-                resolve_provider_env "GEMINI_API_KEY" 2>/dev/null
-            fi
-            if [[ -z "${GOOGLE_API_KEY:-}" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
-                resolve_provider_env "GOOGLE_API_KEY" 2>/dev/null
-            fi
-            if [[ -z "${GEMINI_API_KEY:-}" ]] && [[ -z "${GOOGLE_API_KEY:-}" ]]; then
-                # Gemini CLI may use gcloud auth
-                if ! command -v gcloud &>/dev/null; then
-                    echo "gemini: GEMINI_API_KEY not found in non-interactive shell. If your key is in ~/.bashrc, move it to ~/.profile or ~/.env instead (bashrc is skipped in non-interactive shells)" >&2
-                    return 1
+        commandcode)
+            local cc_bin="${OCTOPUS_COMMANDCODE_BIN:-}"
+            if [[ -z "$cc_bin" ]]; then
+                if command -v command-code >/dev/null 2>&1; then
+                    cc_bin="command-code"
+                elif command -v cmd >/dev/null 2>&1; then
+                    cc_bin="cmd"
                 fi
             fi
+            if [[ -z "$cc_bin" ]] || ! { [[ -x "$cc_bin" ]] || command -v "$cc_bin" >/dev/null 2>&1; }; then
+                echo "commandcode CLI is not executable or not found" >&2
+                return 1
+            fi
+            if [[ -z "${COMMAND_CODE_API_KEY:-}" ]]; then
+                resolve_provider_env "COMMAND_CODE_API_KEY" 2>/dev/null || true
+            fi
+            _commandcode_auth_mode >/dev/null || {
+                echo "commandcode: no API key or authenticated CLI session" >&2
+                return 1
+            }
             ;;
         agy|antigravity)
             if ! command -v agy &>/dev/null; then
@@ -759,6 +858,28 @@ check_provider_health() {
                 return 1
             fi
             ;;
+        orcarouter)
+            if [[ -z "${ORCAROUTER_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                resolve_provider_env "ORCAROUTER_API_KEY" 2>/dev/null || true
+            fi
+            if [[ -z "${ORCAROUTER_API_KEY:-}" ]]; then
+                echo "orcarouter: ORCAROUTER_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+        atlascloud)
+            if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+                resolve_provider_env "ATLASCLOUD_API_KEY" 2>/dev/null
+            fi
+            if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+                echo "atlascloud: ATLASCLOUD_API_KEY not set" >&2
+                return 1
+            fi
+            if [[ -z "${ATLASCLOUD_MODEL:-}" && -z "${OCTOPUS_ATLASCLOUD_MODEL:-}" && -z "${OPENAI_COMPAT_MODEL:-}" ]]; then
+                echo "atlascloud: set ATLASCLOUD_MODEL or OCTOPUS_ATLASCLOUD_MODEL before dispatch" >&2
+                return 1
+            fi
+            ;;
         ollama)
             if ! command -v ollama &>/dev/null; then
                 echo "ollama CLI not found in PATH" >&2
@@ -775,15 +896,14 @@ check_provider_health() {
                 echo "copilot CLI not found in PATH" >&2
                 return 1
             fi
-            # Check auth via the same precedence chain as copilot_is_available()
-            if [[ -z "${COPILOT_GITHUB_TOKEN:-}" ]] && \
-               [[ -z "${GH_TOKEN:-}" ]] && \
-               [[ -z "${GITHUB_TOKEN:-}" ]] && \
-               [[ ! -f "${HOME}/.copilot/config.json" ]]; then
-                if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
-                    echo "copilot: not authenticated (run: copilot login)" >&2
-                    return 1
-                fi
+            if ! declare -f copilot_has_required_capabilities >/dev/null 2>&1 || \
+               ! copilot_has_required_capabilities; then
+                echo "copilot: installed CLI lacks required non-interactive flags; update Copilot CLI" >&2
+                return 1
+            fi
+            if ! copilot_is_available; then
+                echo "copilot: not authenticated (run: copilot login)" >&2
+                return 1
             fi
             ;;
         qwen)
@@ -816,6 +936,64 @@ check_provider_health() {
                 return 1
             fi
             ;;
+        claude-sdk)
+            # v9.50.0: Agent SDK seat — key is the only hard requirement; the
+            # shim falls back from claude-agent to headless claude at exec time.
+            if [[ -z "${CLAUDE_SDK_API_KEY:-}" ]]; then
+                echo "claude-sdk: CLAUDE_SDK_API_KEY not set" >&2
+                return 1
+            fi
+            if ! command -v claude-agent &>/dev/null && ! command -v claude &>/dev/null; then
+                echo "claude-sdk: neither claude-agent (Agent SDK) nor claude CLI found in PATH" >&2
+                return 1
+            fi
+            ;;
+        grok)
+            if ! command -v grok &>/dev/null; then
+                echo "grok: CLI not found in PATH" >&2
+                return 1
+            fi
+            # Auth: env XAI_API_KEY or ~/.grok/auth.json (grok login session)
+            if [[ -z "${XAI_API_KEY:-}" && ! -f "${HOME}/.grok/auth.json" ]]; then
+                echo "grok: not authenticated (run: grok login or set XAI_API_KEY)" >&2
+                return 1
+            fi
+            ;;
+        kimi)
+            local OCTOPUS_KIMI_MODEL="${resolved_model:-${OCTOPUS_KIMI_MODEL:-default}}"
+            export OCTOPUS_KIMI_MODEL
+            if ! command -v kimi &>/dev/null; then
+                echo "kimi: CLI not found in PATH" >&2
+                return 1
+            fi
+            if ! declare -f kimi_configured_credential_method >/dev/null 2>&1 || \
+               ! kimi_configured_credential_method >/dev/null 2>&1; then
+                case "$(kimi_credential_issue 2>/dev/null || true)" in
+                    model-missing)
+                        echo "kimi: no model configured (run kimi and enter /login, or configure default_model and its model/provider mapping in $(kimi_config_file); OCTOPUS_KIMI_MODEL cannot create a missing Kimi model alias)" >&2
+                        ;;
+                    keyring-migration-required)
+                        echo "kimi: legacy keyring session is unsupported (run kimi with the same KIMI_CODE_HOME and enter /login again)" >&2
+                        ;;
+                    vertex-adc-unsupported)
+                        echo "kimi: Vertex ADC is unsupported through this integration (configure VERTEXAI_API_KEY or GOOGLE_API_KEY in the selected provider's env table in $(kimi_config_file))" >&2
+                        ;;
+                    config-invalid)
+                        echo "kimi: invalid config (repair $(kimi_config_file); a complete default model and selected provider mapping are required)" >&2
+                        ;;
+                    validator-unavailable)
+                        echo "kimi: config validator unavailable (reinstall or update Kimi Code so its built-in config validator is available)" >&2
+                        ;;
+                    oauth-invalid)
+                        echo "kimi: OAuth session is missing or malformed (run kimi and enter /login again)" >&2
+                        ;;
+                    *)
+                        echo "kimi: selected provider has no usable configured credentials (run kimi and enter /login, or update $(kimi_config_file); shell-only API keys are not read automatically)" >&2
+                        ;;
+                esac
+                return 1
+            fi
+            ;;
         cursor-agent)
             if ! command -v agent &>/dev/null; then
                 echo "cursor-agent: CLI not found in PATH" >&2
@@ -826,9 +1004,8 @@ check_provider_health() {
                 echo "cursor-agent: 'agent' binary is not Cursor Agent CLI" >&2
                 return 1
             fi
-            # Check auth: env var or Cursor session (authInfo in cli-config.json)
-            if [[ -z "${CURSOR_API_KEY:-}" ]] && \
-               ! grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
+            # Check auth: env var or Cursor session (lib/cursor-agent.sh owns the probe)
+            if ! cursor_agent_is_authenticated; then
                 echo "cursor-agent: not authenticated (run: agent login or set CURSOR_API_KEY)" >&2
                 return 1
             fi
@@ -844,9 +1021,9 @@ check_provider_health() {
                 resolve_provider_env "MISTRAL_API_KEY" 2>/dev/null
             fi
             # Check auth: env-file with MISTRAL_API_KEY, env var, or config.toml api_key
-            if [[ -z "${MISTRAL_API_KEY:-}" ]] && \
-               ! { [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; } && \
-               ! { [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; }; then
+            if ! _octo_value_has_nonwhitespace "${MISTRAL_API_KEY:-}" && \
+               ! _octo_assignment_has_nonempty_value "${HOME}/.vibe/.env" "MISTRAL_API_KEY" && \
+               ! _octo_assignment_has_nonempty_value "${HOME}/.vibe/config.toml" "api_key"; then
                 echo "vibe: not authenticated (run: vibe --setup or set MISTRAL_API_KEY)" >&2
                 return 1
             fi
@@ -861,7 +1038,7 @@ check_all_providers() {
     local healthy=0 unhealthy=0
     local -a results=()
 
-    for provider in codex gemini agy claude perplexity openrouter ollama copilot qwen cursor-agent vibe; do
+    for provider in $(octo_provider_ids health); do
         local diag
         if diag=$(check_provider_health "$provider" 2>&1); then
             results+=("  ✓ $provider")
@@ -977,6 +1154,65 @@ EOF
     fi
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ORCAROUTER INTEGRATION
+# Universal fallback via the OrcaRouter gateway (https://www.orcarouter.ai),
+# which serves OpenAI-compatible /v1/chat/completions and accepts namespaced
+# model IDs (anthropic/*, deepseek/*, ...).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Select OrcaRouter model based on task type
+get_orcarouter_model() {
+    local task_type="$1"
+    local complexity="${2:-2}"
+
+    case "$task_type" in
+        coding|review)
+            case "$complexity" in
+                3) echo "anthropic/claude-opus-4.8" ;;   # premium tier
+                1) echo "anthropic/claude-haiku-4.5" ;;
+                *) echo "anthropic/claude-sonnet-4.6" ;;
+            esac
+            ;;
+        image)
+            echo "anthropic/claude-sonnet-4.6"
+            ;;
+        research|design)
+            echo "anthropic/claude-sonnet-4.6"
+            ;;
+        *)
+            echo "anthropic/claude-sonnet-4.6"
+            ;;
+    esac
+}
+
+# ── agy_current_model: resolve the model the Antigravity CLI will actually use ──
+# agy-exec.sh runs `agy --print` with `--model default` (no --model flag) unless
+# OCTOPUS_AGY_MODEL is set, so agy uses whatever is selected in its own /model UI —
+# persisted to ~/.gemini/antigravity-cli/settings.json. Resolve that here so the
+# council roster artifact and the activation banner record the REAL model
+# (e.g. "Gemini 3.1 Pro (Low)") instead of the opaque "default", which is what makes
+# a Codex+agy panel's cross-lab-vs-same-lineage status verifiable from the artifact.
+# Fail-safe: purely diagnostic, never gate logic — echo "default (unresolved)" if the
+# selection can't be read, and never abort a run.
+agy_current_model() {
+    local override="${OCTOPUS_AGY_MODEL:-}"
+    if [[ -n "$override" && "$override" != "default" ]]; then
+        printf '%s\n' "$override"
+        return 0
+    fi
+    local settings="${HOME}/.gemini/antigravity-cli/settings.json"
+    if [[ -f "$settings" ]] && command -v jq >/dev/null 2>&1; then
+        local m
+        m="$(jq -r '.model // empty' "$settings" 2>/dev/null)"
+        if [[ -n "$m" ]]; then
+            printf '%s\n' "$m"
+            return 0
+        fi
+    fi
+    printf '%s\n' "default (unresolved)"
+}
+
 # ── detect_providers: multi-CLI + auth detection (moved from orchestrate.sh v9.22.1) ──
 detect_providers() {
     local result=""
@@ -992,15 +1228,11 @@ detect_providers() {
         result="${result}codex:${codex_auth} "
     fi
 
-    # Detect Gemini CLI
-    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed gemini; } && command -v gemini &>/dev/null; then
-        local gemini_auth="none"
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-            gemini_auth="oauth"
-        elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
-            gemini_auth="api-key"
-        fi
-        result="${result}gemini:${gemini_auth} "
+    # Detect Command Code CLI
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed commandcode; } && command -v command-code >/dev/null 2>&1; then
+        local commandcode_auth
+        commandcode_auth="$(_commandcode_auth_mode 2>/dev/null || true)"
+        [[ "$commandcode_auth" == "api-key" || "$commandcode_auth" == "cli" ]] && result="${result}commandcode:${commandcode_auth} "
     fi
 
     # Detect Antigravity CLI (agy)
@@ -1026,6 +1258,29 @@ detect_providers() {
     # Detect OpenRouter (API key only)
     if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed openrouter; } && [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
         result="${result}openrouter:api-key "
+    fi
+
+    # Detect OrcaRouter (API key only, including ~/.env/profile resolution)
+    if [[ -z "${ORCAROUTER_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+        resolve_provider_env "ORCAROUTER_API_KEY" 2>/dev/null || true
+    fi
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed orcarouter; } && [[ -n "${ORCAROUTER_API_KEY:-}" ]]; then
+        result="${result}orcarouter:api-key "
+    fi
+
+    # Detect generic OpenAI-compatible tool-loop provider (API key only)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed openai-compatible; } && declare -f openai_compatible_is_available >/dev/null 2>&1 && openai_compatible_is_available; then
+        result="${result}openai-compatible:api-key "
+    fi
+
+    # Detect Atlas Cloud (OpenAI-compatible API key + explicit model)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed atlascloud; }; then
+        if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+            resolve_provider_env "ATLASCLOUD_API_KEY" 2>/dev/null
+        fi
+        if [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }; then
+            result="${result}atlascloud:api-key "
+        fi
     fi
 
     # Detect Perplexity (API key only)
@@ -1083,25 +1338,43 @@ detect_providers() {
         result="${result}qwen:${qwen_auth} "
     fi
 
-    # Detect Cursor Agent CLI (Grok via Cursor subscription)
+    # Detect Cursor CLI (`agent`; Cursor subscription models)
     if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed cursor-agent; } && declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
         local cursor_auth="none"
-        if [[ -n "${CURSOR_API_KEY:-}" ]]; then
-            cursor_auth="env:CURSOR_API_KEY"
-        elif grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
-            cursor_auth="cursor-session"
+        if declare -f cursor_agent_auth_method >/dev/null 2>&1; then
+            cursor_auth="$(cursor_agent_auth_method)"
         fi
         result="${result}cursor-agent:${cursor_auth} "
+    fi
+
+    # Detect xAI Grok CLI (standalone grok provider)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed grok; } && declare -f grok_is_available >/dev/null 2>&1 && grok_is_available; then
+        result="${result}grok:$(grok_auth_method) "
+    fi
+
+    # Detect Moonshot Kimi Code CLI
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed kimi; } && command -v kimi &>/dev/null; then
+        result="${result}kimi:$(kimi_auth_method) "
+    fi
+
+    # Detect Claude Agent SDK seat (CLAUDE_SDK_API_KEY unlocks Opus 5 + 1M context)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed claude-sdk; } && \
+       _octo_value_has_nonwhitespace "${CLAUDE_SDK_API_KEY:-}"; then
+        if command -v claude-agent &>/dev/null; then
+            result="${result}claude-sdk:agent-sdk "
+        elif command -v claude &>/dev/null; then
+            result="${result}claude-sdk:headless-fallback "
+        fi
     fi
 
     # Detect Vibe CLI (Mistral Vibe interactive CLI)
     if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed vibe; } && command -v vibe &>/dev/null; then
         local vibe_auth="none"
-        if [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; then
+        if _octo_assignment_has_nonempty_value "${HOME}/.vibe/.env" "MISTRAL_API_KEY"; then
             vibe_auth="env-file"
-        elif [[ -n "${MISTRAL_API_KEY:-}" ]]; then
+        elif _octo_value_has_nonwhitespace "${MISTRAL_API_KEY:-}"; then
             vibe_auth="api-key"
-        elif [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; then
+        elif _octo_assignment_has_nonempty_value "${HOME}/.vibe/config.toml" "api_key"; then
             vibe_auth="config"
         fi
         result="${result}vibe:${vibe_auth} "
@@ -1125,9 +1398,11 @@ detect_providers() {
     if [[ -z "$result" ]]; then
         log WARN "No AI providers detected. Install at least one:"
         log WARN "  - Codex: npm i -g @openai/codex"
-        log WARN "  - Gemini: npm i -g @google/gemini-cli"
+        log WARN "  - Antigravity (Google seat): install agy, then launch plain agy and complete browser sign-in"
         log WARN "  - Claude: Available in Claude Code context"
         log WARN "  - OpenRouter: Set OPENROUTER_API_KEY environment variable"
+        log WARN "  - OrcaRouter: Set ORCAROUTER_API_KEY environment variable"
+        log WARN "  - Atlas Cloud: Set ATLASCLOUD_API_KEY and ATLASCLOUD_MODEL"
         log WARN "  - Copilot: brew install copilot-cli (zero additional cost)"
         log WARN "  - Ollama: brew install ollama (free local LLM)"
         log WARN "  - Qwen: npm i -g @qwen-code/qwen-code; set QWEN_API_KEY or configure Coding-Plan"

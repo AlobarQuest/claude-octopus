@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Retro Command (Smoke)"
 
-COMMAND_FILE="$PROJECT_ROOT/.claude/commands/retro.md"
+COMMAND_FILE="$PROJECT_ROOT/commands/retro.md"
 PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
 
 test_command_file_exists() {
@@ -50,7 +50,7 @@ test_allowed_tools_declared() {
 test_registered_in_plugin_json() {
     test_case "retro.md is registered in plugin.json commands array"
 
-    if grep -q '"./.claude/commands/retro.md"' "$PLUGIN_JSON"; then
+    if grep -q '"./commands/retro.md"' "$PLUGIN_JSON"; then
         test_pass
     else
         test_fail "retro.md not found in plugin.json commands array"
@@ -109,7 +109,7 @@ test_mentions_json_snapshot() {
 test_mentions_comparison() {
     test_case "retro.md includes prior snapshot comparison"
 
-    if grep -qi "prior snapshot\|comparison\|compare" "$COMMAND_FILE"; then
+    if grep -Eqi "prior snapshot|comparison|compare" "$COMMAND_FILE"; then
         test_pass
     else
         test_fail "retro.md missing prior snapshot comparison logic"

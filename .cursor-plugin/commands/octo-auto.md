@@ -1,5 +1,6 @@
 ---
 description: "Smart router - Single entry point with natural language intent detection"
+disable-model-invocation: true
 ---
 
 # Smart Router (/octo:auto)
@@ -99,6 +100,14 @@ No intent keywords matched
 
 ### STEP 5: Route Based on Confidence
 
+Before loading any route, validate it against this closed allowlist: `embrace`,
+`multi`, `parallel`, `spec`, `security`, `tdd`, `debug`, `design-ui-ux`, `prd`,
+`brainstorm`, `deck`, `docs`, `discover`, `review`, `debate`, `develop`, `plan`, `quick`.
+The token is control data, never user input: do not derive it from the query or
+accept a user-supplied path. Reject `..`, `/`, `\\`, or non-allowlisted values;
+then load exactly `${HOME}/.claude-octopus/plugin/commands/<validated-token>.md`.
+The full query is passed only as workflow arguments.
+
 **STEP 5a — HIGH confidence (auto-route):**
 
 Display:
@@ -106,9 +115,14 @@ Display:
 Routing to [Workflow Name] (/octo:[command])
 ```
 
-Then display the visual indicator banner (STEP 6) and invoke:
+Then display the visual indicator banner (STEP 6), read the entire validated
+command file, and treat its body as the active instructions in this same
+conversation: follow its workflow in order and supply the full query as its
+arguments. Do not use the Skill tool; Octopus components are hidden from model
+invocation by design.
 ```
-Skill(skill: "octo:[command]", args: "<full user query>")
+Read: ${HOME}/.claude-octopus/plugin/commands/<validated-token>.md
+Arguments: <full user query>
 ```
 
 **STEP 5b — MEDIUM confidence (confirm first):**
@@ -122,7 +136,7 @@ I detected [intent]. Route to:
 Which would you prefer, or rephrase your request?
 ```
 
-Wait for user confirmation before invoking the Skill tool.
+Wait for user confirmation before loading the selected command file.
 
 **STEP 5c — LOW confidence (show complete menu):**
 
@@ -147,14 +161,14 @@ Engineering:
 12. Parallel    (/octo:parallel)       — Team of Teams decomposition
 
 Creative & Documentation:
-12. Design      (/octo:design-ui-ux)   — UI/UX design workflow
-13. PRD         (/octo:prd)            — Product requirements document
-14. Docs        (/octo:docs)           — Documentation delivery
-15. Brainstorm  (/octo:brainstorm)     — Creative ideation
-16. Deck        (/octo:deck)           — Slide deck generation
+13. Design      (/octo:design-ui-ux)   — UI/UX design workflow
+14. PRD         (/octo:prd)            — Product requirements document
+15. Docs        (/octo:docs)           — Documentation delivery
+16. Brainstorm  (/octo:brainstorm)     — Creative ideation
+17. Deck        (/octo:deck)           — Slide deck generation
 
 Quick:
-17. Quick       (/octo:quick)          — Fast ad-hoc execution
+18. Quick       (/octo:quick)          — Fast ad-hoc execution
 ```
 
 ### STEP 6: Display Visual Indicators
@@ -164,7 +178,6 @@ Quick:
 ```bash
 echo "PROVIDER_CHECK_START"
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
-printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
 printf "agy:%s\n" "$(command -v agy >/dev/null 2>&1 && echo available || echo missing)"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
@@ -181,7 +194,6 @@ Then render the provider banner from actual provider checks. Do not hand-write o
 status_cli() { command -v "$1" >/dev/null 2>&1 && echo "Available ✓" || echo "Not installed ✗"; }
 status_env() { [[ -n "${1:-}" ]] && echo "Configured ✓" || echo "Not configured ✗"; }
 codex_status="$(status_cli codex)"
-gemini_status="$(status_cli gemini)"
 agy_status="$(status_cli agy)"
 opencode_status="$(status_cli opencode)"
 copilot_status="$(status_cli copilot)"
@@ -194,7 +206,6 @@ cat <<BANNER
 
 Providers:
 🔴 Codex CLI: ${codex_status}
-🟡 Gemini CLI: ${gemini_status}
 🧭 Antigravity CLI: ${agy_status}
 🟤 OpenCode: ${opencode_status}
 🟢 Copilot CLI: ${copilot_status}
@@ -213,7 +224,6 @@ The rendered banner must look like this shape, with ACTUAL statuses:
 
 Providers:
 🔴 Codex CLI: [Available ✓ / Not installed ✗]
-🟡 Gemini CLI: [Available ✓ / Not installed ✗]
 🧭 Antigravity CLI: [Available ✓ / Not installed ✗]
 🟤 OpenCode: [Available ✓ / Not installed ✗]
 🟢 Copilot CLI: [Available ✓ / Not installed ✗]
@@ -247,7 +257,7 @@ This allows the router to learn user preferences over time.
 - Intent detected via priority-ordered keyword matching
 - Confidence determined via decision tree (not percentage formula)
 - User confirmation obtained (if MEDIUM confidence)
-- Target workflow executed via Skill tool
+- Target workflow executed from its explicit command file
 - Visual indicators displayed (for multi-AI workflows)
 
 ### Prohibited Actions
@@ -256,6 +266,6 @@ This allows the router to learn user preferences over time.
 - Routing without checking keyword priority order
 - Routing to non-existent skills
 - Skipping visual indicators for multi-AI workflows
-- Simulating workflow execution (MUST use Skill tool)
+- Simulating workflow execution instead of following the selected command file
 - Using percentage-based confidence scoring (use the decision tree above)
-- Passing queries to Skill tool without the full original text
+- Dropping any of the full original query when handing off to the command

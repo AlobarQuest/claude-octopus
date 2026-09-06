@@ -1,5 +1,6 @@
 ---
 name: skill-prd
+disable-model-invocation: true
 description: Write an AI-optimized PRD using multi-AI orchestration — use when scoping a new feature or product
 context: fork
 agent: Plan
@@ -61,7 +62,7 @@ Structure:
 
 **After drafting the PRD but BEFORE self-scoring, dispatch the draft to a second provider for adversarial review.** A single-model PRD has blind spots — cross-provider challenge surfaces wrong assumptions, uncovered scenarios, and contradictory requirements.
 
-Dispatch the PRD draft to a different provider (Codex, Gemini, or Sonnet as fallback) with this prompt:
+Dispatch the PRD draft to a different provider (Codex, Antigravity, or Sonnet as fallback) with this prompt:
 
 > "Challenge this PRD. What assumptions are wrong? What user scenarios are missing? What requirements contradict each other? What will the first user complaint be? What risk does this PRD ignore?"
 

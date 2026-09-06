@@ -6,6 +6,10 @@
 [[ -n "${_OCTOPUS_UTILS_LOADED:-}" ]] && return 0
 _OCTOPUS_UTILS_LOADED=true
 
+_utils_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_utils_lib_dir}/kimi-model-name.sh" || { echo "utils: failed to load kimi-model-name.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "${_utils_lib_dir}/command-argv.sh" || { echo "utils: failed to load command-argv.sh" >&2; return 1 2>/dev/null || exit 1; }
+
 # Internal log helper — uses orchestrate.sh's log() if available, falls back to stderr
 _utils_log() {
     if type log &>/dev/null 2>&1; then
@@ -77,19 +81,51 @@ except Exception:
 # Extract multiple JSON fields at once (single pass, no subprocesses)
 # Usage: json_extract_multi "$json_string" field1 field2 field3
 # Sets variables: _field1, _field2, _field3
-# Uses bash nameref (4.3+) to avoid command injection via eval
+#
+# Assigns with `printf -v`, not a `local -n` nameref: namerefs need bash 4.3+,
+# but this project supports bash 3.2 (docs/CONTRIBUTING.md) — which is still the
+# /bin/bash on macOS. On 3.2 the nameref form aborted with "local: -n: invalid
+# option" on every field, so callers silently rendered empty values. printf -v
+# is a builtin (no eval, no injection) and works on 3.1+.
 json_extract_multi() {
     local json="$1"
     shift
 
+    local field
     for field in "$@"; do
-        local -n ref="_$field"
+        # Guard the indirect target: printf -v with a non-identifier name would
+        # error out, and field names must never come from untrusted JSON.
+        case "$field" in
+            [A-Za-z_]*) ;;
+            *) continue ;;
+        esac
+        case "$field" in
+            *[!A-Za-z0-9_]*) continue ;;
+        esac
+
         if [[ "$json" =~ \"$field\":\"([^\"]+)\" ]]; then
-            ref="${BASH_REMATCH[1]}"
+            printf -v "_$field" '%s' "${BASH_REMATCH[1]}"
         else
-            ref=""
+            printf -v "_$field" '%s' ""
         fi
     done
+}
+
+# Count whitespace-separated words in a string.
+# Splitting with a bare `arr=($str)` also performs pathname expansion, so a
+# value containing `*` or `?` silently expands to matching filenames and the
+# count comes out wrong. Disable globbing for the split, then restore whatever
+# the caller had. Echoes the count.
+count_words() {
+    local _cw_str="$1"
+    local _cw_had_noglob=false
+    case "$-" in *f*) _cw_had_noglob=true ;; esac
+    set -f
+    local IFS=$' \t\n'
+    # shellcheck disable=SC2206 # deliberate word splitting; globbing disabled above
+    local _cw_words=($_cw_str)
+    [[ "$_cw_had_noglob" == "true" ]] || set +f
+    echo "${#_cw_words[@]}"
 }
 
 # Properly escape string for JSON
@@ -162,31 +198,316 @@ sanitize_review_id() {
     return 0
 }
 
+_octopus_is_safe_openai_compatible_value() {
+    local value="$1"
+    [[ -z "$value" ]] && return 1
+    [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]] && return 1
+    [[ "$value" == *"\\"* ]] && return 1
+    case "$value" in
+        *[[:space:]]*|*\*|*";"*|*"|"*|*"&"*|*'$'*|*'`'*|*"'"*|*'"'*|*"("*|*")"*|*"<"*|*">"*|*"!"*|*"*"*|*"?"*|*"["*|*"]"*|*"{"*|*"}"*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# Grok/Copilot/claude-sdk dispatch commands take the shape
+# `env OCTOPUS_<PROVIDER>_MODEL=<model> <shim path>` with nothing else — bind
+# the env assignment to the shim being the *next* token (not merely appearing
+# later in the string), so `env OCTOPUS_GROK_MODEL=x echo pwned <shim>` is
+# rejected instead of matching on a fixed prefix/suffix pair.
+_validate_env_prefixed_shim_command() {
+    local cmd="$1" env_prefix="$2" shim_path="$3" allowed_tail="${4:-}" encoding="${5:-plain}" path_match="${6:-suffix}"
+    local -a parts
+    octo_dispatch_command_to_argv "$cmd" || return 1
+    parts=("${OCTO_COMMAND_ARGV[@]}")
+    if [[ -n "$allowed_tail" ]]; then
+        [[ "${#parts[@]}" -eq 5 ]] || return 1
+        [[ "${parts[3]} ${parts[4]}" == "$allowed_tail" ]] || return 1
+    else
+        [[ "${#parts[@]}" -eq 3 ]] || return 1
+    fi
+    [[ "${parts[0]}" == "env" ]] || return 1
+    [[ "${parts[1]}" == "${env_prefix}="* ]] || return 1
+    if [[ "$path_match" == exact ]]; then
+        [[ "${parts[2]}" == "$shim_path" ]] || return 1
+    else
+        [[ "${parts[2]}" == *"$shim_path" ]] || return 1
+    fi
+    if [[ "$encoding" == hex ]]; then
+        local encoded="${parts[1]#*=}"
+        octopus_kimi_model_from_hex "$encoded" >/dev/null || return 1
+    fi
+    return 0
+}
+
+_validate_claude_sdk_env_command() {
+    local cmd="$1" shim_suffix="/scripts/helpers/claude-sdk-exec.sh"
+    local -a parts
+    local model=""
+    octo_dispatch_command_to_argv "$cmd" || return 1
+    parts=("${OCTO_COMMAND_ARGV[@]}")
+    [[ "${parts[0]:-}" == env ]] || return 1
+    [[ "${parts[1]:-}" == OCTOPUS_CLAUDE_SDK_MODEL=* ]] || return 1
+    model="${parts[1]#OCTOPUS_CLAUDE_SDK_MODEL=}"
+    _octopus_is_safe_openai_compatible_value "$model" || return 1
+
+    case "${#parts[@]}" in
+        3)
+            [[ "${parts[2]}" == *"$shim_suffix" ]]
+            ;;
+        4)
+            case "$model" in
+                claude-fable-5|claude-fable-5-1) ;;
+                *) return 1 ;;
+            esac
+            [[ "${parts[2]}" == OCTOPUS_FABLE5_NO_RETRY=1 ]] || return 1
+            [[ "${parts[3]}" == *"$shim_suffix" ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+_validate_openai_compatible_agent_command() {
+    local cmd="$1"
+    local -a parts
+    [[ "$cmd" != *"\\"* ]] || return 1
+    octo_dispatch_command_to_argv "$cmd" || return 1
+    parts=("${OCTO_COMMAND_ARGV[@]}")
+
+    [[ "${#parts[@]}" -ge 7 ]] || return 1
+    [[ "${parts[0]}" == */scripts/helpers/openai-compatible-agent.py ]] || return 1
+
+    local provider=""
+    local model=""
+    local cwd=""
+    local reasoning_effort=""
+    local reasoning_policy=""
+    local tool_policy=""
+    local base_url=""
+    local api_key_env=""
+    local i=1
+
+    while [[ $i -lt ${#parts[@]} ]]; do
+        [[ $((i + 1)) -lt ${#parts[@]} ]] || return 1
+        local flag="${parts[$i]}"
+        local value="${parts[$((i + 1))]}"
+        case "$flag" in
+            --provider)
+                [[ -z "$provider" ]] || return 1
+                case "$value" in
+                    generic|atlascloud) provider="$value" ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            --model)
+                [[ -z "$model" ]] || return 1
+                _octopus_is_safe_openai_compatible_value "$value" || return 1
+                [[ "$value" != /* ]] || return 1
+                model="$value"
+                ;;
+            --cwd)
+                [[ -z "$cwd" ]] || return 1
+                _octopus_is_safe_openai_compatible_value "$value" || return 1
+                cwd="$value"
+                ;;
+            --base-url)
+                [[ -z "$base_url" ]] || return 1
+                [[ "$value" =~ ^https?://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?(/[A-Za-z0-9._/:-]*)?$ ]] || return 1
+                base_url="$value"
+                ;;
+            --api-key-env)
+                [[ -z "$api_key_env" ]] || return 1
+                [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+                api_key_env="$value"
+                ;;
+            --reasoning-effort)
+                [[ -z "$reasoning_effort" ]] || return 1
+                case "$value" in
+                    low|medium|high) reasoning_effort="$value" ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            --reasoning-policy)
+                [[ -z "$reasoning_policy" ]] || return 1
+                case "$value" in
+                    strict|best_effort) reasoning_policy="$value" ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            --tool-policy)
+                [[ -z "$tool_policy" ]] || return 1
+                case "$value" in
+                    auto|none) tool_policy="$value" ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        i=$((i + 2))
+    done
+
+    [[ -n "$provider" && -n "$model" && -n "$cwd" ]]
+}
+
+_validate_claude_agent_command() {
+    local cmd="$1"
+    local configured_bin="${OCTOPUS_CLAUDE_BIN:-claude}"
+    local -a parts configured_parts
+    octo_dispatch_command_to_argv "$cmd" || return 1
+    parts=("${OCTO_COMMAND_ARGV[@]}")
+    octo_dispatch_command_to_argv "$configured_bin" || return 1
+    configured_parts=("${OCTO_COMMAND_ARGV[@]}")
+    [[ "${#parts[@]}" -gt 0 && "${#configured_parts[@]}" -gt 0 ]] || return 1
+    [[ "${configured_parts[0]}" =~ ^[A-Za-z0-9_./-]+$ ]] || return 1
+
+    local i=0 configured_index=0
+    while [[ $configured_index -lt ${#configured_parts[@]} ]]; do
+        local configured_token="${configured_parts[$configured_index]}"
+        [[ $i -lt ${#parts[@]} && "${parts[$i]}" == "$configured_token" ]] || return 1
+        if [[ $configured_index -gt 0 ]]; then
+            case "$configured_token" in
+                --strict-mcp-config) ;;
+                --setting-sources)
+                    [[ $((configured_index + 1)) -lt ${#configured_parts[@]} ]] || return 1
+                    [[ "${configured_parts[$((configured_index + 1))]}" == "project,local" ]] || return 1
+                    configured_index=$((configured_index + 1))
+                    i=$((i + 1))
+                    [[ $i -lt ${#parts[@]} && "${parts[$i]}" == "project,local" ]] || return 1
+                    ;;
+                *) return 1 ;;
+            esac
+        fi
+        configured_index=$((configured_index + 1))
+        i=$((i + 1))
+    done
+
+    local saw_print=false saw_model=false saw_effort=false
+    local saw_permission=false saw_tools=false saw_bare=false saw_settings=false
+    while [[ $i -lt ${#parts[@]} ]]; do
+        local flag="${parts[$i]}"
+        case "$flag" in
+            --bare)
+                [[ "$saw_bare" == false ]] || return 1
+                saw_bare=true
+                i=$((i + 1))
+                ;;
+            --setting-sources)
+                [[ "$saw_settings" == false && $((i + 1)) -lt ${#parts[@]} ]] || return 1
+                [[ "${parts[$((i + 1))]}" == "project,local" ]] || return 1
+                saw_settings=true
+                i=$((i + 2))
+                ;;
+            --print)
+                [[ "$saw_print" == false ]] || return 1
+                saw_print=true
+                i=$((i + 1))
+                ;;
+            --model)
+                [[ "$saw_model" == false && $((i + 1)) -lt ${#parts[@]} ]] || return 1
+                [[ "${parts[$((i + 1))]}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || return 1
+                saw_model=true
+                i=$((i + 2))
+                ;;
+            --effort)
+                [[ "$saw_effort" == false && $((i + 1)) -lt ${#parts[@]} ]] || return 1
+                case "${parts[$((i + 1))]}" in
+                    low|medium|high|xhigh|max) ;;
+                    *) return 1 ;;
+                esac
+                saw_effort=true
+                i=$((i + 2))
+                ;;
+            --permission-mode)
+                [[ "$saw_permission" == false && $((i + 1)) -lt ${#parts[@]} ]] || return 1
+                [[ "${parts[$((i + 1))]}" == "acceptEdits" ]] || return 1
+                saw_permission=true
+                i=$((i + 2))
+                ;;
+            --allowed-tools)
+                [[ "$saw_tools" == false && $((i + 1)) -lt ${#parts[@]} ]] || return 1
+                case "${parts[$((i + 1))]}" in
+                    Read,Glob,Grep|Read,Glob,Grep,Edit,Write) ;;
+                    *) return 1 ;;
+                esac
+                saw_tools=true
+                i=$((i + 2))
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+
+    [[ "$saw_print" == true && "$saw_model" == true && "$saw_tools" == true ]]
+}
+
 # Validate agent command to prevent command injection
 # Only allows whitelisted command prefixes
 validate_agent_command() {
     local cmd="$1"
     local cmd_executable="${cmd%%[[:space:]]*}"
+    local configured_claude="${OCTOPUS_CLAUDE_BIN:-claude}"
+    local configured_claude_executable="${configured_claude%%[[:space:]]*}"
+    local trusted_plugin_root="${PLUGIN_DIR:-}"
+    if [[ -z "$trusted_plugin_root" ]]; then
+        trusted_plugin_root="$(cd "${_utils_lib_dir}/../.." && pwd)" || return 1
+    fi
+    local trusted_kimi_shim="${trusted_plugin_root}/scripts/helpers/kimi-exec.sh"
 
     # Allow helper shims only when they are the executable token, not when they
-    # appear later in the command string.
-    if [[ "$cmd_executable" == */vibe-exec.sh || "$cmd_executable" == */openai-compatible-agent.py ]]; then
+    # appear later in the command string. OpenAI-compatible helper arguments are
+    # validated strictly because model and cwd values are interpolated into the
+    # command returned by dispatch.
+    if [[ "$cmd_executable" == */scripts/helpers/openai-compatible-agent.py ]]; then
+        _validate_openai_compatible_agent_command "$cmd"
+        return $?
+    fi
+    if [[ "$cmd_executable" == */vibe-exec.sh || "$cmd_executable" == */ollama-run.sh || "$cmd_executable" == */codex-run.sh \
+        || "$cmd_executable" == */scripts/helpers/agy-exec.sh || "$cmd_executable" == */scripts/helpers/copilot-exec.sh \
+        || "$cmd_executable" == */scripts/helpers/commandcode-exec.sh || "$cmd_executable" == */scripts/helpers/grok-exec.sh \
+        || "$cmd_executable" == */scripts/helpers/claude-sdk-exec.sh ]]; then
         return 0
+    fi
+    if [[ "$cmd" == "$trusted_kimi_shim" ]]; then
+        return 0
+    fi
+    if [[ "$cmd_executable" == "env" ]]; then
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_GROK_MODEL" "/scripts/helpers/grok-exec.sh"; then
+            return 0
+        fi
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_KIMI_MODEL_HEX" "$trusted_kimi_shim" "" hex exact; then
+            return 0
+        fi
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_COPILOT_MODEL" "/scripts/helpers/copilot-exec.sh"; then
+            return 0
+        fi
+        if _validate_claude_sdk_env_command "$cmd"; then
+            return 0
+        fi
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_AGY_MODEL" "/scripts/helpers/agy-exec.sh"; then
+            return 0
+        fi
+        if _validate_env_prefixed_shim_command "$cmd" "OCTOPUS_VIBE_MODEL" "/scripts/helpers/vibe-exec.sh" "--output text"; then
+            return 0
+        fi
+    fi
+    if [[ "$cmd_executable" == "$configured_claude_executable" ]]; then
+        _validate_claude_agent_command "$cmd"
+        return $?
     fi
 
     # Whitelist of allowed command prefixes (v7.19.0: tightened to exact patterns)
     case "$cmd" in
         "codex "*|"codex")
             return 0 ;;
-        "gemini "*|"gemini")
-            return 0 ;;
         "agy "*|"agy")
             return 0 ;;
-        *"/scripts/helpers/agy-exec.sh")
-            return 0 ;;
-        "claude "*|"claude")
-            return 0 ;;
         "openrouter_execute"*) # openrouter_execute and openrouter_execute_model
+            return 0 ;;
+        "orcarouter_execute"|"orcarouter_execute "*|"orcarouter_execute_model"|"orcarouter_execute_model "*)
             return 0 ;;
         "perplexity_execute"*) # v8.24.0: Perplexity Sonar API (Issue #22)
             return 0 ;;

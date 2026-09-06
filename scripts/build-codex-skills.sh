@@ -21,6 +21,9 @@
 
 set -euo pipefail
 
+# Keep generated metadata byte-stable across CI and contributor locales.
+export LC_ALL=C
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SKILLS_DIR="$PLUGIN_ROOT/.claude/skills"
@@ -78,6 +81,39 @@ display_name() {
         }
         print
     }'
+}
+
+ui_short_description() {
+    local description="$1"
+    local skill_display_name="$2"
+
+    description="$(normalize_single_line "$description")"
+    if [[ ${#description} -lt 25 ]]; then
+        description="Help with ${skill_display_name} tasks and workflows"
+    fi
+    if [[ ${#description} -le 64 ]]; then
+        printf '%s\n' "$description"
+        return 0
+    fi
+
+    local limit=61
+    local prefix="${description:0:$limit}"
+    local next_character="${description:$limit:1}"
+    prefix="$(printf '%s' "$prefix" | sed -E 's/[[:space:]]+$//')"
+
+    # If the boundary lands inside a word, remove that partial word. A string
+    # with no usable boundary gets a stable complete fallback phrase.
+    if [[ -n "$next_character" && "$next_character" != [[:space:]] ]]; then
+        if [[ "$prefix" == *" "* ]]; then
+            prefix="${prefix% *}"
+        else
+            prefix="Help with this skill and related workflows"
+        fi
+    fi
+    if [[ ${#prefix} -lt 22 ]]; then
+        prefix="Help with this skill and related workflows"
+    fi
+    printf '%s...\n' "$prefix"
 }
 
 compat_alias_for() {
@@ -196,7 +232,14 @@ source_has_enforced_execution() {
 body_has_enforcement() {
     local file="$1"
     awk '
-        BEGIN { frontmatter_count = 0; in_body = 0; found = 0 }
+        BEGIN {
+            frontmatter_count = 0
+            in_body = 0
+            in_fence = 0
+            in_contract = 0
+            contract_level = 0
+            found = 0
+        }
         /^---$/ {
             frontmatter_count++
             if (frontmatter_count >= 2) {
@@ -204,7 +247,34 @@ body_has_enforcement() {
             }
             next
         }
-        in_body && /MANDATORY COMPLIANCE|EXECUTION CONTRACT.*MANDATORY|CANNOT SKIP/ {
+
+        !in_body { next }
+
+        /^[[:space:]]*(```|~~~)/ {
+            in_fence = !in_fence
+            next
+        }
+        in_fence { next }
+
+        /^#+[[:space:]]/ &&
+            (/Execution Contract/ || /EXECUTION CONTRACT/ || /MANDATORY COMPLIANCE/) {
+            match($0, /^#+/)
+            in_contract = 1
+            contract_level = RLENGTH
+            if ($0 ~ /MANDATORY COMPLIANCE|EXECUTION CONTRACT.*MANDATORY|CANNOT SKIP/) {
+                found = 1
+                exit
+            }
+            next
+        }
+        in_contract && /^#+[[:space:]]/ {
+            match($0, /^#+/)
+            if (RLENGTH <= contract_level) {
+                in_contract = 0
+            }
+        }
+        in_contract &&
+            /(^|[^[:alnum:]_])(MUST|MANDATORY|PROHIBITED|CANNOT|CANNOT SKIP|DO NOT)([^[:alnum:]_]|$)/ {
             found = 1
             exit
         }
@@ -246,8 +316,8 @@ adapt_body_for_codex() {
         -e 's/`--full-auto`/`--skip-git-repo-check`/g' \
         -e 's/Do NOT pipe stdin to codex — pass prompt as positional argument after flags/Prefer stdin-based prompt delivery for long prompts; use scripts\/lib\/dispatch.sh when possible/g' \
         -e 's/Core four always participate:/Core participants must be selected from actual available providers:/g' \
-        -e 's/🟠 Sonnet 4\.6: Available ✓ \(via host subagent tool — no extra cost\)/🟠 Sonnet 4.6: available only when this Codex session exposes a compatible host subagent tool/g' \
-        -e 's/🟠 Sonnet 4\.6 - Pragmatic implementer perspective/🟠 Sonnet 4.6 - Pragmatic implementer perspective if host subagents are available/g' \
+        -e 's/🟠 Sonnet 5: Available ✓ \(via host subagent tool — no extra cost\)/🟠 Sonnet 5: available only when this Codex session exposes a compatible host subagent tool/g' \
+        -e 's/🟠 Sonnet 5 - Pragmatic implementer perspective/🟠 Sonnet 5 - Pragmatic implementer perspective if host subagents are available/g' \
         -e 's/Claude \(Opus\)/current host model/g' \
         -e 's/Claude\/Opus/current host model/g' \
         -e 's/You are Claude \(Opus\)/You are the current host model/g' \
@@ -293,6 +363,17 @@ write_skill() {
     local skill_dir="$2"
     local codex_name="$3"
     local codex_desc="$4"
+    local codex_display_name="${5:-}"
+    local codex_short_desc="${6:-}"
+    local disable_model
+    disable_model="$(extract_field "$file" "disable-model-invocation")"
+
+    if [[ -z "$codex_display_name" ]]; then
+        codex_display_name="$(display_name "$codex_name")"
+    fi
+    if [[ -z "$codex_short_desc" ]]; then
+        codex_short_desc="$(ui_short_description "$codex_desc" "$codex_display_name")"
+    fi
 
     mkdir -p "$skill_dir"
 
@@ -300,6 +381,7 @@ write_skill() {
         echo "---"
         echo "name: $codex_name"
         echo "description: \"$codex_desc\""
+        [[ -n "$disable_model" ]] && echo "disable-model-invocation: $disable_model"
         echo "---"
         host_preamble
         adapt_body_for_codex "$file"
@@ -308,9 +390,30 @@ write_skill() {
     mkdir -p "$skill_dir/agents"
     {
         echo "interface:"
-        printf '  display_name: %s\n' "$(yaml_quote "$(display_name "$codex_name")")"
-        printf '  short_description: %s\n' "$(yaml_quote "$codex_desc")"
+        printf '  display_name: %s\n' "$(yaml_quote "$codex_display_name")"
+        printf '  short_description: %s\n' "$(yaml_quote "$codex_short_desc")"
+        if [[ "$disable_model" == true ]]; then
+            printf 'policy:\n  allow_implicit_invocation: false\n'
+        fi
     } > "$skill_dir/agents/openai.yaml"
+}
+
+# Directories under skills/ that are hand-maintained rather than generated.
+# Everything else is wiped and rebuilt from .claude/skills/, so anything listed
+# here MUST be excluded or a plain regeneration silently deletes it.
+#
+#   blocks               shared prose fragments, no per-skill source
+#   octopus-starter-pack a bundle of four sub-skills with no .claude/skills
+#                        counterpart, registered in plugin.json
+#   skill-council        has never had a source (no delete recorded in git
+#                        history); generating without this exclusion removes it
+PRESERVED_SKILL_DIRS=(blocks octopus-starter-pack skill-council)
+
+_preserve_find_args() {
+    local d
+    for d in "${PRESERVED_SKILL_DIRS[@]}"; do
+        printf '%s\n' "!" "-name" "$d"
+    done
 }
 
 prepare_target_dir() {
@@ -318,15 +421,20 @@ prepare_target_dir() {
 
     if [[ "$target_dir" == "$OUTPUT_DIR" ]]; then
         mkdir -p "$target_dir"
-        find "$target_dir" -mindepth 1 -maxdepth 1 -type d ! -name blocks -exec rm -rf {} +
+        local -a keep=()
+        while IFS= read -r a; do keep+=("$a"); done < <(_preserve_find_args)
+        find "$target_dir" -mindepth 1 -maxdepth 1 -type d "${keep[@]}" -exec rm -rf {} +
         find "$target_dir" -mindepth 1 -maxdepth 1 -type f -delete
     else
         rm -rf "$target_dir"
         mkdir -p "$target_dir"
-        if [[ -d "$OUTPUT_DIR/blocks" ]]; then
-            mkdir -p "$target_dir/blocks"
-            cp -R "$OUTPUT_DIR/blocks/." "$target_dir/blocks/"
-        fi
+        local d
+        for d in "${PRESERVED_SKILL_DIRS[@]}"; do
+            if [[ -d "$OUTPUT_DIR/$d" ]]; then
+                mkdir -p "$target_dir/$d"
+                cp -R "$OUTPUT_DIR/$d/." "$target_dir/$d/"
+            fi
+        done
     fi
 
     write_codex_adapter_block "$target_dir"
@@ -387,7 +495,14 @@ main() {
         local codex_desc
         codex_desc=$(truncate "$description" 1024)
 
-        write_skill "$file" "$target_dir/$codex_name" "$codex_name" "$codex_desc"
+        local codex_display_name
+        codex_display_name=$(extract_field "$file" "codex_display_name")
+        [[ -n "$codex_display_name" ]] || codex_display_name="$(display_name "$codex_name")"
+
+        local codex_short_desc
+        codex_short_desc="$(ui_short_description "$description" "$codex_display_name")"
+
+        write_skill "$file" "$target_dir/$codex_name" "$codex_name" "$codex_desc" "$codex_display_name" "$codex_short_desc"
 
         ((count++)) || true
         $VERBOSE && echo "  OK: $basename → skills/$codex_name/SKILL.md"
@@ -395,7 +510,19 @@ main() {
         local alias_name
         alias_name="$(compat_alias_for "$codex_name")"
         if [[ -n "$alias_name" ]]; then
-            write_skill "$file" "$target_dir/$alias_name" "$alias_name" "$codex_desc"
+            local alias_desc
+            alias_desc=$(extract_field "$file" "codex_alias_description")
+            [[ -n "$alias_desc" ]] || alias_desc="$codex_desc"
+            alias_desc=$(truncate "$alias_desc" 1024)
+
+            local alias_display_name
+            alias_display_name=$(extract_field "$file" "codex_alias_display_name")
+            [[ -n "$alias_display_name" ]] || alias_display_name="$(display_name "$alias_name")"
+
+            local alias_short_desc
+            alias_short_desc="$(ui_short_description "$alias_desc" "$alias_display_name")"
+
+            write_skill "$file" "$target_dir/$alias_name" "$alias_name" "$alias_desc" "$alias_display_name" "$alias_short_desc"
             ((count++)) || true
             $VERBOSE && echo "  OK: $basename → skills/$alias_name/SKILL.md (compat alias)"
         fi
@@ -419,4 +546,6 @@ main() {
     fi
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

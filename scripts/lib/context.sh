@@ -6,6 +6,14 @@
 #            detect_response_mode, build_skill_context, build_memory_context
 
 
+# count_words() lives in lib/utils.sh; pull it in when this file is sourced
+# standalone (tests do) rather than through orchestrate.sh's load order.
+if ! declare -f count_words >/dev/null 2>&1; then
+    if ! source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/utils.sh"; then
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONTEXT DETECTION (v7.8.1)
 # Auto-detects Dev vs Knowledge context to tailor workflow behavior
@@ -174,7 +182,7 @@ detect_response_mode() {
 
     # Word count heuristics
     local word_count
-    local _words=($prompt); word_count=${#_words[@]}
+    word_count=$(count_words "$prompt")
 
     if [[ $word_count -lt 10 ]]; then
         echo "direct"

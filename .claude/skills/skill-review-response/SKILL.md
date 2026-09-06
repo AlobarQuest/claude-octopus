@@ -1,8 +1,9 @@
 ---
 name: skill-review-response
-description: "How to handle code review feedback — verify before implementing, push back when wrong, never agree blindly"
+disable-model-invocation: true
+description: "Use when a reviewer, CI bot, or another AI leaves feedback to address"
 trigger: |
-  AUTOMATICALLY ACTIVATE when:
+  EXPLICITLY USE when:
   - Receiving code review feedback (PR comments, review agent output)
   - Processing suggestions from /octo:review or /octo:staged-review
   - Responding to CI failure feedback
@@ -79,7 +80,7 @@ Provide:
 In Claude Octopus workflows, review feedback comes from multiple sources:
 
 - **Codex review** — tends toward enterprise patterns, may over-engineer
-- **Gemini review** — tends toward ecosystem conformity, may suggest unnecessary deps
+- **Antigravity review** — tends toward ecosystem conformity, may suggest unnecessary dependencies
 - **Claude review** — tends toward elegance, may under-engineer error handling
 - **Sonnet review** — tends toward thoroughness, may flag low-priority issues
 

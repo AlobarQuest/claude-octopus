@@ -52,24 +52,16 @@ show_config_summary() {
     fi
     echo ""
 
-    # Gemini Status
-    echo -e "  ${CYAN}┌─ GEMINI (Google)${NC}"
-    if [[ "$PROVIDER_GEMINI_INSTALLED" == "true" && "$PROVIDER_GEMINI_AUTH_METHOD" != "none" ]]; then
+    # Antigravity Status (sole Google seat)
+    echo -e "  ${CYAN}┌─ ANTIGRAVITY (Google)${NC}"
+    if [[ "$PROVIDER_AGY_INSTALLED" == "true" && "$PROVIDER_AGY_AUTH_METHOD" != "none" ]]; then
         echo -e "  ${CYAN}│${NC}  ${GREEN}✓${NC} Configured"
-        echo -e "  ${CYAN}│${NC}  Auth:      ${GREEN}$PROVIDER_GEMINI_AUTH_METHOD${NC}"
-        local tier_indicator
-        tier_indicator=$(get_tier_indicator "gemini")
-        echo -e "  ${CYAN}│${NC}  Tier:      ${GREEN}$PROVIDER_GEMINI_TIER${NC} $tier_indicator"
-        echo -e "  ${CYAN}│${NC}  Cost Tier: ${GREEN}$PROVIDER_GEMINI_COST_TIER${NC}"
-        if [[ "$PROVIDER_GEMINI_AUTH_METHOD" == "api-key" && -n "${GEMINI_API_KEY:-}" ]]; then
-            local masked_key
-            masked_key=$(mask_api_key "$GEMINI_API_KEY")
-            echo -e "  ${CYAN}│${NC}  API Key:   ${YELLOW}$masked_key${NC}"
-        fi
+        echo -e "  ${CYAN}│${NC}  Auth:      ${GREEN}$PROVIDER_AGY_AUTH_METHOD${NC}"
+        echo -e "  ${CYAN}│${NC}  Model:     ${GREEN}$(agy_current_model 2>/dev/null || echo default)${NC}"
     else
         echo -e "  ${CYAN}│${NC}  ${RED}✗${NC} Not configured"
-        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Install: ${CYAN}npm install -g @google/gemini-cli${NC}"
-        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Configure: ${CYAN}gemini login${NC}"
+        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Install the Antigravity CLI from Google"
+        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Configure: launch plain ${CYAN}agy${NC} and complete browser sign-in"
     fi
     echo ""
 
@@ -112,6 +104,22 @@ show_config_summary() {
         echo -e "  ${CYAN}│${NC}  ${YELLOW}○${NC} Not configured (Optional)"
         echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Sign up: ${CYAN}https://openrouter.ai${NC}"
         echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Set: ${CYAN}export OPENROUTER_API_KEY='sk-or-...'${NC}"
+    fi
+    echo ""
+
+    # OrcaRouter Status
+    echo -e "  ${CYAN}┌─ ORCAROUTER (Universal Fallback)${NC}"
+    if [[ "$PROVIDER_ORCAROUTER_ENABLED" == "true" && "$PROVIDER_ORCAROUTER_API_KEY_SET" == "true" ]]; then
+        echo -e "  ${CYAN}│${NC}  ${GREEN}✓${NC} Configured (Optional)"
+        if [[ -n "${ORCAROUTER_API_KEY:-}" ]]; then
+            local masked_orca_key
+            masked_orca_key=$(mask_api_key "$ORCAROUTER_API_KEY")
+            echo -e "  ${CYAN}│${NC}  API Key:   ${YELLOW}$masked_orca_key${NC}"
+        fi
+    else
+        echo -e "  ${CYAN}│${NC}  ${YELLOW}○${NC} Not configured (Optional)"
+        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Sign up: ${CYAN}https://www.orcarouter.ai${NC}"
+        echo -e "  ${CYAN}│${NC}  ${YELLOW}→${NC} Set: ${CYAN}export ORCAROUTER_API_KEY='sk-orca-...'${NC}"
     fi
     echo ""
 
@@ -260,6 +268,49 @@ toggle_knowledge_work_mode() {
 # Extracted from orchestrate.sh (v9.7.8)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Persist one provider secret without echoing it to the terminal. The existing
+# non-interactive resolver reads ~/.env, so values stored here are also visible
+# to health checks and provider detection in later sessions.
+persist_provider_secret() (
+    local var_name="$1"
+    local value="$2"
+    local env_file="${OCTOPUS_SECRET_ENV_FILE:-${HOME}/.env}"
+    local env_dir=""
+    local temp_file=""
+
+    [[ "$var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+
+    env_dir=$(dirname "$env_file")
+    umask 077
+    mkdir -p "$env_dir" || return 1
+    temp_file=$(mktemp "${env_file}.tmp.XXXXXX") || return 1
+
+    if [[ -f "$env_file" ]]; then
+        awk -v name="$var_name" '
+            {
+                assignment = $0
+                sub(/^[[:space:]]+/, "", assignment)
+                sub(/^export[[:space:]]+/, "", assignment)
+                if (index(assignment, name "=") != 1) print
+            }
+        ' \
+            "$env_file" > "$temp_file" || {
+            rm -f "$temp_file"
+            return 1
+        }
+    fi
+    printf '%s=%s\n' "$var_name" "$value" >> "$temp_file" || {
+        rm -f "$temp_file"
+        return 1
+    }
+    chmod 600 "$temp_file" || {
+        rm -f "$temp_file"
+        return 1
+    }
+    mv -f "$temp_file" "$env_file"
+)
+
 # Interactive setup wizard
 setup_wizard() {
     # Detect if running in non-interactive mode (e.g., called by Claude Code)
@@ -279,7 +330,7 @@ setup_wizard() {
     echo -e "  This wizard will help you install dependencies and configure API keys."
     echo ""
 
-    local total_steps=10
+    local total_steps=11
     local current_step=0
     local shell_profile=""
     local keys_to_add=""
@@ -289,16 +340,18 @@ setup_wizard() {
     PROVIDER_CODEX_AUTH_METHOD="none"
     PROVIDER_CODEX_TIER="free"
     PROVIDER_CODEX_COST_TIER="free"
-    PROVIDER_GEMINI_INSTALLED="false"
-    PROVIDER_GEMINI_AUTH_METHOD="none"
-    PROVIDER_GEMINI_TIER="free"
-    PROVIDER_GEMINI_COST_TIER="free"
+    PROVIDER_AGY_INSTALLED="false"
+    PROVIDER_AGY_AUTH_METHOD="none"
+    PROVIDER_AGY_TIER="subscription"
+    PROVIDER_AGY_COST_TIER="bundled"
     PROVIDER_CLAUDE_INSTALLED="true"
     PROVIDER_CLAUDE_AUTH_METHOD="oauth"
     PROVIDER_CLAUDE_TIER="pro"
     PROVIDER_CLAUDE_COST_TIER="medium"
     PROVIDER_OPENROUTER_ENABLED="false"
     PROVIDER_OPENROUTER_API_KEY_SET="false"
+    PROVIDER_ORCAROUTER_ENABLED="false"
+    PROVIDER_ORCAROUTER_API_KEY_SET="false"
     COST_OPTIMIZATION_STRATEGY="balanced"
 
     # Detect shell profile
@@ -339,30 +392,20 @@ setup_wizard() {
     echo ""
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 2: Check/Install Gemini CLI
+    # STEP 2: Check Antigravity CLI
     # ═══════════════════════════════════════════════════════════════════════════
     ((++current_step))
-    echo -e "${CYAN}Step $current_step/$total_steps: Gemini CLI (Tentacles 5-8)${NC}"
-    echo -e "  Google's Gemini CLI powers our reasoning and image tentacles."
+    echo -e "${CYAN}Step $current_step/$total_steps: Antigravity CLI (Google seat)${NC}"
+    echo -e "  Antigravity is the supported Google seat for Octopus workflows."
     echo ""
 
-    if command -v gemini &>/dev/null; then
-        echo -e "  ${GREEN}✓${NC} Gemini CLI already installed: $(command -v gemini)"
+    if command -v agy &>/dev/null; then
+        PROVIDER_AGY_INSTALLED="true"
+        PROVIDER_AGY_AUTH_METHOD="cli"
+        echo -e "  ${GREEN}✓${NC} Antigravity CLI already installed: $(command -v agy)"
     else
-        echo -e "  ${YELLOW}✗${NC} Gemini CLI not found"
-        echo ""
-        read -p "  Install Gemini CLI now? (requires npm) [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            echo -e "  ${CYAN}→${NC} Installing Gemini CLI..."
-            if npm install -g @anthropic/gemini-cli 2>&1 | sed 's/^/    /'; then
-                echo -e "  ${GREEN}✓${NC} Gemini CLI installed successfully"
-            else
-                echo -e "  ${RED}✗${NC} Installation failed. Try manually: npm install -g @anthropic/gemini-cli"
-            fi
-        else
-            echo -e "  ${YELLOW}⚠${NC} Skipped. Install later: npm install -g @anthropic/gemini-cli"
-        fi
+        echo -e "  ${YELLOW}✗${NC} Antigravity CLI not found"
+        echo -e "  Install ${CYAN}agy${NC} from Google Antigravity, then launch it and complete browser sign-in."
     fi
     echo ""
 
@@ -406,63 +449,18 @@ setup_wizard() {
     echo ""
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 4: Gemini Authentication
+    # STEP 4: Antigravity Authentication
     # ═══════════════════════════════════════════════════════════════════════════
     ((++current_step))
-    echo -e "${CYAN}Step $current_step/$total_steps: Gemini Authentication${NC}"
-    echo -e "  Required for Gemini CLI (reasoning and image generation)."
+    echo -e "${CYAN}Step $current_step/$total_steps: Antigravity Authentication${NC}"
+    echo -e "  AGY owns Google-seat authentication."
     echo ""
 
-    # Check for legacy GOOGLE_API_KEY
-    if [[ -z "${GEMINI_API_KEY:-}" && -n "${GOOGLE_API_KEY:-}" ]]; then
-        export GEMINI_API_KEY="$GOOGLE_API_KEY"
-    fi
-
-    # Check OAuth first (preferred)
-    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-        echo -e "  ${GREEN}✓${NC} Gemini: OAuth authenticated"
-        local auth_type
-        auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")
-        echo -e "      Type: $auth_type"
-        # macOS keychain prompt warning for OAuth users
-        if [[ "$OCTOPUS_PLATFORM" == "Darwin" ]]; then
-            echo -e "  ${GREEN}✓${NC} macOS keychain bypass active (file-based token storage)"
-        fi
-    elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
-        echo -e "  ${GREEN}✓${NC} Gemini: API key set (${#GEMINI_API_KEY} chars)"
+    if command -v agy &>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} Antigravity CLI is available"
+        echo -e "  If needed, refresh its session by launching plain ${CYAN}agy${NC} and completing browser sign-in."
     else
-        echo -e "  ${YELLOW}✗${NC} Gemini: Not authenticated"
-        if [[ "$NON_INTERACTIVE" == "true" ]]; then
-            echo ""
-            echo -e "  ${CYAN}Option 1 (Recommended):${NC} Run: ${GREEN}gemini${NC} and select 'Login with Google'"
-            echo -e "  ${CYAN}Option 2:${NC} export GEMINI_API_KEY=\"AIza...\" (get from https://aistudio.google.com/apikey)"
-        else
-            echo ""
-            echo -e "  ${CYAN}Option 1 (Recommended):${NC} OAuth Login"
-            echo -e "    Run: ${GREEN}gemini${NC}"
-            echo -e "    Select 'Login with Google' and follow browser prompts"
-            echo ""
-            echo -e "  ${CYAN}Option 2:${NC} API Key"
-            echo -e "    Get key from: https://aistudio.google.com/apikey"
-            echo ""
-            read -p "  Open Google AI Studio to get an API key? [Y/n] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                echo -e "  ${CYAN}→${NC} Opening https://aistudio.google.com/apikey ..."
-                open_browser "https://aistudio.google.com/apikey"
-                sleep 1
-            fi
-            echo ""
-            echo -e "  Paste your Gemini API key (starts with 'AIza'), or press Enter if using OAuth:"
-            read -p "  → " gemini_key
-            if [[ -n "$gemini_key" ]]; then
-                export GEMINI_API_KEY="$gemini_key"
-                keys_to_add="${keys_to_add}export GEMINI_API_KEY=\"$gemini_key\"\n"
-                echo -e "  ${GREEN}✓${NC} GEMINI_API_KEY set for this session"
-            else
-                echo -e "  ${YELLOW}⚠${NC} Skipped. Authenticate later via 'gemini' OR set GEMINI_API_KEY"
-            fi
-        fi
+        echo -e "  ${YELLOW}✗${NC} Antigravity CLI is not installed"
     fi
     echo ""
 
@@ -507,47 +505,16 @@ setup_wizard() {
     echo ""
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 6: Gemini Subscription Tier (v4.8)
+    # STEP 6: Antigravity Model
     # ═══════════════════════════════════════════════════════════════════════════
     ((++current_step))
-    if command -v gemini &>/dev/null && [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]]; then
-        PROVIDER_GEMINI_INSTALLED="true"
-        [[ -f "$HOME/.gemini/oauth_creds.json" ]] && PROVIDER_GEMINI_AUTH_METHOD="oauth" || PROVIDER_GEMINI_AUTH_METHOD="api-key"
-
-        echo -e "${CYAN}Step $current_step/$total_steps: Gemini Subscription Tier${NC}"
-
-        if [[ "$NON_INTERACTIVE" == "true" ]]; then
-            # Auto-detect based on auth method
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-                gemini_tier_choice=1  # Free tier for OAuth users
-                echo -e "  ${GREEN}✓${NC} Auto-detected: Free tier (OAuth authenticated)"
-            else
-                gemini_tier_choice=4  # API-only for API key users
-                echo -e "  ${GREEN}✓${NC} Auto-detected: API-only (API key authentication)"
-            fi
-        else
-            echo -e "  ${YELLOW}This helps us route heavy tasks to 'free' bundled services.${NC}"
-            echo ""
-            echo -e "  ${GREEN}[1]${NC} Free              ${CYAN}(Personal Google account, limited)${NC}"
-            echo -e "  ${GREEN}[2]${NC} Google One (\$10/mo) ${CYAN}(Gemini Advanced with 2M context)${NC}"
-            echo -e "  ${GREEN}[3]${NC} Workspace         ${CYAN}(Bundled with Google Workspace - FREE!)${NC}"
-            echo -e "  ${GREEN}[4]${NC} API Only          ${CYAN}(Pay-per-use, no subscription)${NC}"
-            echo ""
-            read -p "  Enter choice [1-4, default 1]: " gemini_tier_choice
-            gemini_tier_choice="${gemini_tier_choice:-1}"
-        fi
-
-        case "$gemini_tier_choice" in
-            1) PROVIDER_GEMINI_TIER="free"; PROVIDER_GEMINI_COST_TIER="free" ;;
-            2) PROVIDER_GEMINI_TIER="google-one"; PROVIDER_GEMINI_COST_TIER="low" ;;
-            3) PROVIDER_GEMINI_TIER="workspace"; PROVIDER_GEMINI_COST_TIER="bundled" ;;
-            4) PROVIDER_GEMINI_TIER="api-only"; PROVIDER_GEMINI_COST_TIER="pay-per-use" ;;
-            *) PROVIDER_GEMINI_TIER="free"; PROVIDER_GEMINI_COST_TIER="free" ;;
-        esac
-        echo -e "  ${GREEN}✓${NC} Gemini tier set to: $PROVIDER_GEMINI_TIER ($PROVIDER_GEMINI_COST_TIER)"
+    if command -v agy &>/dev/null; then
+        echo -e "${CYAN}Step $current_step/$total_steps: Antigravity Model${NC}"
+        echo -e "  ${GREEN}✓${NC} Current model: $(agy_current_model 2>/dev/null || echo default)"
+        echo -e "  Change it in AGY or set ${CYAN}OCTOPUS_AGY_MODEL${NC} to an exact ${CYAN}agy models${NC} label."
     else
-        echo -e "${CYAN}Step $current_step/$total_steps: Gemini Subscription Tier${NC}"
-        echo -e "  ${YELLOW}⚠${NC} Gemini not available, skipping tier configuration"
+        echo -e "${CYAN}Step $current_step/$total_steps: Antigravity Model${NC}"
+        echo -e "  ${YELLOW}⚠${NC} AGY not available, skipping model display"
     fi
     echo ""
 
@@ -570,7 +537,7 @@ setup_wizard() {
             echo -e "  ${YELLOW}✗${NC} OPENROUTER_API_KEY not set (optional)"
             echo ""
             echo -e "  ${CYAN}OpenRouter is optional.${NC} It provides:"
-            echo -e "    - Universal fallback when Codex/Gemini unavailable"
+            echo -e "    - Universal fallback when Codex/Antigravity unavailable"
             echo -e "    - Access to 400+ models (Claude, GPT, Gemini, Llama, etc.)"
             echo -e "    - Pay-per-use pricing with routing optimization"
             echo ""
@@ -605,6 +572,55 @@ setup_wizard() {
             fi
         else
             echo -e "  ${YELLOW}⚠${NC} OpenRouter skipped. Add later: export OPENROUTER_API_KEY=\"your-key\""
+        fi
+    fi
+    echo ""
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 8b: OrcaRouter (Universal Fallback, OpenAI-compatible)
+    # ═══════════════════════════════════════════════════════════════════════════
+    ((++current_step))
+    echo -e "${CYAN}Step $current_step/$total_steps: OrcaRouter (Universal Fallback)${NC}"
+    echo -e "  ${YELLOW}OrcaRouter provides a single gateway to many models as a backup when other CLIs are unavailable.${NC}"
+    echo ""
+
+    if [[ -n "${ORCAROUTER_API_KEY:-}" ]]; then
+        PROVIDER_ORCAROUTER_ENABLED="true"
+        PROVIDER_ORCAROUTER_API_KEY_SET="true"
+        echo -e "  ${GREEN}✓${NC} ORCAROUTER_API_KEY already set"
+    else
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            echo -e "  ${YELLOW}⚠${NC} OrcaRouter not configured (optional - skipping in auto mode)"
+        else
+            echo -e "  ${YELLOW}✗${NC} ORCAROUTER_API_KEY not set (optional)"
+            echo ""
+            read -p "  Configure OrcaRouter? [y/N] " -n 1 -r
+            echo
+        fi
+        if [[ "${NON_INTERACTIVE}" != "true" ]] && [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "  ${CYAN}→${NC} Get an API key from: https://www.orcarouter.ai"
+            echo ""
+            read -r -s -p "  Paste your OrcaRouter API key (starts with 'sk-orca-'): " orcarouter_key
+            echo
+            if [[ -n "$orcarouter_key" ]]; then
+                export "ORCAROUTER_API_KEY=${orcarouter_key}"
+                PROVIDER_ORCAROUTER_ENABLED="true"
+                PROVIDER_ORCAROUTER_API_KEY_SET="true"
+                echo -e "  ${GREEN}✓${NC} ORCAROUTER_API_KEY set for this session"
+                read -p "  Save it to ~/.env with mode 600? [Y/n] " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                    if persist_provider_secret "ORCAROUTER_API_KEY" "$orcarouter_key"; then
+                        echo -e "  ${GREEN}✓${NC} Saved ORCAROUTER_API_KEY securely to ~/.env"
+                    else
+                        echo -e "  ${RED}✗${NC} Could not persist ORCAROUTER_API_KEY" >&2
+                    fi
+                fi
+            else
+                echo -e "  ${YELLOW}⚠${NC} Skipped OrcaRouter configuration"
+            fi
+        else
+            echo -e "  ${YELLOW}⚠${NC} OrcaRouter skipped. Add later: export \"ORCAROUTER_API_KEY=your-key\""
         fi
     fi
     echo ""
@@ -729,7 +745,8 @@ setup_wizard() {
                 ;;
             2)
                 for tool in jq shellcheck; do
-                    if [[ " ${missing_tools[*]} " =~ " $tool " ]]; then
+                    # Plain substring membership test, not a regex match.
+                    if [[ " ${missing_tools[*]} " == *" $tool "* ]]; then
                         tools_to_install+=("$tool")
                     fi
                 done
@@ -765,16 +782,7 @@ setup_wizard() {
 
     # Determine if all required components are configured
     local all_good=true
-    if ! command -v codex &>/dev/null; then
-        all_good=false
-    fi
-    if ! command -v gemini &>/dev/null; then
-        all_good=false
-    fi
-    if [[ -z "${OPENAI_API_KEY:-}" ]] && [[ ! -f "$HOME/.codex/auth.json" ]]; then
-        all_good=false
-    fi
-    if [[ ! -f "$HOME/.gemini/oauth_creds.json" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    if ! command -v codex &>/dev/null && ! command -v agy &>/dev/null; then
         all_good=false
     fi
 
@@ -861,10 +869,7 @@ setup_wizard() {
 check_first_run() {
     if [[ ! -f "$SETUP_CONFIG_FILE" ]]; then
         # Check if any required component is missing
-        if ! command -v codex &>/dev/null || \
-           ! command -v gemini &>/dev/null || \
-           [[ -z "${OPENAI_API_KEY:-}" ]] || \
-           [[ -z "${GEMINI_API_KEY:-}" ]]; then
+        if ! command -v codex &>/dev/null && ! command -v agy &>/dev/null; then
             echo ""
             echo -e "${YELLOW}🐙 First time? Run the configuration wizard to get started:${NC}"
             echo -e "   ${CYAN}./scripts/orchestrate.sh octopus-configure${NC}"
@@ -1013,13 +1018,13 @@ knowledge_work_mode: "$new_mode"
 # Available API keys (auto-detected)
 available_keys:
   openai: false
-  gemini: false
+  agy: false
 
 # Derived settings (auto-configured based on tier + keys)
 settings:
   opus_budget: "balanced"
   default_complexity: 2
-  prefer_gemini_for_analysis: false
+  prefer_agy_for_analysis: false
   max_parallel_agents: 3
 EOF
     fi

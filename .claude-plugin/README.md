@@ -2,9 +2,11 @@
 
 # Claude Octopus
 
-**One prompt. Up to nine AI providers checking each other's work.** Claude Octopus turns Claude Code into a multi-LLM orchestration engine — Codex, Gemini, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, and OpenCode all contribute perspectives, then a 75% consensus gate catches disagreements before they ship.
+**One prompt. Up to twelve external AI integrations checking each other's work.** Claude Octopus turns Claude Code into a multi-LLM orchestration engine — Codex, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OrcaRouter, OpenCode, Cursor CLI, Grok, and Kimi Code all contribute perspectives, then a 75% consensus gate catches disagreements before they ship.
 
 **Claude-native first, Octopus for escalation.** Use Claude-native `/init`, `/review`, and `/security-review` when Claude is enough. Use Octopus when you want multiple model opinions, adversarial review, or stricter multi-LLM workflows.
+
+> Claude Octopus is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic.
 
 ## What Changes
 
@@ -14,16 +16,34 @@ Without Octopus, you ask one model and trust the answer. With it:
 You:        /octo:auto should I use Redis or DynamoDB for sessions?
 
 What runs:  🔴 Codex analyzes implementation trade-offs
-            🟡 Gemini researches ecosystem patterns
+            🧭 Antigravity researches ecosystem patterns
             🔵 Claude synthesizes + applies consensus gate
 
 You get:    A structured comparison with three independent viewpoints,
             scored for agreement. Disagreements are flagged, not hidden.
 ```
 
-This works for research, escalated code review, debugging, TDD, escalated security audits, UI design, PRDs, and full build-to-ship workflows — 49 commands, 54 skills, 32 specialized personas.
+This works for research, escalated code review, debugging, TDD, escalated security audits, UI design, PRDs, and full build-to-ship workflows — 53 commands, 62 skills, 31 specialized personas.
 
-Multi-provider runs show an agent summary before synthesis, so failed, timed out, or oversize-rejected Codex, Gemini, Antigravity, OpenRouter, and other perspectives are visible instead of being hidden behind a polished final answer.
+Octopus is dormant on install. Installing it does not route ordinary prompts or
+delegate to Octopus agents. Every command and skill is manual-only: use
+`/octo:*` when you want escalation. Completing `/octo:setup` turns on
+suggestions (`auto_router_mode=suggest`), which name a matching command without
+dispatching any provider; by default a profile that never ran setup stays fully
+dormant, and an existing preference is never overwritten. Either state can be
+overridden explicitly: `export OCTOPUS_AUTO_ROUTER_MODE=off` for the current
+shell (accepted values are `off`, `suggest`, and `invoke`), or
+`"auto_router_mode": "off"` in `~/.claude-octopus/preferences.json` to persist
+it. The environment variable wins over the stored preference. Automatic invocation stays opt-in behind
+`OCTOPUS_AUTO_ROUTER_MODE=invoke`. That opt-in
+examines ordinary prompts and can route them into paid external-provider
+workflows; use `suggest` unless you intentionally want automatic invocation and
+are comfortable sending the workflow prompt and any context that workflow
+explicitly gathers to configured providers. Provider-side retention follows
+those providers' account policies. Unset the variable (or set it to `off`) to
+opt out; direct `/octo:*` commands remain available.
+
+Multi-provider runs show an agent summary before synthesis, so failed, timed out, or oversize-rejected Codex, Antigravity, OpenRouter, and other perspectives are visible instead of being hidden behind a polished final answer.
 
 ## Install
 
@@ -50,16 +70,19 @@ Then run `/octo:setup` — it detects your providers, shows what's available, an
 | Write tests first, then code | `/octo:tdd create user auth` |
 | Go from spec to working software autonomously | `/octo:factory "CSV to JSON converter"` |
 | Check which providers contributed to the current run | `octopus agent-summary` |
+| Inspect or explain a durable v10 run | `octopus status --run latest --json` / `octopus explain --run latest` |
 | Just do something quick | `/octo:quick fix the login bug` |
 
 Don't know the command? Describe what you need — `/octo:auto <anything>` routes to the right workflow.
+
+Upgrading from v9? Read the [v10 migration guide](../docs/V10-MIGRATION.md).
 
 ## Prerequisites
 
 - Claude Code v2.1.14+
 - Zero external providers needed (Claude is built in)
-- Optional: Codex CLI, Gemini CLI, Antigravity CLI (`agy`), Copilot, Qwen, Ollama, Perplexity API key, OpenRouter API key
-- Six of nine providers cost nothing extra when you already have the relevant subscriptions or local runtime (OAuth, free tiers, or local)
+- Optional: Codex CLI, Antigravity CLI (`agy`), Copilot, Qwen, Ollama, Perplexity API key, OpenRouter API key, OrcaRouter API key, OpenCode CLI, Cursor CLI (`agent`), xAI API key (Grok), and Kimi Code CLI
+- Five external integrations cost nothing extra when you already have the relevant subscriptions or local runtime (OAuth or local)
 
 ## One Limitation
 
@@ -68,7 +91,7 @@ Octopus orchestrates — it doesn't replace domain knowledge. If three models co
 ## Learn More
 
 - [**Full README**](../README.md) — feature deep-dive, provider grid, architecture, star history
-- [**Command Reference**](../docs/COMMAND-REFERENCE.md) — all 49 commands with triggers
-- [**Persona Guide**](../docs/AGENTS.md) — 32 specialized agents
+- [**Command Reference**](../docs/COMMAND-REFERENCE.md) — all 53 commands with triggers
+- [**Persona Guide**](../docs/AGENTS.md) — 31 specialized agents
 - [**Changelog**](../CHANGELOG.md) — release history
 - [**Issues**](https://github.com/nyldn/claude-octopus/issues) — bugs and feature requests

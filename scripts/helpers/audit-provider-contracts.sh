@@ -43,11 +43,11 @@ not_contains() {
 
 contains "${ROOT}/scripts/helpers/check-providers.sh" '^set -euo pipefail$' \
     "check-providers uses strict mode"
-contains "${ROOT}/scripts/helpers/check-providers.sh" 'name:degraded' \
-    "provider status contract documents degraded"
-contains "${ROOT}/scripts/helpers/check-providers.sh" 'qwen_state="degraded"' \
+contains "${ROOT}/scripts/helpers/check-providers.sh" 'octo_provider_readiness_legacy' \
+    "provider checker renders the shared readiness contract"
+contains "${ROOT}/scripts/lib/preflight.sh" 'auth-expired' \
     "qwen binary-with-bad-auth fails closed in provider banner"
-contains "${ROOT}/scripts/helpers/check-providers.sh" 'octo_event_emit "provider\.status"' \
+contains "${ROOT}/scripts/lib/preflight.sh" 'octo_event_emit "provider\.status"' \
     "provider banner can emit opt-in lifecycle events"
 
 contains "${ROOT}/scripts/lib/qwen.sh" 'oauth-unvalidated' \
@@ -59,8 +59,8 @@ contains "${ROOT}/scripts/lib/providers.sh" 'configure Coding-Plan' \
 not_contains "${ROOT}/scripts/lib/providers.sh" 'Qwen:.*free tier' \
     "qwen setup guidance does not advertise the retired free tier"
 
-contains "${ROOT}/scripts/lib/provider-versions.sh" 'OCTO_GEMINI_MIN_VERSION="\$\{OCTO_GEMINI_MIN_VERSION:-0\.45\.0\}"' \
-    "gemini version floor is current and env-overridable"
+contains "${ROOT}/scripts/lib/provider-versions.sh" 'OCTO_AGY_MIN_VERSION="\$\{OCTO_AGY_MIN_VERSION:-1\.0\.6\}"' \
+    "Antigravity version floor is current and env-overridable"
 contains "${ROOT}/scripts/lib/provider-versions.sh" 'OCTO_QWEN_MIN_VERSION="\$\{OCTO_QWEN_MIN_VERSION:-0\.14\.0\}"' \
     "qwen version floor is current and env-overridable"
 not_contains "${ROOT}/scripts/lib/auth.sh" 'grep -oE.*expiry_date' \

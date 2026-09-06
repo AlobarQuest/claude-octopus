@@ -1,0 +1,174 @@
+---
+command: security
+disable-model-invocation: true
+description: Enhanced multi-LLM or adversarial security audit — escalation path beyond Claude-native /security-review
+---
+
+# Security - Security Audit Skill
+
+## Positioning
+
+Use Claude-native `/security-review` for ordinary security review requests.
+
+Use `/octo:security` when the user explicitly wants enhanced multi-LLM or adversarial security audit behavior.
+
+**Your first output line MUST be:** `🐙 Octopus Security Audit`
+
+## Scheduled Claude Code Web Usage
+
+For recurring audits, schedule `/octo:security run a read-only security audit of this repository` as a Claude Code web or hosted task.
+
+Scheduled security runs must be read-only unless the user explicitly asks for remediation. Findings should be grouped as confirmed, disputed, or needs-human-review before any fix workflow starts.
+
+## 🤖 INSTRUCTIONS FOR CLAUDE
+
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:security`, you MUST execute the structured security audit workflow below.** You are PROHIBITED from doing a quick check directly, skipping the clarifying questions, or deciding the task is "too simple" for this workflow. The user chose this command deliberately — respect that choice.
+
+### EXECUTION MECHANISM — NON-NEGOTIABLE
+
+**You MUST dispatch work to external providers (Codex, Antigravity, etc.) for this command. You are PROHIBITED from:**
+- ❌ Executing the entire task using only Claude-native tools
+- ❌ Using a single Agent subagent instead of multi-provider dispatch
+- ❌ Skipping provider dispatch because "I can handle this alone"
+
+**Multi-LLM orchestration is the purpose of this command.** Single-model execution defeats its purpose.
+
+---
+
+When the user invokes this command (e.g., `/octo:security <arguments>`):
+
+### Step 1: Ask Clarifying Questions
+
+**CRITICAL: Before starting the security audit, use the AskUserQuestion tool to gather context:**
+
+Ask 3 clarifying questions to ensure targeted security assessment:
+
+```javascript
+AskUserQuestion({
+  questions: [
+    {
+      question: "What's the threat model for this application?",
+      header: "Threat Model",
+      multiSelect: false,
+      options: [
+        {label: "Standard web app", description: "Typical internet-facing application"},
+        {label: "High-value target", description: "Handles sensitive data or finances"},
+        {label: "Compliance-driven", description: "Must meet regulatory requirements"},
+        {label: "API-focused", description: "Primarily API endpoints and integrations"}
+      ]
+    },
+    {
+      question: "What compliance requirements apply?",
+      header: "Compliance",
+      multiSelect: true,
+      options: [
+        {label: "None specific", description: "General security best practices"},
+        {label: "OWASP Top 10", description: "Standard web security vulnerabilities"},
+        {label: "GDPR/HIPAA/PCI", description: "Data protection regulations"},
+        {label: "SOC2/ISO27001", description: "Enterprise security frameworks"}
+      ]
+    },
+    {
+      question: "What's your risk tolerance?",
+      header: "Risk Level",
+      multiSelect: false,
+      options: [
+        {label: "Strict/Zero-trust", description: "Maximum security, flag everything"},
+        {label: "Balanced", description: "Industry-standard security posture"},
+        {label: "Pragmatic", description: "Focus on high/critical issues only"},
+        {label: "Development-only", description: "Non-production environment"}
+      ]
+    },
+    {
+      question: "How should findings be validated? Multi-LLM options use Claude plus available external providers, including Codex and Antigravity when installed.",
+      header: "Multi-LLM Validation",
+      multiSelect: false,
+      options: [
+        {label: "Standard audit", description: "Claude-only security analysis (no external API costs)"},
+        {label: "Multi-LLM red team debate", description: "Available external providers take blue/red-team roles; Claude synthesizes (recommended for high-value targets)"},
+        {label: "Full Multi-LLM adversarial cycle", description: "4-phase blue→red→remediate→validate with available-provider debate at each transition"},
+        {label: "Multi-LLM debate on critical findings only", description: "Standard audit, then Claude plus available providers debate any critical/high severity findings"}
+      ]
+    }
+  ]
+})
+```
+
+**After receiving answers, incorporate them into the security audit scope and severity thresholds.**
+
+### Step 2: Execute Security Audit
+
+Read and follow the full skill instructions from:
+`${HOME}/.claude-octopus/plugin/.claude/skills/skill-security-framing/SKILL.md`
+
+Apply the user's answers from Step 1 as the audit scope and severity thresholds.
+
+---
+
+### Step 3: Debate-Enhanced Validation (if enabled)
+
+**Based on the user's validation mode selection:**
+
+1. **"Red team debate"**: After the initial audit produces findings, invoke:
+   ```
+   /octo:debate --rounds 2 --debate-style adversarial "Red team challenge: Can you exploit these defenses? Blue team: defend the implementation. Findings: [audit results]"
+   ```
+   One provider plays attacker, the other plays defender. Claude synthesizes.
+
+2. **"Full adversarial cycle"**: Run the `octopus-security-audit` (squeeze) workflow which already
+   implements Blue→Red→Remediate→Validate, but add debate transitions between each phase:
+   - After Blue Team: debate whether defense is sufficient
+   - After Red Team: debate severity and exploitability of findings
+   - After Remediation: debate whether fixes are complete
+   - After Validation: final consensus on security posture
+
+3. **"Debate critical findings only"**: After standard audit, filter findings by severity.
+   For any Critical or High finding, invoke:
+   ```
+   /octo:debate --rounds 1 --debate-style adversarial "Is this finding exploitable in practice? [finding details + code context]"
+   ```
+   This eliminates false positives and confirms real risks through multi-model deliberation.
+
+4. **Present results**: Show original audit findings annotated with debate verdicts:
+   - ✅ **Confirmed** — debate agreed this is a real vulnerability
+   - ⚠️ **Disputed** — models disagreed on severity or exploitability
+   - ❌ **Overturned** — debate concluded this is a false positive
+
+---
+
+**Auto-loads the `skill-security-audit` skill for comprehensive security analysis.**
+
+## Quick Usage
+
+Just use natural language:
+```
+"Security audit of the authentication module"
+"Check auth.ts for security vulnerabilities"
+"Security review of our API endpoints"
+```
+
+## What Gets Audited
+
+- OWASP Top 10 vulnerabilities
+- Authentication and authorization flaws
+- Input validation and sanitization
+- SQL injection and XSS risks
+- Cryptography and data protection
+- Session management
+- API security
+
+## Audit Types
+
+- **Standard Audit**: OWASP compliance check
+- **Adversarial**: Red team security testing (use `/octo:debate` with adversarial mode)
+- **Quick Check**: Pre-commit security scan
+
+## Natural Language Examples
+
+```
+"Security audit of the payment processing code"
+"Check for SQL injection vulnerabilities in the API"
+"Comprehensive security review of user authentication"
+```

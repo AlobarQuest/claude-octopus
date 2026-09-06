@@ -1,9 +1,34 @@
 #!/usr/bin/env bash
 # Claude Octopus - Multi-Agent Orchestrator
-# Coordinates multiple AI agents (Codex CLI, Gemini CLI, Antigravity CLI, etc.) for parallel task execution
+# Coordinates multiple AI agents (Codex CLI, Antigravity CLI, etc.) for parallel task execution
 # https://github.com/nyldn/claude-octopus
 
 set -eo pipefail
+
+# Detect artifact-only run inspection before any persistent self-healing or
+# workspace probing. This is intentionally a small parser for global options;
+# it never guesses from prompt text.
+OCTOPUS_EARLY_ARTIFACT_READ_ONLY=false
+_octo_early_args=("$@")
+_octo_early_index=0
+_octo_early_command=""
+while [[ "$_octo_early_index" -lt "${#_octo_early_args[@]}" ]]; do
+    _octo_early_arg="${_octo_early_args[$_octo_early_index]}"
+    case "$_octo_early_arg" in
+        -p|--parallel|-t|--timeout|-d|--dir|-a|--autonomy|-q|--quality|--tier|--branch|--on-fail|--provider)
+            _octo_early_index=$((_octo_early_index + 2)) ;;
+        -v|--verbose|--debug|-n|--dry-run|-l|--loop|-R|--resume|-Q|--quick|-P|--premium|--no-personas|--skip-smoke-test|--ci|--cost-first|--quality-first|--openrouter-nitro|--openrouter-floor|--async|--no-async|--tmux|--no-tmux)
+            _octo_early_index=$((_octo_early_index + 1)) ;;
+        *)
+            _octo_early_command="$_octo_early_arg"
+            break ;;
+    esac
+done
+if [[ "$_octo_early_command" == "explain" ]] || \
+   [[ "$_octo_early_command" == "status" && "${_octo_early_args[$((_octo_early_index + 1))]:-}" == "--run" ]]; then
+    OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
+fi
+unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
 
 # Resolve the physical path (pwd -P) so SCRIPT_DIR points at the real install
 # directory even when the script is invoked through the ~/.claude-octopus/plugin
@@ -18,9 +43,9 @@ source "${SCRIPT_DIR}/lib/plugin-root.sh" 2>/dev/null || true
 # The SessionStart hook normally creates this, but if doctor (or any command)
 # is invoked before the hook fires, the symlink may be missing. (fixes #318)
 # Also handles marketplace installs where the hook may not have fired. (#377)
-if declare -f octo_ensure_stable_plugin_root >/dev/null 2>&1; then
+if [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" ]] && declare -f octo_ensure_stable_plugin_root >/dev/null 2>&1; then
     octo_ensure_stable_plugin_root "$PLUGIN_DIR" >/dev/null 2>&1 || true
-elif [[ ! -e "${HOME}/.claude-octopus/plugin" ]]; then
+elif [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" && ! -e "${HOME}/.claude-octopus/plugin" ]]; then
     mkdir -p "${HOME}/.claude-octopus"
     ln -sfn "$PLUGIN_DIR" "${HOME}/.claude-octopus/plugin"
 fi
@@ -28,19 +53,21 @@ fi
 # Cache platform detection — avoids repeated subprocess spawns (v8.33.0)
 OCTOPUS_PLATFORM="$(uname)"
 
-# v8.36.0: Host runtime detection — Claude Code vs Factory AI Droid vs Codex vs Gemini
+# v8.36.0: Host runtime detection — Claude Code vs Factory AI Droid vs Codex
 # Factory's plugin interop resolves ${CLAUDE_PLUGIN_ROOT} automatically,
 # but we detect the host for version checking and env var fallbacks.
-# v9.16.0: Extended for Codex CLI and Gemini CLI host detection (Direction A)
+# v9.16.0: Extended for Codex CLI host detection (Direction A)
 if [[ -n "${DROID_PLUGIN_ROOT:-}" ]]; then
     OCTOPUS_HOST="factory"
     # Factory provides DROID_PLUGIN_ROOT; ensure CLAUDE_PLUGIN_ROOT is also set
     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$DROID_PLUGIN_ROOT}"
 elif [[ -n "${CODEX_HOME:-}" || -n "${CODEX_SANDBOX:-}" || -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
     OCTOPUS_HOST="codex"  # HOST:codex — Codex CLI is the host runtime
-elif [[ -n "${GEMINI_HOME:-}" || -n "${GEMINI_PLUGIN_ROOT:-}" ]]; then
-    OCTOPUS_HOST="gemini"  # HOST:gemini — Gemini CLI is the host runtime
 elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    OCTOPUS_HOST="claude"
+elif [[ "$PLUGIN_DIR" == *"/.codex/"* ]]; then
+    OCTOPUS_HOST="codex"
+elif [[ "$PLUGIN_DIR" == *"/.claude/"* ]]; then
     OCTOPUS_HOST="claude"
 else
     OCTOPUS_HOST="standalone"
@@ -60,10 +87,16 @@ fi
 
 # Keep debug flag defined even when nounset is enabled by sourced scripts.
 OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
+# Writing Tangle runs require a deterministic source baseline before they are
+# isolated in a Git worktree. Unit tests that source workflows.sh directly opt
+# in explicitly, avoiding hidden repository side effects.
+OCTOPUS_TANGLE_REQUIRE_CLEAN_BASELINE="${OCTOPUS_TANGLE_REQUIRE_CLEAN_BASELINE:-true}"
+OCTOPUS_TANGLE_RUN_WORKTREE="${OCTOPUS_TANGLE_RUN_WORKTREE:-true}"
+export OCTOPUS_TANGLE_REQUIRE_CLEAN_BASELINE OCTOPUS_TANGLE_RUN_WORKTREE
 
 # Workspace location — the directory whose files dispatched providers must read.
 # Callers historically `cd` into the plugin install before invoking orchestrate.sh,
-# which sandboxed every provider (codex workdir, gemini workspace) to the plugin
+# which sandboxed providers to the plugin
 # checkout instead of the user's project, so no provider could read project files.
 # Resolution order: OCTOPUS_PROJECT_DIR > CLAUDE_PROJECT_DIR (when PWD is inside
 # the plugin install) > PWD. The -d/--dir flag still overrides at arg parse.
@@ -72,15 +105,17 @@ if [[ -n "${OCTOPUS_PROJECT_DIR:-}" ]]; then
     PROJECT_ROOT="${OCTOPUS_PROJECT_DIR}"
 else
     _octo_pwd_phys="$(pwd -P)"
-    if [[ "${_octo_pwd_phys}" == "${PLUGIN_DIR}" || "${_octo_pwd_phys}" == "${PLUGIN_DIR}/"* ]]; then
-        if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
-            PROJECT_ROOT="${CLAUDE_PROJECT_DIR}"
-        else
-            printf 'WARN: orchestrate.sh invoked from inside the plugin install (%s).\n' "${_octo_pwd_phys}" >&2
-            printf 'WARN: dispatched providers will be sandboxed here and cannot read your project files.\n' >&2
-            printf 'WARN: run from your project directory, or pass -d <project-dir> / set OCTOPUS_PROJECT_DIR.\n' >&2
-        fi
-    fi
+    case "${_octo_pwd_phys}" in
+        "${PLUGIN_DIR}"|"${PLUGIN_DIR}"/*)
+            if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
+                PROJECT_ROOT="${CLAUDE_PROJECT_DIR}"
+            else
+                printf 'WARN: orchestrate.sh invoked from inside the plugin install (%s).\n' "${_octo_pwd_phys}" >&2
+                printf 'WARN: dispatched providers will be sandboxed here and cannot read your project files.\n' >&2
+                printf 'WARN: run from your project directory, or pass -d <project-dir> / set OCTOPUS_PROJECT_DIR.\n' >&2
+            fi
+            ;;
+    esac
     unset _octo_pwd_phys
 fi
 
@@ -99,9 +134,17 @@ source "${SCRIPT_DIR}/agent-teams-bridge.sh"
 # Source Wave 1 extractions (v9.3.0 decomposition)
 source "${SCRIPT_DIR}/lib/common.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/utils.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/state-root.sh"
 source "${SCRIPT_DIR}/lib/session-id.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/similarity.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/models.sh" 2>/dev/null || true
+
+# Fable 5 mode detection and dispatch guards (v9.51)
+# features.sh before fable5.sh: fable5_escalation_consented reads the feature
+# ledger through octo_features_enabled, and sourcing order decides whether that
+# function exists by the time an escalation decision is made.
+source "${SCRIPT_DIR}/lib/features.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/fable5.sh" 2>/dev/null || true
 
 # Source intelligence library (v8.20.0)
 source "${SCRIPT_DIR}/lib/intelligence.sh" 2>/dev/null || true
@@ -127,6 +170,7 @@ source "${SCRIPT_DIR}/lib/proof-packet.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/graphify.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/review.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/workflows.sh"
+source "${SCRIPT_DIR}/lib/plugin-update.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/doctor.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/quota-watcher.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/agent-sync.sh" 2>/dev/null || true
@@ -187,6 +231,7 @@ source "${SCRIPT_DIR}/lib/validation.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/embrace.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/heuristics.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/provider-routing.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/dispatch-plan.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/benchmark-routing.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/council.sh" 2>/dev/null || true
 
@@ -195,24 +240,33 @@ source "${SCRIPT_DIR}/lib/council.sh" 2>/dev/null || true
 # Prevents path traversal attacks and restricts to safe locations
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Apply workspace path — prefer CLAUDE_PLUGIN_DATA (CC v2.1.78+), then user override, then default
-if [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]]; then
-    WORKSPACE_DIR="${CLAUDE_PLUGIN_DATA}"
-elif [[ -n "${CLAUDE_OCTOPUS_WORKSPACE:-}" ]]; then
-    WORKSPACE_DIR=$(validate_workspace_path "$CLAUDE_OCTOPUS_WORKSPACE") || exit 1
-else
-    WORKSPACE_DIR="${HOME}/.claude-octopus"
+# Use the same workspace resolver as standalone `octopus state-path`. Preserve
+# path validation for the user-controlled override; CLAUDE_PLUGIN_DATA is
+# supplied by the host and retains precedence.
+WORKSPACE_DIR="$(resolve_octopus_workspace)"
+if [[ -z "${CLAUDE_PLUGIN_DATA:-}" && -n "${CLAUDE_OCTOPUS_WORKSPACE:-}" ]]; then
+    WORKSPACE_DIR="$(validate_workspace_path "$WORKSPACE_DIR")" || exit 1
 fi
+
+# Schema-versioned provider-seat lifecycle. Source after workspace resolution so
+# the library never freezes a source-time path from an unset WORKSPACE_DIR.
+source "${SCRIPT_DIR}/lib/run-contract.sh"
 
 # Re-derive SESSION_FILE now that WORKSPACE_DIR is known
 # (quality.sh sets it at source-time before WORKSPACE_DIR is defined)
 SESSION_FILE="${WORKSPACE_DIR}/session.json"
 PROGRESS_FILE="${WORKSPACE_DIR}/progress.json"
 
+# Re-derive cost tracking paths for the same reason (cost.sh is sourced before
+# WORKSPACE_DIR is defined, which froze USAGE_FILE at "/usage-session.json" and
+# made every record_agent_call append fail — killing dispatches under set -e)
+USAGE_FILE="${WORKSPACE_DIR}/usage-session.json"
+USAGE_HISTORY_DIR="${WORKSPACE_DIR}/usage-history"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLAUDE CODE INTEGRATION: Task Management (v7.16.0)
 # Capture Claude Code v2.1.16+ environment variables for enhanced progress tracking
-# v9.16.0: Gracefully skipped on non-Claude hosts (Codex, Gemini, standalone)
+# v9.16.0: Gracefully skipped on non-Claude hosts (Codex, standalone)
 # ═══════════════════════════════════════════════════════════════════════════════
 if [[ "$OCTOPUS_HOST" == "claude" || "$OCTOPUS_HOST" == "factory" ]]; then
     # HOST:claude — CC-specific task management integration
@@ -243,7 +297,7 @@ fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY: CLI output wrapping for untrusted external provider output (v8.7.0)
-# Wraps codex/gemini output in trust markers; passes claude output unchanged
+# Wraps external provider output in trust markers; passes Claude output unchanged
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # [EXTRACTED to lib/agents.sh]
@@ -352,6 +406,7 @@ SUPPORTS_PLUGIN_DIR_OVERRIDE=false     # v8.56: Claude Code v2.1.74+ (--plugin-d
 SUPPORTS_MCP_ELICITATION=false        # v8.57: Claude Code v2.1.76+ (MCP servers can request structured user input mid-task via interactive dialog)
 SUPPORTS_WORKTREE_SPARSE_PATHS=false  # v8.57: Claude Code v2.1.76+ (worktree.sparsePaths setting for sparse checkout in --worktree mode)
 SUPPORTS_EFFORT_COMMAND=false         # v8.57: Claude Code v2.1.76+ (/effort slash command to set model effort level during session)
+SUPPORTS_EFFORT_CLI_FLAG=false        # Spawned Claude CLI exposes --effort in --help
 SUPPORTS_BG_PARTIAL_RESULTS=false     # v8.57: Claude Code v2.1.76+ (killing background agent preserves partial results in conversation context)
 SUPPORTS_ALLOW_READ_SANDBOX=false     # v9.5: Claude Code v2.1.77+ (allowRead sandbox filesystem setting restricts Read tool path access)
 SUPPORTS_COPY_INDEX=false             # v9.5: Claude Code v2.1.77+ (/copy N copies Nth response from conversation history)
@@ -454,10 +509,11 @@ SUPPORTS_AGENT_SETTINGS_AGENT_FIELD=false # v9.42: Claude Code v2.1.157+ (claude
 SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD=false  # v9.42: Claude Code v2.1.157+ (.claude/skills plugin autoload)
 SUPPORTS_ENTER_WORKTREE_SWITCH=false    # v9.42: Claude Code v2.1.157+ (EnterWorktree can switch Claude-managed worktrees)
 SUPPORTS_TOOL_DECISION_PARAMS_OTEL=false # v9.42: Claude Code v2.1.157+ (tool_decision tool_parameters with OTEL_LOG_TOOL_DETAILS=1)
+SUPPORTS_SONNET_5=false                  # Claude Code v2.1.197+ (claude-sonnet-5)
+SUPPORTS_OPUS_5=false                    # Claude Code v2.1.219+ (claude-opus-5 and default Opus alias)
 OCTOPUS_BACKEND="api"              # v8.16: Detected backend (api|bedrock|vertex|foundry)
 AGENT_TEAMS_ENABLED="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}"
 OCTOPUS_SECURITY_V870="${OCTOPUS_SECURITY_V870:-true}"
-OCTOPUS_GEMINI_SANDBOX="${OCTOPUS_GEMINI_SANDBOX:-headless}"  # v8.10.0: Changed default from prompt-mode to headless (Issue #25)
 OCTOPUS_MAX_COST_USD="${OCTOPUS_MAX_COST_USD:-}"
 
 # POSIX-compatible string case helpers (macOS ships bash 3.2 which lacks ${var^} and ${var,,})
@@ -467,11 +523,9 @@ _ucfirst() { local _c; _c=$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')
 
 # Claude Code v2.1.10 Integration
 # Session-aware workflows: results organized by session ID
-# v9.16.0: On non-Claude hosts, session ID falls back to CODEX/GEMINI equivalents or empty
+# v9.16.0: On non-Claude hosts, session ID falls back to Codex equivalents or empty
 if [[ "$OCTOPUS_HOST" == "codex" ]]; then
     CLAUDE_CODE_SESSION="${CODEX_SESSION_ID:-${CODEX_TASK_ID:-}}"  # HOST:codex
-elif [[ "$OCTOPUS_HOST" == "gemini" ]]; then
-    CLAUDE_CODE_SESSION="${GEMINI_SESSION_ID:-}"  # HOST:gemini
 else
     CLAUDE_CODE_SESSION="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"  # HOST:claude
 fi
@@ -502,20 +556,77 @@ RESULTS_DIR="$SESSION_RESULTS_DIR"
 LOGS_DIR="$SESSION_LOGS_DIR"
 PID_FILE="${WORKSPACE_DIR}/pids"
 
+# Probe only the state root selected above. Restricted hosts do not get an
+# automatic project/TMPDIR fallback: optional persistence degrades instead.
+if [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" == "true" ]]; then
+    OCTOPUS_PERSISTENCE_AVAILABLE=true
+    export OCTOPUS_PERSISTENCE_AVAILABLE
+else
+    octopus_configure_persistence "$WORKSPACE_DIR"
+fi
+
 # Telemetry: enable the opt-in JSONL event stream by default for every run so
 # provider.status + dispatch lifecycle events are captured (usage data + the
 # basis for a control-plane HUD). Stdout is unchanged (events.sh appends to the
 # log only). Opt out with OCTO_EVENT_LOG=off; override the path by setting it.
-if [[ -z "${OCTO_EVENT_LOG:-}" ]]; then
+if [[ "${OCTOPUS_PERSISTENCE_AVAILABLE}" == "false" ]]; then
+    unset OCTO_EVENT_LOG
+elif [[ -z "${OCTO_EVENT_LOG:-}" ]]; then
     export OCTO_EVENT_LOG="${RESULTS_DIR}/events.jsonl"
 elif [[ "${OCTO_EVENT_LOG}" == "off" ]]; then
     unset OCTO_EVENT_LOG
 fi
 ANALYTICS_DIR="${WORKSPACE_DIR}/analytics"
 
+# Ensure the per-session results/logs/plans dirs exist EARLY — before any
+# subcommand (council, debate, …) dispatches provider seats. Codex/agy seats
+# write into RESULTS_DIR and crash if it's missing. Cheap, idempotent.
+if [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" ]]; then
+    mkdir -p "$RESULTS_DIR" "$LOGS_DIR" "$PLANS_DIR" 2>/dev/null || true
+fi
+
 # Secure temporary directory (cleaned up on exit)
 OCTOPUS_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-octopus.XXXXXX")
-trap 'rm -rf "$OCTOPUS_TMP_DIR"' EXIT INT TERM
+octopus_cleanup_tmp() {
+    rm -rf "${OCTOPUS_TMP_DIR:?}" 2>/dev/null || true
+}
+
+octopus_orchestrator_cancel_active() {
+    local signal_name="${1:-TERM}"
+    if [[ -n "${OCTOPUS_ACTIVE_TANGLE_TASK_GROUP:-}" ]] \
+       && declare -F octopus_tangle_cancel_active >/dev/null 2>&1; then
+        octopus_tangle_cancel_active "$signal_name" || true
+    elif [[ -n "${OCTOPUS_ACTIVE_PROBE_TASK_GROUP:-}" ]] \
+         && declare -F octopus_probe_cancel_active >/dev/null 2>&1; then
+        octopus_probe_cancel_active "$signal_name" || true
+    fi
+}
+
+octopus_orchestrator_handle_exit() {
+    local exit_code="${1:-0}"
+    trap - EXIT
+    octopus_orchestrator_cancel_active TERM
+    octopus_cleanup_tmp
+    return "$exit_code"
+}
+
+octopus_orchestrator_handle_signal() {
+    local signal_name="${1:-TERM}"
+    local exit_code=143
+    [[ "$signal_name" == "INT" ]] && exit_code=130
+    trap - INT TERM
+
+    octopus_orchestrator_cancel_active "$signal_name"
+    if declare -F review_kill_descendants_frozen >/dev/null 2>&1; then
+        review_kill_descendants_frozen "$$" || true
+    fi
+    octopus_cleanup_tmp
+    exit "$exit_code"
+}
+
+trap 'octopus_orchestrator_handle_exit "$?"' EXIT
+trap 'octopus_orchestrator_handle_signal INT' INT
+trap 'octopus_orchestrator_handle_signal TERM' TERM
 
 # Performance: Preflight check cache (avoids repeated CLI checks)
 PREFLIGHT_CACHE_FILE="${WORKSPACE_DIR}/.preflight-cache"
@@ -549,8 +660,8 @@ source "${SCRIPT_DIR}/async-tmux-features.sh"
 # Routes between fast/standard Opus based on task context
 #
 # IMPORTANT: Fast Opus is more expensive than standard:
-#   Opus 4.8 standard: $5/$25 per MTok (input/output)
-#   Opus 4.8 fast: $10/$50 per MTok (input/output)
+#   Opus 5 standard: $5/$25 per MTok (input/output)
+#   Opus 5 fast: $10/$50 per MTok (input/output)
 #   Legacy Opus 4.6 fast: $30/$150 per MTok (input/output)
 #
 # Fast mode trades cost for speed. Default is STANDARD (cost-efficient).
@@ -584,7 +695,7 @@ CODEX_SUBAGENT_PREAMBLE="IMPORTANT: You are running as a non-interactive subagen
 
 "
 
-AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context gemini gemini-fast gemini-image agy agy-research antigravity codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek openai-compatible-agent perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research cursor-agent vibe vibe-research"
+AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-spark codex-reasoning codex-large-context agy agy-research antigravity codex-review claude claude-sonnet claude-opus claude-opus-fast openrouter openrouter-glm5 openrouter-kimi openrouter-deepseek orcarouter openai-compatible openai-tools openai-compatible-agent perplexity perplexity-fast ollama copilot copilot-research qwen qwen-research kimi kimi-research cursor-agent vibe vibe-research"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # USAGE TRACKING & COST REPORTING (v4.1)
@@ -624,9 +735,11 @@ AVAILABLE_AGENTS="codex codex-standard codex-max codex-mini codex-general codex-
 # ═══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE: Phase-optimized model tier selection (v8.7.0)
 # Selects budget/standard/premium model tier based on phase, role, and agent type
-# Config: OCTOPUS_COST_MODE=premium|standard|budget (default: standard)
+# Config: OCTOPUS_COST_MODE=premium|standard|budget (environment override).
+# When unset, model-resolver.sh reads the persisted providers.json cost_mode,
+# then defaults to standard.
 # ═══════════════════════════════════════════════════════════════════════════════
-OCTOPUS_COST_MODE="${OCTOPUS_COST_MODE:-standard}"
+OCTOPUS_COST_MODE="${OCTOPUS_COST_MODE:-}"
 
 # [EXTRACTED to lib/model-resolver.sh]
 
@@ -698,28 +811,6 @@ _PROVIDER_CONFIG_MIGRATED="${_PROVIDER_CONFIG_MIGRATED:-false}"
 # Role-based tool access restrictions enforced via prompt injection.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-get_tool_policy() {
-    local role="$1"
-
-    case "$role" in
-        researcher|ai-engineer|business-analyst|research-synthesizer|ux-researcher)
-            echo "read_search"
-            ;;
-        implementer|tdd-orchestrator|debugger|python-pro|typescript-pro|frontend-developer)
-            echo "full"
-            ;;
-        code-reviewer|security-auditor|performance-engineer|test-automator)
-            echo "read_exec"
-            ;;
-        synthesizer|orchestrator|context-manager|docs-architect|exec-communicator|academic-writer|product-writer)
-            echo "read_communicate"
-            ;;
-        *)
-            echo "full"
-            ;;
-    esac
-}
-
 # [EXTRACTED to lib/dispatch.sh in v9.7.7]
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -760,7 +851,7 @@ earn_skill() {
     # Count existing occurrences to determine confidence
     local occurrence=1
     if [[ -f "$skill_file" ]]; then
-        occurrence=$(( $(grep -c "^#### Occurrence" "$skill_file" 2>/dev/null || echo "0") + 1 ))
+        occurrence=$(( $(grep -c "^#### Occurrence" "$skill_file" 2>/dev/null) + 1 )) || occurrence=0
     fi
 
     # Confidence lifecycle: 1=low, 3+=medium, 5+=high
@@ -804,7 +895,7 @@ SKILLEOF
         local lowest_file="" lowest_count=999
         for sf in "$skills_dir"/*.md; do
             local sc
-            sc=$(grep -c "^#### Occurrence" "$sf" 2>/dev/null || echo "0")
+            sc=$(grep -c "^#### Occurrence" "$sf" 2>/dev/null) || sc=0
             if [[ $sc -lt $lowest_count ]]; then
                 lowest_count=$sc
                 lowest_file="$sf"
@@ -1022,10 +1113,9 @@ enhanced_error() {
             echo "  1. Check logs: ls -lh $LOGS_DIR/*probe-${context}*"
             echo "  2. Verify API keys:"
             echo "     echo \$OPENAI_API_KEY | cut -c1-10"
-            echo "     echo \$GEMINI_API_KEY | cut -c1-10"
             echo "  3. Test providers manually:"
             echo "     codex 'hello world'"
-            echo "     gemini 'hello world'"
+            echo "     agy --print 'hello world'"
             echo "  4. Increase timeout: --timeout $((TIMEOUT * 2))"
             ;;
         "agent_spawn_failed")
@@ -1168,7 +1258,7 @@ init_workspace() {
     },
     {
       "id": "example-2",
-      "agent": "gemini",
+      "agent": "agy",
       "prompt": "Analyze the project structure and suggest improvements",
       "priority": 2,
       "depends_on": []
@@ -1206,14 +1296,12 @@ GITIGNORE
 # Error code registry (bash 3.2 compatible - uses regular array)
 ERROR_CODES=(
     "E001:OPENAI_API_KEY not set:export OPENAI_API_KEY=\"sk-...\" && orchestrate.sh preflight:help api-setup"
-    "E002:Gemini API key not set — set GEMINI_API_KEY or GOOGLE_API_KEY (if in ~/.bashrc, move to ~/.profile — bashrc is skipped in non-interactive shells):export GEMINI_API_KEY=\"AIza...\" && orchestrate.sh preflight:help api-setup"
     "E003:Codex CLI not found:npm install -g @openai/codex:help setup"
-    "E004:Gemini CLI not found:npm install -g @google/gemini-cli:help setup"
     "E005:Workspace not initialized:orchestrate.sh init:help init"
     "E006:Agent spawn failed:Check API keys and network connection:help troubleshoot"
     "E007:Quality gate failed:Review output and retry with lower threshold (-q 60):help quality"
     "E008:Timeout exceeded:Increase timeout with -t 600 or break into smaller tasks:help timeout"
-    "E009:Invalid agent type:Use codex, codex-mini, gemini, gemini-fast:help agents"
+    "E009:Invalid agent type:Use codex, codex-mini, agy, or antigravity:help agents"
     "E010:Task file parse error:Check JSON syntax with: jq . tasks.json:help tasks"
 )
 
@@ -1272,11 +1360,11 @@ USER_INTENT_PRIMARY=""
 USER_INTENT_ALL=""
 USER_RESOURCE_TIER="standard"
 USER_HAS_OPENAI="false"
-USER_HAS_GEMINI="false"
+USER_HAS_AGY="false"
 USER_OPUS_BUDGET="balanced"
 KNOWLEDGE_WORK_MODE="false"
 
-# [EXTRACTED to lib/smoke.sh] get_provider_capabilities, get_provider_context_limit
+# [EXTRACTED to lib/smoke.sh] get_provider_capabilities
 
 
 # [EXTRACTED to lib/cost.sh] get_cost_tier_value()
@@ -1340,7 +1428,7 @@ check_claude_version() {
 
 # [EXTRACTED to lib/cost.sh] get_cost_tier_for_subscription()
 
-# [EXTRACTED to lib/smoke.sh] auto_detect_provider_config, detect_tier_openai, detect_tier_gemini, detect_tier_claude
+# [EXTRACTED to lib/smoke.sh] auto_detect_provider_config, detect_tier_openai, detect_tier_claude
 # [EXTRACTED to lib/smoke.sh] save_providers_config, score_provider, select_provider, tier_cache_valid
 # [EXTRACTED to lib/smoke.sh] tier_cache_read, tier_cache_write, tier_cache_invalidate
 
@@ -1365,7 +1453,12 @@ load_user_config() {
     USER_INTENT_ALL=$(grep "^  all:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' | tr -d '[]"' || echo "")
     USER_RESOURCE_TIER=$(grep "^resource_tier:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' | tr -d '"' || echo "standard")
     USER_HAS_OPENAI=$(grep "^  openai:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' || echo "false")
-    USER_HAS_GEMINI=$(grep "^  gemini:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' || echo "false")
+    USER_HAS_AGY=$(grep "^  agy:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' || echo "false")
+    # One-way compatibility for stale configs: a legacy enabled Gemini seat now
+    # means AGY. No Gemini executable or credential is consulted.
+    if [[ "$USER_HAS_AGY" != "true" ]]; then
+        USER_HAS_AGY=$(grep "^  gemini:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' || echo "false")
+    fi
     USER_OPUS_BUDGET=$(grep "^  opus_budget:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' | tr -d '"' || echo "balanced")
     KNOWLEDGE_WORK_MODE=$(grep "^knowledge_work_mode:" "$USER_CONFIG_FILE" 2>/dev/null | sed 's/.*: *//' | tr -d '"' || echo "false")
 
@@ -1406,9 +1499,9 @@ save_user_config() {
 
     # Auto-detect available API keys (check OAuth first, then API keys)
     local has_openai="false"
-    local has_gemini="false"
+    local has_agy="false"
     [[ -f "$HOME/.codex/auth.json" || -n "${OPENAI_API_KEY:-}" ]] && has_openai="true"
-    [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]] && has_gemini="true"
+    command -v agy >/dev/null 2>&1 && has_agy="true"
 
     # Derive settings based on resource tier
     local opus_budget="balanced"
@@ -1440,13 +1533,13 @@ knowledge_work_mode: "$knowledge_mode"
 # Available API keys (auto-detected)
 available_keys:
   openai: $has_openai
-  gemini: $has_gemini
+  agy: $has_agy
 
 # Derived settings (auto-configured based on tier + keys)
 settings:
   opus_budget: "$opus_budget"
   default_complexity: $default_complexity
-  prefer_gemini_for_analysis: $has_gemini
+  prefer_agy_for_analysis: $has_agy
   max_parallel_agents: 3
 EOF
 
@@ -1530,9 +1623,8 @@ is_agent_available() {
     # Load config if needed
     [[ -z "$USER_HAS_OPENAI" ]] && load_user_config
 
-    # oco-cbb: skip a provider marked quota/auth-dead earlier this session
-    # (perplexity 401, gemini exhausted) so it is not re-dispatched into the same
-    # terminal failure + timeout. Guarded; no-op if the helper is unavailable.
+    # oco-cbb: skip a provider marked quota/auth-dead earlier this session so it
+    # is not re-dispatched into the same terminal failure + timeout.
     if declare -f octo_quota_is_dead >/dev/null 2>&1 && octo_quota_is_dead "${agent%%-*}"; then
         return 1
     fi
@@ -1541,8 +1633,8 @@ is_agent_available() {
         codex|codex-standard|codex-mini|codex-max)
             [[ "$USER_HAS_OPENAI" == "true" || -n "${OPENAI_API_KEY:-}" ]]
             ;;
-        gemini|gemini-fast|gemini-image)
-            [[ "$USER_HAS_GEMINI" == "true" || -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]]
+        gemini|gemini-fast|gemini-image|agy|agy-research|antigravity)
+            command -v agy &>/dev/null
             ;;
         qwen|qwen-research)
             # oco-dar: gate on VALID auth (binary + non-expired token). An expired
@@ -1576,7 +1668,7 @@ init_step_mode_selection() {
     echo -e "      ${DIM}For:${NC} Research, UX analysis, strategy, writing"
     echo -e "      ${DIM}Examples:${NC} User research, literature reviews, market analysis"
     echo ""
-    echo -e "  ${DIM}Note: Both modes use Codex + Gemini - only personas differ${NC}"
+    echo -e "  ${DIM}Note: Both modes use Codex + Antigravity - only personas differ${NC}"
     echo -e "  ${DIM}Switch anytime with /octo:dev or /octo:km${NC}"
     echo ""
     read -r -p "  Choose mode [1-2] (default: 1): " mode_choice
@@ -1754,6 +1846,22 @@ reconfigure_preferences() {
 # Controls human oversight level during workflow execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
+validate_autonomy_mode() {
+    case "${AUTONOMY_MODE:-}" in
+        "supervised"|"semi-autonomous"|"loop-until-approved"|"autonomous")
+            return 0
+            ;;
+        "not-applicable")
+            log ERROR "AUTONOMY_MODE=not-applicable is a contract-only sentinel; refusing workflow execution"
+            return 64
+            ;;
+        *)
+            log ERROR "Unsupported AUTONOMY_MODE: ${AUTONOMY_MODE:-<empty>}"
+            return 64
+            ;;
+    esac
+}
+
 handle_autonomy_checkpoint() {
     local phase="$1"
     local status="$2"
@@ -1803,9 +1911,13 @@ handle_autonomy_checkpoint() {
         "loop-until-approved")
             # Handled in quality gate logic - LOOP_UNTIL_APPROVED flag
             ;;
-        "autonomous"|*)
+        "autonomous")
             # Always continue without prompts
             log DEBUG "Autonomy mode: continuing automatically"
+            ;;
+        *)
+            log ERROR "Unsupported AUTONOMY_MODE reached checkpoint: ${AUTONOMY_MODE:-<empty>}"
+            exit 64
             ;;
     esac
 }
@@ -2067,17 +2179,17 @@ show_status() {
     fi
 
     # v8.14.0: Show persistent project state
-    if [[ -f ".claude-octopus/state.json" ]]; then
+    if [[ -f "$STATE_FILE" ]]; then
         echo ""
         echo -e "${BLUE}Project State:${NC}"
         local wf ph pc dc ab
-        wf=$(jq -r '.current_workflow // "none"' .claude-octopus/state.json 2>/dev/null)
-        ph=$(jq -r '.current_phase // "none"' .claude-octopus/state.json 2>/dev/null)
-        pc=$(jq -r '.metrics.phases_completed // 0' .claude-octopus/state.json 2>/dev/null)
-        dc=$(jq -r '.decisions | length // 0' .claude-octopus/state.json 2>/dev/null)
+        wf=$(jq -r '.current_workflow // "none"' "$STATE_FILE" 2>/dev/null)
+        ph=$(jq -r '.current_phase // "none"' "$STATE_FILE" 2>/dev/null)
+        pc=$(jq -r '.metrics.phases_completed // 0' "$STATE_FILE" 2>/dev/null)
+        dc=$(jq -r '.decisions | length // 0' "$STATE_FILE" 2>/dev/null)
         echo -e "  Workflow: ${CYAN}${wf}${NC} | Phase: ${CYAN}${ph}${NC}"
         echo -e "  Phases completed: $pc | Decisions: $dc"
-        ab=$(jq -r '[.blockers[] | select(.status == "active")] | length // 0' .claude-octopus/state.json 2>/dev/null)
+        ab=$(jq -r '[.blockers[] | select(.status == "active")] | length // 0' "$STATE_FILE" 2>/dev/null)
         if [[ "$ab" -gt 0 ]] 2>/dev/null; then
             echo -e "  ${YELLOW}Active blockers: $ab${NC}"
         fi
@@ -2117,16 +2229,40 @@ kill_agents() {
     if [[ "$target" == "all" || -z "$target" ]]; then
         log INFO "Killing all tracked agents..."
         while IFS=: read -r pid agent task_id; do
+            if [[ ! "$pid" =~ ^[1-9][0-9]*$ || "$pid" == "1" ]]; then
+                log WARN "Skipping invalid tracked PID: $pid"
+                continue
+            fi
             if kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null && log INFO "Killed $agent ($pid)"
+                if declare -F review_kill_process_tree_frozen >/dev/null 2>&1; then
+                    review_kill_process_tree_frozen "$pid"
+                else
+                    kill "$pid" 2>/dev/null || true
+                fi
+                wait "$pid" 2>/dev/null || true
+                log INFO "Killed $agent ($pid)"
             fi
         done < "$PID_FILE"
-        > "$PID_FILE"
+        : > "$PID_FILE"
     else
         log INFO "Killing agent: $target"
         while IFS=: read -r pid agent task_id; do
             if [[ "$pid" == "$target" || "$task_id" == "$target" ]]; then
-                kill "$pid" 2>/dev/null && log INFO "Killed $agent ($pid)"
+                if [[ ! "$pid" =~ ^[1-9][0-9]*$ || "$pid" == "1" ]]; then
+                    log WARN "Skipping invalid tracked PID: $pid"
+                    continue
+                fi
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    log WARN "Agent $agent ($pid) is no longer running"
+                    continue
+                fi
+                if declare -F review_kill_process_tree_frozen >/dev/null 2>&1; then
+                    review_kill_process_tree_frozen "$pid"
+                else
+                    kill "$pid" 2>/dev/null || true
+                fi
+                wait "$pid" 2>/dev/null || true
+                log INFO "Killed $agent ($pid)"
             fi
         done < "$PID_FILE"
     fi
@@ -2181,17 +2317,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Reject contract-only and unknown modes before CI defaults or command dispatch
+# can turn them into unattended execution.
+validate_autonomy_mode || exit $?
+
 # Initialize CI mode from environment (v4.4)
 init_ci_mode
 
-# Detect Claude Code version for v2.1.12+ features (v7.12.0)
-detect_claude_code_version 2>/dev/null || true
+# CI initialization may set the mode, so validate its final runtime value too.
+validate_autonomy_mode || exit $?
 
-# Validate Claude Code task integration features (v7.16.0)
-validate_claude_code_task_features 2>/dev/null || true
+# Artifact-only run inspection must not invoke even provider version probes.
+OCTOPUS_ARTIFACT_READ_ONLY=false
+if [[ "${1:-}" == "explain" ]] || \
+   [[ "${1:-}" == "status" && "${2:-}" == "--run" ]]; then
+    OCTOPUS_ARTIFACT_READ_ONLY=true
+fi
 
-# Check UX feature dependencies (v7.16.0)
-check_ux_dependencies 2>/dev/null || true
+if [[ "$OCTOPUS_ARTIFACT_READ_ONLY" != "true" ]]; then
+    # Detect Claude Code version for v2.1.12+ features (v7.12.0)
+    detect_claude_code_version 2>/dev/null || true
+
+    # Validate Claude Code task integration features (v7.16.0)
+    validate_claude_code_task_features 2>/dev/null || true
+
+    # Check UX feature dependencies (v7.16.0)
+    check_ux_dependencies 2>/dev/null || true
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN EXECUTION ENTRY POINT
@@ -2250,21 +2402,45 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     done
     set -- "${_late_args[@]}"
 
-# Check for first-run on commands that need setup (skip for help/setup/preflight)
-if [[ "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+    # v9.57.0: A global flag that isn't recognized by the late-args loop above
+    # (e.g. --timeout after the subcommand) lands here unconsumed and would
+    # otherwise be silently read as the prompt (#698) — the run "succeeds"
+    # having answered a question nobody asked. Fail loud instead.
+    case "$COMMAND" in
+        discover|research|probe|define|grasp|verify|verification-only|develop|tangle|deliver|ink|embrace|squeeze|red-team)
+            if [[ "${1:-}" == -* && "${1:-}" != "-h" && "${1:-}" != "--help" ]]; then
+                log ERROR "'$1' looks like a flag but was read as the prompt. Global flags must precede the subcommand: $(basename "$0") $1 ... $COMMAND \"...\""
+                exit 1
+            fi
+            ;;
+    esac
+
+# Check for first-run on commands that need setup. Doctor is read-only and its
+# JSON stdout must never be contaminated by setup hints.
+if [[ "$OCTOPUS_ARTIFACT_READ_ONLY" != "true" && "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight" && "$COMMAND" != "doctor" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
     check_first_run || true  # Show hint but don't block
 fi
 
 # Initialize usage tracking for cost reporting (v4.1)
 # Skip for cost/usage commands that just read existing data
-if [[ "$COMMAND" != "cost" && "$COMMAND" != "usage" && "$COMMAND" != "cost-json" && "$COMMAND" != "cost-csv" && "$COMMAND" != "cost-clear" && "$COMMAND" != "help" ]]; then
+if [[ "$OCTOPUS_ARTIFACT_READ_ONLY" != "true" && "$COMMAND" != "cost" && "$COMMAND" != "usage" && "$COMMAND" != "cost-json" && "$COMMAND" != "cost-csv" && "$COMMAND" != "cost-clear" && "$COMMAND" != "help" && "$COMMAND" != "doctor" ]]; then
     init_usage_tracking 2>/dev/null || true
     init_metrics_tracking 2>/dev/null || true  # v7.25.0: Enhanced metrics
 fi
 
 # Initialize state management (v7.17.0)
 # Skip for help and non-workflow commands
-if [[ "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight" && "$COMMAND" != "cost" && "$COMMAND" != "usage" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+if [[ "$OCTOPUS_ARTIFACT_READ_ONLY" != "true" && "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight" && "$COMMAND" != "cost" && "$COMMAND" != "usage" && "$COMMAND" != "doctor" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+    # Keep workflow context outside the project by default, namespaced by a
+    # stable project identity. This is deliberately separate from
+    # OCTOPUS_STATE_DIR, which owns the user-level feature/advisory ledger.
+    # Project-local persistence remains an explicit opt-in.
+    OCTOPUS_STATE_PROJECT_ROOT="$PROJECT_ROOT"
+    if [[ -z "${OCTOPUS_WORKFLOW_STATE_DIR:-}" ]]; then
+        OCTOPUS_WORKFLOW_STATE_DIR="${WORKSPACE_DIR}/projects/$(state_project_id "$PROJECT_ROOT")"
+    fi
+    export OCTOPUS_STATE_PROJECT_ROOT OCTOPUS_WORKFLOW_STATE_DIR
+    configure_state_paths "$OCTOPUS_WORKFLOW_STATE_DIR"
     init_state 2>/dev/null || true
 
     # v8.29.0: Check if ConfigChange hook signaled settings were modified
@@ -2277,6 +2453,11 @@ if [[ "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight"
     # v8.21.0: Auto-load persona packs from standard paths
     if type auto_load_persona_packs &>/dev/null 2>&1; then
         auto_load_persona_packs 2>/dev/null || true
+    fi
+
+    # v9.51: One-line banner when a claude-fable-5 pin auto-enables guards
+    if type fable5_banner &>/dev/null 2>&1; then
+        fable5_banner || true
     fi
 fi
 
@@ -2344,6 +2525,20 @@ case "$COMMAND" in
         fi
         grasp_define "$1" "${2:-}"
         ;;
+    verify|verification-only)
+        if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+            echo "Usage: $(basename "$0") verify <prompt>"
+            echo "Runs diagnosis in a disposable Git worktree and never launches implementation agents."
+            echo "Exit codes: 0=verified no change, 1=needs diagnosis/error, 2=defect reproduced."
+            exit 0
+        fi
+        if [[ $# -lt 1 || -z "${*//[[:space:]]/}" ]]; then
+            log ERROR "Missing prompt for verification-only mode"
+            echo "Usage: $(basename "$0") verify <prompt>"
+            exit 1
+        fi
+        tangle_verify "$*"
+        ;;
     develop|tangle)
         # Phase 3: Develop - Implementation with quality gates
         # Handle help flag
@@ -2378,8 +2573,9 @@ case "$COMMAND" in
         # Multi-LLM code review pipeline — competitor to CC Code Review
         if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
             echo "Usage: $(basename "$0") code-review '<json-profile>'"
-            echo "Profile fields: target, focus, provenance, autonomy, publish, debate"
+            echo "Profile fields: target, focus, provenance, autonomy, publish, debate, contextFile, contextText, contextLabel"
             echo "Example: $(basename "$0") code-review '{\"target\":\"staged\",\"publish\":\"ask\"}'"
+            echo "Example with contract: $(basename "$0") code-review '{\"target\":\"working-tree\",\"contextFile\":\"./PLAN.md\",\"focus\":[\"correctness\",\"plan-conformance\"]}'"
             exit 0
         fi
         review_run "${1:-"{}"}"
@@ -2419,7 +2615,7 @@ case "$COMMAND" in
         ;;
     synthesize-probe)
         # v8.48.0: Standalone probe synthesis — recovers from Bash tool timeout
-        # WHY: probe spawns 5+ agents (~60-90s) then runs Gemini synthesis (~30-60s),
+        # WHY: probe spawns 5+ agents (~60-90s) then runs synthesis (~30-60s),
         # frequently exceeding the Bash tool's 120s timeout. This command lets the
         # user synthesize already-collected probe results independently.
         if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -2610,7 +2806,7 @@ case "$COMMAND" in
     # CROSSFIRE COMMANDS (Adversarial Cross-Model Review)
     # ═══════════════════════════════════════════════════════════════════════════
     grapple)
-        # Adversarial debate: Codex vs Gemini until consensus
+        # Adversarial debate: Codex vs Antigravity until consensus
         source "${SCRIPT_DIR}/lib/debate.sh" 2>/dev/null || true
         # Handle help flag
         if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -2711,6 +2907,9 @@ case "$COMMAND" in
     doctor)
         do_doctor "$@"
         ;;
+    update-plugin)
+        octo_plugin_update_run "$PLUGIN_DIR" "$OCTOPUS_HOST"
+        ;;
     octopus-configure)
         setup_wizard
         ;;
@@ -2759,15 +2958,31 @@ case "$COMMAND" in
         ;;
     spawn)
         [[ $# -lt 2 ]] && { log ERROR "Usage: spawn <agent> <prompt>"; exit 1; }
-        case "$1" in
+        _spawn_target="$1"
+        _spawn_role=""
+        _spawn_provider="$(resolve_persona_spawn_target "$_spawn_target" 2>/dev/null || true)"
+        if [[ -n "$_spawn_provider" ]]; then
+            _spawn_role="$_spawn_target"
+            _spawn_target="$_spawn_provider"
+        fi
+        case "$_spawn_target" in
             agy|agy-*|antigravity)
-                log INFO "Running $1 synchronously because Antigravity CLI print mode does not emit output from background jobs"
-                run_agent_sync "$1" "$2" "$TIMEOUT" "none" "spawn"
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    spawn_agent "$_spawn_target" "$2" "" "${_spawn_role:-none}" "spawn"
+                else
+                    log INFO "Running $_spawn_target synchronously because Antigravity CLI print mode does not emit output from background jobs"
+                    run_agent_sync "$_spawn_target" "$2" "$TIMEOUT" "${_spawn_role:-none}" "spawn"
+                fi
                 ;;
             *)
-                spawn_agent "$1" "$2"
+                if [[ -n "$_spawn_role" ]]; then
+                    spawn_agent "$_spawn_target" "$2" "" "$_spawn_role" "spawn"
+                else
+                    spawn_agent "$1" "$2"
+                fi
                 ;;
         esac
+        unset _spawn_target _spawn_role _spawn_provider
         ;;
     auto)
         source "${SCRIPT_DIR}/lib/auto-route.sh" 2>/dev/null || true
@@ -2792,7 +3007,27 @@ case "$COMMAND" in
         cmd_update_clis
         ;;
     status)
-        show_status
+        if [[ "${1:-}" == "--run" ]]; then
+            [[ -n "${2:-}" ]] || { printf 'Usage: %s status --run RUN_ID [--json]\n' "$(basename "$0")" >&2; exit 2; }
+            _status_run_id="$2"
+            shift 2
+            _status_format=human
+            if [[ "${1:-}" == "--json" ]]; then
+                _status_format=json
+                shift
+            fi
+            [[ $# -eq 0 ]] || { printf 'Unknown status argument: %s\n' "$1" >&2; exit 2; }
+            run_contract_status "$_status_run_id" "$_status_format"
+        else
+            show_status
+        fi
+        ;;
+    explain)
+        [[ "${1:-}" == "--run" && -n "${2:-}" ]] || { printf 'Usage: %s explain --run RUN_ID\n' "$(basename "$0")" >&2; exit 2; }
+        _explain_run_id="$2"
+        shift 2
+        [[ $# -eq 0 ]] || { printf 'Unknown explain argument: %s\n' "$1" >&2; exit 2; }
+        run_contract_explain "$_explain_run_id"
         ;;
     agent-summary|summary)
         render_agent_summary
@@ -3030,7 +3265,7 @@ case "$COMMAND" in
 
         # Detect providers
         _codex_ok="false"; command -v codex &>/dev/null && [[ -n "${OPENAI_API_KEY:-}" || -f "${HOME}/.codex/auth.json" ]] && _codex_ok="true"
-        _gemini_ok="false"; command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}" || -f "${HOME}/.gemini/oauth_creds.json" ]] && _gemini_ok="true"
+        _agy_ok="false"; command -v agy &>/dev/null && _agy_ok="true"
         _claude_ok="true"  # Always available
         _perplexity_ok="false"; [[ -n "${PERPLEXITY_API_KEY:-}" ]] && _perplexity_ok="true"
 
@@ -3059,7 +3294,7 @@ case "$COMMAND" in
   "workflow": "$_init_workflow",
   "providers": {
     "codex": $_codex_ok,
-    "gemini": $_gemini_ok,
+    "agy": $_agy_ok,
     "claude": $_claude_ok,
     "perplexity": $_perplexity_ok
   },

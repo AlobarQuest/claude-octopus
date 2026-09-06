@@ -1,5 +1,6 @@
 ---
 description: "Configure AI provider models for Claude Octopus workflows"
+disable-model-invocation: true
 ---
 
 # Model Configuration
@@ -41,12 +42,12 @@ Run a SINGLE comprehensive detection command:
 ```bash
 echo "=== Provider Detection ==="
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo installed || echo missing)"
-printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo installed || echo missing)"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo configured || echo missing)"
 printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo configured || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo installed || echo missing)"
 printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo installed || echo missing)"
-printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo running || command -v ollama >/dev/null 2>&1 && echo installed || echo missing)"
+printf "kimi:%s\n" "$(command -v kimi >/dev/null 2>&1 && echo installed || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf --connect-timeout 1 --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1 && echo running || command -v ollama >/dev/null 2>&1 && echo installed || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo installed || echo missing)"
 echo "=== Config ==="
 if [[ -f ~/.claude-octopus/config/providers.json ]]; then
@@ -66,9 +67,9 @@ Then display a compact dashboard:
 
 Providers                          Status
   🔵 Claude (Sonnet/Opus)          Built-in ✓
-  🔴 Codex (GPT-5.4)              [Installed ✓ / Missing ✗]  → current: <model>
-  🟡 Gemini                        [Installed ✓ / Missing ✗]  → current: <model>
+  🔴 Codex (GPT-5.6 Sol)          [Installed ✓ / Missing ✗]  → current: <model>
   🧭 Antigravity (`agy`)           [Installed ✓ / Missing ✗]  → current: <model>
+  🌙 Kimi Code                     [Installed ✓ / Missing ✗]  → current: <model alias>
   🟣 Perplexity                    [Configured ✓ / Not set]
   🟠 OpenRouter                    [Configured ✓ / Not set]
   ...other installed providers...
@@ -86,7 +87,7 @@ Only show providers that are installed or configured. Don't show rows for provid
 
 ## STEP 2: Route by Arguments
 
-**If arguments were provided** (e.g., `/octo:model-config codex gpt-5.4`), skip the interactive flow and execute the CLI-style command directly per the EXECUTION CONTRACT at the bottom.
+**If arguments were provided** (e.g., `/octo:model-config codex gpt-5.6-sol`), skip the interactive flow and execute the CLI-style command directly per the EXECUTION CONTRACT at the bottom.
 
 **If no arguments**, proceed to the interactive wizard:
 
@@ -99,8 +100,9 @@ AskUserQuestion({
     header: "Model Config",
     multiSelect: false,
     options: [
-      {label: "Provider defaults", description: "Set default models for Codex, Gemini, Antigravity, OpenRouter, etc."},
+      {label: "Provider defaults", description: "Set default models for Codex, Antigravity, OpenRouter, etc."},
       {label: "Phase routing", description: "Choose which model handles each workflow phase (discover, develop, review, etc.)"},
+      {label: "Role routing overrides", description: "Route specific roles/personas such as researcher, logic-reviewer, or qa-reviewer"},
       {label: "Debate & multi-LLM", description: "Configure which providers participate in debates, parallel execution, and reviews"},
       {label: "Session provider availability", description: "Temporarily enable or disable providers for this Claude Code session"},
       {label: "Cost mode", description: "Switch between budget, standard, and premium model tiers"},
@@ -122,19 +124,19 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       // Always show:
-      {label: "🔵 Claude", description: "Current: claude-sonnet-4.6 / claude-opus-4.7 (legacy 4.6 available) — built-in, no config needed"},
+      {label: "🔵 Claude", description: "Current: claude-sonnet-5 / claude-opus-5 (legacy fallbacks available) — built-in, no config needed"},
       // Only if codex installed:
       {label: "🔴 Codex (OpenAI)", description: "Current: <current_model> — handles implementation, reasoning"},
-      // Only if gemini installed:
-      {label: "🟡 Gemini (Google)", description: "Current: <current_model> — handles research, creative tasks"},
       // Only if agy installed:
-      {label: "🧭 Antigravity (agy)", description: "Current: <current_model> — additional external-model perspective"},
+      {label: "🧭 Antigravity (agy)", description: "Current: <current_model> — handles research and external-model review"},
       // Only if perplexity configured:
       {label: "🟣 Perplexity", description: "Current: <current_model> — handles web search, real-time data"},
       // Only if openrouter configured:
       {label: "🟠 OpenRouter", description: "Current: <current_model> — routes to GLM, Kimi, DeepSeek"},
       // Only if opencode installed:
-      {label: "🟤 OpenCode", description: "Current: <current_model> — multi-provider router"}
+      {label: "🟤 OpenCode", description: "Current: <current_model> — multi-provider router"},
+      // Only if kimi installed:
+      {label: "🌙 Kimi Code", description: "Current: <current_model> — aliases are declared in KIMI_CODE_HOME/config.toml"}
     ]
   }]
 })
@@ -150,9 +152,9 @@ AskUserQuestion({
     header: "Codex Model",
     multiSelect: false,
     options: [
-      {label: "gpt-5.4", description: "Flagship — 400K context, $2.50/$15 MTok, best for complex tasks"},
-      {label: "gpt-5.4 (fast/spark)", description: "1000+ tok/s — 128K context, Pro-only, best for reviews & iteration"},
-      {label: "gpt-5.4-mini", description: "Budget — 400K context, $0.25/$2 MTok, great for simple tasks"},
+      {label: "gpt-5.6-sol", description: "Frontier default — 1M context, $4/$20 MTok, best for implementation and independent review"},
+      {label: "gpt-5.6-terra", description: "Balanced — 1M context, $2/$12 MTok, strong general-purpose Codex seat"},
+      {label: "gpt-5.6-luna", description: "Budget — 1M context, $0.20/$1.20 MTok, best for quick checks and prototypes"},
       {label: "o3", description: "Reasoning — 200K context, $2/$8 MTok, deep analysis & trade-offs"},
       {label: "Custom", description: "Enter a custom model name"}
     ]
@@ -160,21 +162,12 @@ AskUserQuestion({
 })
 ```
 
-**Gemini example:**
-```
-AskUserQuestion({
-  questions: [{
-    question: "Which Gemini model should be the default?",
-    header: "Gemini Model",
-    multiSelect: false,
-    options: [
-      {label: "gemini-3.1-pro-preview", description: "Premium — $2.50/$10 MTok, best research quality"},
-      {label: "gemini-3-flash-preview", description: "Fast — $0.25/$1 MTok, good for quick tasks"},
-      {label: "Custom", description: "Enter a custom model name"}
-    ]
-  }]
-})
-```
+`gpt-6-astra` is intentionally absent from persistent defaults and cost tiers.
+For a bounded evaluation after Sol fails a hard acceptance test, use
+`OCTOPUS_CODEX_MODEL=gpt-6-astra` for one command or an exact
+`codex:gpt-6-astra` seat. Model overrides written by `--session` share the
+global provider configuration, so explicit-only frontier models are rejected
+there until overrides are truly session-scoped.
 
 **OpenRouter example:**
 ```
@@ -186,17 +179,24 @@ AskUserQuestion({
     options: [
       {label: "z-ai/glm-5", description: "GLM-5 — 203K context, $0.80/$2.56 MTok, code review specialist"},
       {label: "moonshotai/kimi-k2.5", description: "Kimi K2.5 — 262K context, $0.45/$2.25 MTok, research & multimodal"},
-      {label: "deepseek/deepseek-r1-0528", description: "DeepSeek R1 — 164K context, $0.70/$2.50 MTok, deep reasoning"},
+      {label: "deepseek/deepseek-v4-pro", description: "DeepSeek V4 Pro — 1M context, $0.435/$0.87 MTok, reasoning"},
       {label: "Custom", description: "Enter a custom model ID"}
     ]
   }]
 })
 ```
 
+**Kimi Code example:** enter the exact alias already declared under
+`[models.<alias>]` in `$KIMI_CODE_HOME/config.toml` (default
+`~/.kimi-code/config.toml`). Run `kimi` and enter `/login` first if the selected
+provider has no configured API key or OAuth credential. A legacy keyring-only
+session is not usable here; run `kimi` with the same `KIMI_CODE_HOME` and enter
+`/login` again to create the current file-backed session.
+
 After selection, apply the change:
 
 ```bash
-${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh set-model <provider> <model>
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh set <provider> <model>
 ```
 
 Then confirm: `✓ Set <provider> default → <model>`
@@ -221,7 +221,7 @@ AskUserQuestion({
       {label: "🔒 Security", description: "Current: <model> — security audits (default: o3 reasoning)"},
       {label: "💬 Debate", description: "Current: <model> — multi-AI deliberation"},
       {label: "📖 Review", description: "Current: <model> — code review"},
-      {label: "🔬 Research", description: "Current: <model> — deep research (default: gemini)"},
+      {label: "🔬 Research", description: "Current: <model> — deep research (default: agy)"},
       {label: "⚡ Quick", description: "Current: <model> — fast ad-hoc tasks"}
     ]
   }]
@@ -238,11 +238,11 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       // Show cross-provider options
-      {label: "codex:default (gpt-5.4)", description: "Deep reasoning, complex tasks"},
-      {label: "codex:spark (gpt-5.4 fast)", description: "15x faster, good for iteration"},
+      {label: "codex:default (gpt-5.6-sol)", description: "Frontier implementation and independent review"},
+      {label: "codex:spark (gpt-5.6-luna)", description: "Budget-friendly quick checks and iteration"},
       {label: "codex:reasoning (o3)", description: "Deep analysis with chain-of-thought"},
-      {label: "gemini:default", description: "Broad research, creative approaches"},
-      {label: "gemini:flash", description: "Fast, low-cost"},
+      {label: "agy:default", description: "Broad research, creative approaches"},
+      {label: "agy:flash", description: "Fast Antigravity model tier"},
       // Only if openrouter configured:
       {label: "openrouter:glm5 (z-ai/glm-5)", description: "Code review specialist"},
       {label: "openrouter:kimi (kimi-k2.5)", description: "Research & multimodal"},
@@ -289,9 +289,8 @@ AskUserQuestion({
     multiSelect: true,
     options: [
       // Only show installed/configured providers
-      {label: "🔵 Claude (Sonnet 4.6 / Opus 4.7)", description: "Moderator — instruction-following, synthesis"},
-      {label: "🔴 Codex (GPT-5.4)", description: "Technical depth — architecture, implementation"},
-      {label: "🟡 Gemini", description: "Ecosystem perspective — alternatives, trends"},
+      {label: "🔵 Claude (Sonnet 5 / Opus 5)", description: "Moderator — instruction-following, synthesis"},
+      {label: "🔴 Codex (GPT-5.6 Sol)", description: "Independent implementation and edge-case review"},
       {label: "🧭 Antigravity (agy)", description: "Alternate model perspective via Antigravity CLI"},
       {label: "🟠 OpenRouter: GLM-5", description: "Code review specialist — quality focus"},
       {label: "🟠 OpenRouter: Kimi K2.5", description: "Research perspective — broad knowledge"},
@@ -303,7 +302,7 @@ AskUserQuestion({
 
 Save debate config to providers.json under `.routing.features.debate`:
 ```bash
-jq --argjson providers '["claude","codex","gemini"]' \
+jq --argjson providers '["claude","codex","agy"]' \
   '.routing.features.debate = $providers' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
 ```
 
@@ -337,7 +336,7 @@ AskUserQuestion({
     header: "Cost Mode",
     multiSelect: false,
     options: [
-      {label: "💰 Budget", description: "Use cheapest models: gpt-5.4-mini, gemini-flash — best for prototyping"},
+      {label: "💰 Budget", description: "Use cheapest configured models, including gpt-5.6-luna — best for prototyping"},
       {label: "⚖️ Standard (current default)", description: "Balanced: use your configured defaults"},
       {label: "🚀 Premium", description: "Use best available models for every task — higher cost, best quality"}
     ]
@@ -345,17 +344,45 @@ AskUserQuestion({
 })
 ```
 
-Apply by showing the user the export command:
-```
-To activate: export OCTOPUS_COST_MODE=<mode>
-To make permanent: add to ~/.zshrc or ~/.bashrc
+Apply the selection with the shared helper:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh cost-mode <mode>
 ```
 
-Or offer to set it in the config file.
+The helper persists the selection in `providers.json`. Do not edit the user's
+shell profile. Mention the matching quick command: `/octo:budget-mode`,
+`/octo:standard-mode`, or `/octo:premium-mode`.
+
+To configure which model or capability a provider uses in a tier:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh tier <budget|standard|premium> <provider> <model-or-capability>
+```
+
+
+### Route: Role Routing Overrides
+
+Use role routing when a specific persona or workflow role should use a different provider/model than the phase or provider default. Examples: route `researcher` to `agy:default`, route `logic-reviewer` to `codex:logic_review`, or route QA roles to a review model while implementation remains on the provider default.
+
+Show current role overrides:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh show roles
+```
+
+Set or remove an override:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh route-role <role> <provider:capability-or-model>
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh unroute-role <role>
+```
+
+Role overrides are intentionally sparse. Do not restate defaults; add a role only when it needs deterministic routing different from the provider/persona default.
 
 ### Route: Session Provider Availability
 
-Use this when the user wants to turn a provider off for the current session, for example when Codex quota is exhausted and they want Claude + Gemini only.
+Use this when the user wants to turn a provider off for the current session, for example when Codex quota is exhausted and they want Claude + Antigravity only.
 
 First show the current allowlist:
 
@@ -374,7 +401,7 @@ AskUserQuestion({
     options: [
       {label: "Claude", description: "Built-in Claude providers"},
       {label: "Codex", description: "OpenAI Codex CLI"},
-      {label: "Gemini", description: "Google Gemini CLI"},
+      {label: "Antigravity", description: "Google Antigravity CLI"},
       {label: "Copilot", description: "GitHub Copilot CLI"},
       {label: "Qwen", description: "Qwen Code CLI"},
       {label: "OpenCode", description: "OpenCode multi-provider router"},
@@ -395,7 +422,7 @@ Useful direct commands:
 
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh disable codex --session
-${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh allow claude gemini --session
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh allow claude agy --session
 ${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh clear-allowlist --session
 ```
 
@@ -411,8 +438,8 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       {label: "Reset all", description: "Restore all providers and routing to defaults"},
-      {label: "Reset Codex only", description: "Reset Codex to gpt-5.4 default"},
-      {label: "Reset Gemini only", description: "Reset Gemini to gemini-3.1-pro-preview default"},
+      {label: "Reset Codex only", description: "Reset Codex to gpt-5.6-sol default"},
+      {label: "Reset Antigravity only", description: "Reset Antigravity to its service-selected default"},
       {label: "Reset phase routing only", description: "Restore default phase-to-model mapping"},
       {label: "Cancel", description: "Go back without changing anything"}
     ]
@@ -443,14 +470,19 @@ AskUserQuestion({
 
 ## CLI-STYLE EXECUTION CONTRACT (for direct arguments)
 
-When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.4`), skip the interactive flow and execute directly:
+When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.6-sol`), skip the interactive flow and execute directly:
 
 1. **Parse arguments** to determine action:
    - `show phases` → Display formatted phase routing table
+   - `show roles` → Display explicit role routing overrides
    - `<provider> <model>` → Set model (persistent)
    - `<provider>.<capability> <model>` → Set capability-specific model
    - `<provider> <model> --session` → Set model (session only)
    - `phase <phase> <model>` → Set phase-specific model routing
+   - `cost-mode <budget|standard|premium|status>` → Persist or inspect the active cost mode
+   - `tier <budget|standard|premium> <provider> <model-or-capability>` → Configure a tier mapping
+   - `route-role <role> <target>` → Set role/persona routing override
+   - `unroute-role <role>` → Remove role/persona routing override
    - `providers` → Show current provider allowlist source and value
    - `allow <providers...> --session` → Use only these providers for the current session
    - `disable <providers...> --session` → Remove providers from the current session
@@ -460,37 +492,39 @@ When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.4`), skip the
 
 2. **Set Model** (`<provider> <model>` or with `--session`):
    ```bash
-   # Read and validate
-   CONFIG_FILE="${HOME}/.claude-octopus/config/providers.json"
-   # Use jq to set the model
-   jq --arg p "<provider>" --arg m "<model>" '.providers[$p].default = $m' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh set "<provider>" "<model>" [--session]
    ```
 
    **Dot syntax** (`<provider>.<capability> <model>`):
    ```bash
-   jq --arg p "<provider>" --arg c "<capability>" --arg m "<model>" \
-     '.providers[$p][$c] = $m' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh set "<provider>.<capability>" "<model>"
    ```
 
 3. **Set Phase Routing** (`phase <phase> <model>`):
    Validate phase name against: `discover`, `define`, `develop`, `deliver`, `quick`, `debate`, `review`, `security`, `research`.
    ```bash
-   jq --arg phase "<phase>" --arg model "<model>" '.routing.phases[$phase] = $model' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+   scripts/helpers/octo-model-config.sh route "<phase>" "<model>"
    ```
 
 4. **Reset**: Use default values from the ensure_config block in `scripts/helpers/octo-model-config.sh`.
 
 5. **Provider Availability**: Use `scripts/helpers/octo-model-config.sh providers|allow|enable|disable|clear-allowlist`. These commands write to `~/.claude-octopus/config/provider-allowlist.<session>` by default. Global files are supported with `--global`, but prefer session scope unless the user explicitly asks for a persistent change.
 
-5. Always show confirmation and the updated value after any change.
+6. **Cost Mode**: Use `scripts/helpers/octo-model-config.sh cost-mode <mode>`
+   for the active selection and `scripts/helpers/octo-model-config.sh tier
+   <mode> <provider> <target>` for per-provider tier mappings. The
+   `OCTOPUS_COST_MODE` environment variable remains the highest-priority
+   override.
+
+7. Always show confirmation and the updated value after any change.
 
 ### Validation Gates
 
-- Provider names validated against whitelist: `codex gemini agy antigravity claude perplexity openrouter opencode copilot ollama qwen`
+- Provider names are validated against the canonical registry: `codex commandcode claude claude-sdk agy perplexity opencode openrouter orcarouter atlascloud openai-compatible openai-tools openai-compatible-agent cursor-agent grok qwen ollama copilot vibe kimi`. Aliases are canonicalized first; for example, `antigravity` becomes `agy`.
 - Phase names validated against known list
-- Model names checked for injection safety (alphanumeric, hyphens, dots, slashes only)
-- Config file operations use atomic write (tmp + mv)
-- Always use `jq --arg` (never string interpolation)
+- Model values reject empty strings, whitespace, shell metacharacters, and leading slashes. Provider-qualified targets such as `codex:default` are allowed.
+- In dot syntax, the suffix is stored as a capability key without separate capability-name validation.
+- Route and model writes use `jq --arg`, a temporary file, and `mv` for atomic replacement.
 
 ### Prohibited Actions
 

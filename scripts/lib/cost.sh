@@ -3,9 +3,52 @@
 # Extracted from orchestrate.sh
 # Source-safe: no main execution block.
 
+_octopus_cost_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OCTOPUS_MODEL_PRICING_FILE="${OCTOPUS_MODEL_PRICING_FILE:-${_octopus_cost_lib_dir}/../../config/model-pricing.tsv}"
+OCTOPUS_USAGE_LEDGER_HELPER="${OCTOPUS_USAGE_LEDGER_HELPER:-${_octopus_cost_lib_dir}/../helpers/usage-ledger.py}"
+
 # Session usage tracking file
 USAGE_FILE="${WORKSPACE_DIR}/usage-session.json"
 USAGE_HISTORY_DIR="${WORKSPACE_DIR}/usage-history"
+
+_octo_usage_tariff_version() {
+    local digest=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest=$(sha256sum "$OCTOPUS_MODEL_PRICING_FILE" 2>/dev/null | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        digest=$(shasum -a 256 "$OCTOPUS_MODEL_PRICING_FILE" 2>/dev/null | awk '{print $1}')
+    fi
+    [[ -n "$digest" ]] && printf 'sha256:%s\n' "$digest" || printf 'unknown\n'
+}
+
+_octo_usage_billing_mode() {
+    if declare -f is_api_based_provider >/dev/null 2>&1 && is_api_based_provider "$1"; then
+        printf 'api\n'
+    else
+        printf 'included\n'
+    fi
+}
+
+_octo_usage_append() {
+    if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$OCTOPUS_USAGE_LEDGER_HELPER" ]]; then
+        declare -f log >/dev/null 2>&1 && log WARN "Usage ledger unavailable; usage event was not recorded"
+        return 0
+    fi
+    if ! python3 "$OCTOPUS_USAGE_LEDGER_HELPER" append --file "${USAGE_FILE}.log" "$@"; then
+        declare -f log >/dev/null 2>&1 && log WARN "Usage ledger rejected an event"
+    fi
+    return 0
+}
+
+_octo_usage_report() {
+    local format="$1"
+    if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$OCTOPUS_USAGE_LEDGER_HELPER" ]]; then
+        printf '%s\n' "Usage reporting requires Python 3 and usage-ledger.py" >&2
+        return 69
+    fi
+    python3 "$OCTOPUS_USAGE_LEDGER_HELPER" report \
+        --file "${USAGE_FILE}.log" --session-file "$USAGE_FILE" --format "$format"
+}
 
 # Initialize usage tracking for current session
 init_usage_tracking() {
@@ -57,12 +100,67 @@ estimate_tokens() {
     echo $(( (char_count + 3) / 4 ))  # Round up
 }
 
+# Apply request-size pricing rules from the canonical pricing table.
+octo_effective_model_pricing() {
+    local model="$1" input_tokens="$2" input_price="$3" output_price="$4"
+    local rule="" threshold="" input_multiplier="" output_multiplier=""
+    if declare -f octo_model_canonical_id >/dev/null 2>&1; then
+        model="$(octo_model_canonical_id "$model")" || return 1
+    fi
+    rule="$(awk -F'\t' -v model="$model" '$1 == "request-rule" && $2 == model {print $3 ":" $4 ":" $5; exit}' "$OCTOPUS_MODEL_PRICING_FILE" 2>/dev/null || true)"
+    if [[ -n "$rule" ]]; then
+        threshold="${rule%%:*}"
+        rule="${rule#*:}"
+        input_multiplier="${rule%%:*}"
+        output_multiplier="${rule##*:}"
+    fi
+    if [[ "$threshold" =~ ^[0-9]+$ && "$input_tokens" -gt "$threshold" ]]; then
+        input_price="$(awk -v price="$input_price" -v multiplier="$input_multiplier" 'BEGIN {printf "%.6f", price * multiplier}')"
+        output_price="$(awk -v price="$output_price" -v multiplier="$output_multiplier" 'BEGIN {printf "%.6f", price * multiplier}')"
+    fi
+    printf '%s:%s\n' "$input_price" "$output_price"
+}
+
+# Estimate per-call API spend for progress reporting. Subscription and OAuth
+# seats intentionally remain zero because they have no attributable call price.
+estimate_agent_call_cost() {
+    local agent_type="$1"
+    local model="$2"
+    local prompt="$3"
+
+    if ! is_api_based_provider "$agent_type"; then
+        printf '%s\n' "0.000000"
+        return 0
+    fi
+
+    local input_tokens output_tokens pricing input_price output_price
+    input_tokens=$(estimate_tokens "$prompt")
+    output_tokens=$((input_tokens * 2))
+    pricing=$(get_model_pricing "$model" "$agent_type")
+    input_price="${pricing%%:*}"
+    output_price="${pricing##*:}"
+    [[ "$input_price" =~ ^[0-9]+([.][0-9]+)?$ ]] || input_price=0
+    [[ "$output_price" =~ ^[0-9]+([.][0-9]+)?$ ]] || output_price=0
+    pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+    input_price="${pricing%%:*}"
+    output_price="${pricing##*:}"
+    awk -v input_tokens="$input_tokens" -v output_tokens="$output_tokens" \
+        -v input_price="$input_price" -v output_price="$output_price" \
+        'BEGIN {printf "%.6f\n", (input_tokens * input_price + output_tokens * output_price) / 1000000}'
+}
+
 # Parse native Task tool metrics from <usage> blocks (v8.6.0, enhanced v8.8.0)
-# Sets globals: _PARSED_TOKENS, _PARSED_TOOL_USES, _PARSED_DURATION_MS, _PARSED_SPEED
+# Sets globals: _PARSED_TOKENS, _PARSED_INPUT_TOKENS,
+# _PARSED_CACHED_INPUT_TOKENS, _PARSED_CACHE_WRITE_TOKENS,
+# _PARSED_OUTPUT_TOKENS, _PARSED_REASONING_TOKENS, _PARSED_TOOL_USES,
+# _PARSED_DURATION_MS, _PARSED_SPEED
 # Guards on SUPPORTS_NATIVE_TASK_METRICS. Falls back gracefully on parse failure.
 parse_task_metrics() {
     local output="$1"
-    _PARSED_TOKENS="" ; _PARSED_TOOL_USES="" ; _PARSED_DURATION_MS="" ; _PARSED_SPEED=""
+    _PARSED_TOKENS="" ; _PARSED_INPUT_TOKENS="" ; _PARSED_OUTPUT_TOKENS=""
+    _PARSED_CACHED_INPUT_TOKENS="" ; _PARSED_CACHE_WRITE_TOKENS=""
+    _PARSED_REASONING_TOKENS=""
+    _PARSED_TOOL_USES="" ; _PARSED_DURATION_MS="" ; _PARSED_SPEED=""
     [[ "$SUPPORTS_NATIVE_TASK_METRICS" != "true" ]] && return 0
 
     local usage_block
@@ -70,6 +168,11 @@ parse_task_metrics() {
     if [[ -n "$usage_block" ]]; then
         # v9.5: bash regex extraction (zero subshells, was 4 echo|grep|grep chains)
         [[ "$usage_block" =~ total_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_TOKENS="${BASH_REMATCH[1]}" || _PARSED_TOKENS=""
+        [[ "$usage_block" =~ (^|[[:space:]])input_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_INPUT_TOKENS="${BASH_REMATCH[2]}" || _PARSED_INPUT_TOKENS=""
+        [[ "$usage_block" =~ cached_input_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_CACHED_INPUT_TOKENS="${BASH_REMATCH[1]}" || _PARSED_CACHED_INPUT_TOKENS=""
+        [[ "$usage_block" =~ cache_(write|creation)_input_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_CACHE_WRITE_TOKENS="${BASH_REMATCH[2]}" || _PARSED_CACHE_WRITE_TOKENS=""
+        [[ "$usage_block" =~ output_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_OUTPUT_TOKENS="${BASH_REMATCH[1]}" || _PARSED_OUTPUT_TOKENS=""
+        [[ "$usage_block" =~ reasoning_tokens:[[:space:]]*([0-9]+) ]] && _PARSED_REASONING_TOKENS="${BASH_REMATCH[1]}" || _PARSED_REASONING_TOKENS=""
         [[ "$usage_block" =~ tool_uses:[[:space:]]*([0-9]+) ]] && _PARSED_TOOL_USES="${BASH_REMATCH[1]}" || _PARSED_TOOL_USES=""
         [[ "$usage_block" =~ duration_ms:[[:space:]]*([0-9]+) ]] && _PARSED_DURATION_MS="${BASH_REMATCH[1]}" || _PARSED_DURATION_MS=""
         # v8.8: Parse OTel speed attribute (fast|standard) when available
@@ -78,6 +181,11 @@ parse_task_metrics() {
         fi
     fi
     [[ "$_PARSED_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_TOKENS=""
+    [[ "$_PARSED_INPUT_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_INPUT_TOKENS=""
+    [[ "$_PARSED_CACHED_INPUT_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_CACHED_INPUT_TOKENS=""
+    [[ "$_PARSED_CACHE_WRITE_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_CACHE_WRITE_TOKENS=""
+    [[ "$_PARSED_OUTPUT_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_OUTPUT_TOKENS=""
+    [[ "$_PARSED_REASONING_TOKENS" =~ ^[0-9]+$ ]] || _PARSED_REASONING_TOKENS=""
     [[ "$_PARSED_TOOL_USES" =~ ^[0-9]+$ ]] || _PARSED_TOOL_USES=""
     [[ "$_PARSED_DURATION_MS" =~ ^[0-9]+$ ]] || _PARSED_DURATION_MS=""
     [[ "$_PARSED_SPEED" =~ ^(fast|standard)$ ]] || _PARSED_SPEED=""
@@ -104,9 +212,12 @@ calculate_agent_cost() {
     local output_tokens=$((input_tokens * 2))
 
     local pricing
-    pricing=$(get_model_pricing "$model")
+    pricing=$(get_model_pricing "$model" "$agent_type")
     local input_price="${pricing%%:*}"
     local output_price="${pricing##*:}"
+    pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+    input_price="${pricing%%:*}"
+    output_price="${pricing##*:}"
 
     # Cost = (input_tokens / 1M) * input_price + (output_tokens / 1M) * output_price
     local cost=$(awk "BEGIN {printf \"%.4f\", (($input_tokens / 1000000.0) * $input_price) + (($output_tokens / 1000000.0) * $output_price)}")
@@ -123,27 +234,27 @@ estimate_workflow_cost() {
 
     # Define expected agent calls per workflow
     local codex_calls=0
-    local gemini_calls=0
+    local agy_calls=0
     local claude_calls=0
 
     case "$workflow_name" in
         embrace)
-            codex_calls=8; gemini_calls=6; claude_calls=8 ;;
+            codex_calls=8; agy_calls=6; claude_calls=8 ;;
         probe|discover)
-            codex_calls=3; gemini_calls=2; claude_calls=2 ;;
+            codex_calls=3; agy_calls=2; claude_calls=2 ;;
         grasp|define)
-            codex_calls=2; gemini_calls=1; claude_calls=2 ;;
+            codex_calls=2; agy_calls=1; claude_calls=2 ;;
         tangle|develop)
-            codex_calls=2; gemini_calls=2; claude_calls=3 ;;
+            codex_calls=2; agy_calls=2; claude_calls=3 ;;
         ink|deliver)
-            codex_calls=2; gemini_calls=2; claude_calls=2 ;;
+            codex_calls=2; agy_calls=2; claude_calls=2 ;;
         *)
-            codex_calls=2; gemini_calls=2; claude_calls=2 ;;
+            codex_calls=2; agy_calls=2; claude_calls=2 ;;
     esac
 
     local codex_cost="0.00"
-    local gemini_cost="0.00"
-    local codex_label="" gemini_label="" claude_label=""
+    local agy_cost="0.00"
+    local codex_label="" agy_label="" claude_label=""
     local has_any_cost=false
 
     # Codex cost
@@ -159,29 +270,20 @@ estimate_workflow_cost() {
         codex_label="Included (auth-connected)"
     fi
 
-    # Gemini cost
-    if is_api_based_provider "gemini"; then
-        local per_call
-        per_call=$(calculate_agent_cost "gemini" "$prompt_length")
-        gemini_cost=$(awk "BEGIN {printf \"%.2f\", $per_call * $gemini_calls}")
-        local gemini_high
-        gemini_high=$(awk "BEGIN {printf \"%.2f\", $gemini_cost * 1.5}")
-        gemini_label="~\$${gemini_cost}-${gemini_high} (${gemini_calls} calls, API key)"
-        has_any_cost=true
-    else
-        gemini_label="Included (auth-connected)"
-    fi
+    # Antigravity is a bundled Google seat; Octopus never uses a direct Gemini
+    # API key or CLI for these calls.
+    agy_label="Included (Antigravity access; ${agy_calls} calls)"
 
     # Claude is always subscription-based
     claude_label="Included (subscription)"
 
     local total_low
-    total_low=$(awk "BEGIN {printf \"%.2f\", $codex_cost + $gemini_cost}")
+    total_low=$(awk "BEGIN {printf \"%.2f\", $codex_cost + $agy_cost}")
     local total_high
-    total_high=$(awk "BEGIN {printf \"%.2f\", ($codex_cost + $gemini_cost) * 1.5}")
+    total_high=$(awk "BEGIN {printf \"%.2f\", ($codex_cost + $agy_cost) * 1.5}")
 
     # Return structured result (pipe-delimited for easy parsing)
-    echo "${has_any_cost}|${codex_label}|${gemini_label}|${claude_label}|${total_low}|${total_high}"
+    echo "${has_any_cost}|${codex_label}|${agy_label}|${claude_label}|${total_low}|${total_high}"
 }
 
 # v8.5: Compact cost estimate display (non-interactive, no approval prompt)
@@ -193,8 +295,8 @@ show_cost_estimate() {
     local estimate
     estimate=$(estimate_workflow_cost "$workflow_name" "$prompt_length")
 
-    local has_cost codex_label gemini_label claude_label total_low total_high
-    IFS='|' read -r has_cost codex_label gemini_label claude_label total_low total_high <<< "$estimate"
+    local has_cost codex_label agy_label claude_label total_low total_high
+    IFS='|' read -r has_cost codex_label agy_label claude_label total_low total_high <<< "$estimate"
 
     # If ALL providers are auth-connected, skip the cost estimate entirely
     if [[ "$has_cost" == "false" ]]; then
@@ -204,7 +306,7 @@ show_cost_estimate() {
 
     echo -e "  ${BOLD}Estimated Costs:${NC}"
     echo -e "    ${RED}🔴${NC} Codex:  ${codex_label}"
-    echo -e "    ${YELLOW}🟡${NC} Gemini: ${gemini_label}"
+    echo -e "    ${YELLOW}🟡${NC} Antigravity: ${agy_label}"
     echo -e "    ${BLUE}🔵${NC} Claude: ${claude_label}"
 
     if [[ "$USER_FAST_MODE" == "true" ]] && [[ "$SUPPORTS_FAST_OPUS" == "true" ]]; then
@@ -219,7 +321,7 @@ show_cost_estimate() {
 display_workflow_cost_estimate() {
     local workflow_name="$1"
     local num_codex_calls="${2:-4}"
-    local num_gemini_calls="${3:-4}"
+    local num_agy_calls="${3:-4}"
     local prompt_size="${4:-2000}"
 
     # Skip in non-interactive mode, if disabled, or if called from embrace workflow
@@ -230,12 +332,10 @@ display_workflow_cost_estimate() {
 
     # Check which providers are API-based (cost money)
     local codex_is_api=false
-    local gemini_is_api=false
     local perplexity_is_api=false
     local has_costs=false
 
     is_api_based_provider "codex" && codex_is_api=true && has_costs=true
-    is_api_based_provider "gemini" && gemini_is_api=true && has_costs=true
     is_api_based_provider "perplexity" && perplexity_is_api=true && has_costs=true
 
     # If no API-based providers, skip cost display
@@ -246,10 +346,9 @@ display_workflow_cost_estimate() {
 
     # Calculate costs
     local codex_cost="0.00"
-    local gemini_cost="0.00"
     local perplexity_cost="0.00"
     local codex_status="Subscription (no per-call cost)"
-    local gemini_status="Subscription (no per-call cost)"
+    local agy_status="Antigravity access (no per-call cost)"
     local perplexity_status="Not configured"
 
     if [[ "$codex_is_api" == "true" ]]; then
@@ -257,17 +356,12 @@ display_workflow_cost_estimate() {
         codex_status="~\$$codex_cost (API key detected)"
     fi
 
-    if [[ "$gemini_is_api" == "true" ]]; then
-        gemini_cost=$(awk "BEGIN {printf \"%.2f\", $(calculate_agent_cost \"gemini\" \"$prompt_size\") * $num_gemini_calls}")
-        gemini_status="~\$$gemini_cost (API key detected)"
-    fi
-
     if [[ "$perplexity_is_api" == "true" ]]; then
         perplexity_cost=$(awk "BEGIN {printf \"%.2f\", $(calculate_agent_cost \"perplexity\" \"$prompt_size\") * 1}")
         perplexity_status="~\$$perplexity_cost (API key detected)"
     fi
 
-    local total_cost=$(awk "BEGIN {printf \"%.2f\", $codex_cost + $gemini_cost + $perplexity_cost}")
+    local total_cost=$(awk "BEGIN {printf \"%.2f\", $codex_cost + $perplexity_cost}")
 
     # Display cost estimate
     echo ""
@@ -279,12 +373,38 @@ display_workflow_cost_estimate() {
     echo ""
     echo -e "${BOLD}Estimated Costs:${NC}"
     echo -e "  ${RED}🔴 Codex${NC}  (~${num_codex_calls} requests): ${codex_status}"
-    echo -e "  ${YELLOW}🟡 Gemini${NC} (~${num_gemini_calls} requests): ${gemini_status}"
-    # Dynamic Claude model name based on workflow agents
-    local claude_model_label="Sonnet 4.6"
-    if [[ "${WORKFLOW_AGENTS:-}" == *"claude-opus"* ]]; then
-        claude_model_label="Opus 4.6"
+    echo -e "  ${YELLOW}🟡 Antigravity${NC} (~${num_agy_calls} requests): ${agy_status}"
+    # Resolve the actual Claude model after pins, role/phase routing, capability
+    # fallback, and Fable guards. Agent-type labels alone are insufficient:
+    # claude-opus may resolve to a legacy Opus, while Fable is a distinct 2x tier.
+    local claude_agent_type="claude"
+    case "${WORKFLOW_AGENTS:-}" in
+        *claude-opus-fast*) claude_agent_type="claude-opus-fast" ;;
+        *claude-opus*)      claude_agent_type="claude-opus" ;;
+        *claude-sdk*)       claude_agent_type="claude-sdk" ;;
+    esac
+    local claude_model=""
+    if declare -f get_agent_model >/dev/null 2>&1; then
+        claude_model="$(get_agent_model "$claude_agent_type" "$workflow_name" "" 2>/dev/null || true)"
     fi
+    [[ -n "$claude_model" ]] || claude_model="${OCTOPUS_OPUS_MODEL:-${OCTOPUS_CLAUDE_MODEL:-claude-sonnet-5}}"
+    local claude_model_label="$claude_model"
+    case "${claude_agent_type}:${claude_model}" in
+        claude-opus-fast:claude-opus-5)   claude_model_label="Opus 5 Fast" ;;
+        claude-opus-fast:claude-opus-4.8) claude_model_label="Opus 4.8 Fast" ;;
+        claude-opus-fast:claude-opus-4.7) claude_model_label="Opus 4.7 Fast" ;;
+        claude-opus-fast:claude-opus-4.6) claude_model_label="Opus 4.6 Fast" ;;
+        *:claude-fable-5-1) claude_model_label="Fable 5.1" ;;
+        *:claude-fable-5) claude_model_label="Fable 5" ;;
+        *:claude-opus-5-fast) claude_model_label="Opus 5 Fast" ;;
+        *:claude-opus-5)      claude_model_label="Opus 5" ;;
+        *:claude-opus-4.8)    claude_model_label="Opus 4.8" ;;
+        *:claude-opus-4.7)    claude_model_label="Opus 4.7" ;;
+        *:claude-opus-4.6)    claude_model_label="Opus 4.6" ;;
+        *:claude-sonnet-5)    claude_model_label="Sonnet 5" ;;
+        *:claude-sonnet-4.6)  claude_model_label="Sonnet 4.6" ;;
+        *:claude-haiku-4.5)   claude_model_label="Haiku 4.5" ;;
+    esac
     echo -e "  ${BLUE}🔵 Claude${NC} ($claude_model_label): ${DIM}Included in Claude Code subscription${NC}"
     if [[ "$perplexity_is_api" == "true" ]]; then
         echo -e "  ${MAGENTA}🟣 Perplexity${NC} (~1 request): ${perplexity_status}"
@@ -294,7 +414,7 @@ display_workflow_cost_estimate() {
     if [[ $(awk "BEGIN {print ($total_cost > 0)}") -eq 1 ]]; then
         echo -e "${BOLD}Total API Costs: ~\$${total_cost}${NC}"
         echo ""
-        echo -e "${DIM}Note: Costs shown only for providers using API keys (OPENAI_API_KEY/GEMINI_API_KEY/PERPLEXITY_API_KEY).${NC}"
+        echo -e "${DIM}Note: Costs shown only for providers using API keys (OPENAI_API_KEY/PERPLEXITY_API_KEY and other metered seats).${NC}"
         echo -e "${DIM}Actual costs may vary. Disable prompt with: OCTOPUS_SKIP_COST_PROMPT=true${NC}"
     else
         echo -e "${GREEN}✓ All providers using subscription/auth-based access (no per-call costs)${NC}"
@@ -329,6 +449,7 @@ record_agent_call() {
     local phase="${4:-unknown}"
     local role="${5:-none}"
     local duration_ms="${6:-0}"
+    local call_id="${7:-call-$(date +%s)-$$-${RANDOM}}"
 
     # Skip if dry run
     [[ "$DRY_RUN" == "true" ]] && return 0
@@ -339,64 +460,18 @@ record_agent_call() {
     local output_tokens=$((input_tokens * 2))  # Estimate output as 2x input
     local total_tokens=$((input_tokens + output_tokens))
 
-    # Calculate estimated cost
-    local pricing
-    pricing=$(get_model_pricing "$model")
-    local input_price="${pricing%%:*}"
-    local output_price="${pricing##*:}"
-
-    # Cost = (tokens / 1,000,000) * price_per_million
     local cost
-    cost=$(awk "BEGIN {printf \"%.6f\", ($input_tokens * $input_price + $output_tokens * $output_price) / 1000000}")
+    cost=$(estimate_agent_call_cost "$agent_type" "$model" "$prompt")
 
-    local timestamp
-    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-    # v8.34.0: Capture account context in metrics (G10)
-    if [[ "$SUPPORTS_ACCOUNT_ENV_VARS" == "true" ]]; then
-        local account_uuid="${CLAUDE_CODE_ACCOUNT_UUID:-unknown}"
-        local org_uuid="${CLAUDE_CODE_ORGANIZATION_UUID:-unknown}"
-        log "DEBUG" "Account: $account_uuid | Org: $org_uuid"
-    fi
-
-    # v8.32.0: Account env vars for per-user traceability (Claude Code v2.1.51+)
-    local account_uuid="${CLAUDE_ACCOUNT_UUID:-unknown}"
-    local account_org="${CLAUDE_ORG_UUID:-unknown}"
-    # Hash email for PII protection — log UUID freely
-    local account_email_hash="unknown"
-    if [[ -n "${CLAUDE_USER_EMAIL:-}" ]] && command -v sha256sum &>/dev/null; then
-        account_email_hash=$(printf '%s' "$CLAUDE_USER_EMAIL" | sha256sum | cut -d' ' -f1)
-    elif [[ -n "${CLAUDE_USER_EMAIL:-}" ]] && command -v shasum &>/dev/null; then
-        account_email_hash=$(printf '%s' "$CLAUDE_USER_EMAIL" | shasum -a 256 | cut -d' ' -f1)
-    fi
-
-    # Append to calls array using a temp file approach (jq-free for portability)
     if [[ -f "$USAGE_FILE" ]]; then
-        # Create call record
-        local call_record
-        call_record=$(cat << EOF
-    {
-      "timestamp": "$timestamp",
-      "agent": "$agent_type",
-      "model": "$model",
-      "phase": "$phase",
-      "role": "$role",
-      "input_tokens": $input_tokens,
-      "output_tokens": $output_tokens,
-      "total_tokens": $total_tokens,
-      "cost_usd": $cost,
-      "duration_ms": $duration_ms,
-      "account_uuid": "$account_uuid",
-      "org_uuid": "$account_org",
-      "email_hash": "$account_email_hash"
-    }
-EOF
-)
-
-        # Update totals in a simple tracking file
-        echo "$timestamp|$agent_type|$model|$phase|$role|$input_tokens|$output_tokens|$total_tokens|$cost|$duration_ms|$account_uuid" >> "${USAGE_FILE}.log"
-
-        log DEBUG "Recorded call: agent=$agent_type model=$model tokens=$total_tokens cost=\$$cost"
+        _octo_usage_append --state reserved --call-id "$call_id" \
+            --agent "$agent_type" --model "$model" --phase "$phase" --role "$role" \
+            --input-tokens "$input_tokens" --output-tokens "$output_tokens" \
+            --total-tokens "$total_tokens" --usage-source estimated --cost "$cost" \
+            --cost-status estimated --duration-ms "$duration_ms" \
+            --billing-mode "$(_octo_usage_billing_mode "$agent_type")" \
+            --tariff-version "$(_octo_usage_tariff_version)"
+        log DEBUG "Reserved call: id=$call_id agent=$agent_type model=$model tokens=$total_tokens cost=\$$cost"
     fi
 }
 
@@ -422,83 +497,9 @@ generate_usage_report() {
     esac
 }
 
-# Generate table format report using awk (bash 3.x compatible)
+# Generate reports through the reconciled JSONL reader.
 generate_usage_table() {
-    local log_file="${USAGE_FILE}.log"
-
-    # Calculate totals using awk
-    local totals
-    totals=$(awk -F'|' '
-        { calls++; tokens+=$8; cost+=$9 }
-        END { printf "%d|%d|%.6f", calls, tokens, cost }
-    ' "$log_file")
-
-    local total_calls total_tokens total_cost
-    total_calls="${totals%%|*}"
-    local _t_rest="${totals#*|}"; total_tokens="${_t_rest%%|*}"
-    local _t_rest2="${totals#*|}"; total_cost="${_t_rest2#*|}"
-
-    echo ""
-    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║  ${GREEN}USAGE REPORT${CYAN}                                                 ║${NC}"
-    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}                                                                ${CYAN}║${NC}"
-    printf "${CYAN}║${NC}  Total Calls:    ${GREEN}%-6s${NC}                                       ${CYAN}║${NC}\n" "$total_calls"
-    printf "${CYAN}║${NC}  Total Tokens:   ${GREEN}%-10s${NC}                                   ${CYAN}║${NC}\n" "$total_tokens"
-    printf "${CYAN}║${NC}  Total Cost:     ${GREEN}\$%-10s${NC}                                  ${CYAN}║${NC}\n" "$total_cost"
-    echo -e "${CYAN}║${NC}                                                                ${CYAN}║${NC}"
-    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${YELLOW}By Model${NC}                           Tokens      Cost    Calls ${CYAN}║${NC}"
-    echo -e "${CYAN}╟${_DASH}───╢${NC}"
-
-    # Aggregate by model using awk
-    awk -F'|' '
-        { model[$3] += $8; cost[$3] += $9; calls[$3]++ }
-        END {
-            for (m in model) {
-                printf "  %-30s %8d  $%-7.4f  %3d\n", m, model[m], cost[m], calls[m]
-            }
-        }
-    ' "$log_file" | while read -r line; do
-        echo -e "${CYAN}║${NC}$line   ${CYAN}║${NC}"
-    done
-
-    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${YELLOW}By Agent${NC}                           Tokens      Cost    Calls ${CYAN}║${NC}"
-    echo -e "${CYAN}╟${_DASH}───╢${NC}"
-
-    # Aggregate by agent using awk
-    awk -F'|' '
-        { agent[$2] += $8; cost[$2] += $9; calls[$2]++ }
-        END {
-            for (a in agent) {
-                printf "  %-30s %8d  $%-7.4f  %3d\n", a, agent[a], cost[a], calls[a]
-            }
-        }
-    ' "$log_file" | while read -r line; do
-        echo -e "${CYAN}║${NC}$line   ${CYAN}║${NC}"
-    done
-
-    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${YELLOW}By Phase${NC}                           Tokens      Cost    Calls ${CYAN}║${NC}"
-    echo -e "${CYAN}╟${_DASH}───╢${NC}"
-
-    # Aggregate by phase using awk
-    awk -F'|' '
-        { phase[$4] += $8; cost[$4] += $9; calls[$4]++ }
-        END {
-            for (p in phase) {
-                printf "  %-30s %8d  $%-7.4f  %3d\n", p, phase[p], cost[p], calls[p]
-            }
-        }
-    ' "$log_file" | while read -r line; do
-        echo -e "${CYAN}║${NC}$line   ${CYAN}║${NC}"
-    done
-
-    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}Note:${NC} Token counts are estimates (~4 chars/token). Actual costs may vary."
-    echo ""
+    _octo_usage_report table
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -516,61 +517,14 @@ display_session_metrics() {
     generate_usage_table
 }
 
-# v8.49.0: Display per-provider breakdown (codex/gemini/claude)
+# v8.49.0: Display per-provider breakdown (codex/agy/claude)
 display_provider_breakdown() {
-    local log_file="${USAGE_FILE}.log"
-    [[ -f "$log_file" ]] || return 0
-
-    echo -e "${CYAN}Provider Breakdown:${NC}"
-    awk -F'|' '
-        {
-            # Extract provider from agent type (e.g., codex-spark -> codex)
-            provider = $2
-            gsub(/-.*/, "", provider)
-            tokens[provider] += $8
-            cost[provider] += $9
-            calls[provider]++
-        }
-        END {
-            for (p in calls) {
-                printf "  %-12s  %6d calls  %8d tokens  $%.4f est.\n", p, calls[p], tokens[p], cost[p]
-            }
-        }
-    ' "$log_file"
-    echo ""
+    _octo_usage_report providers
 }
 
 # v8.49.0: Display per-phase cost table with model used
 display_per_phase_cost_table() {
-    local log_file="${USAGE_FILE}.log"
-    [[ -f "$log_file" ]] || return 0
-
-    echo -e "${CYAN}Per-Phase Cost Breakdown:${NC}"
-    printf "  %-12s  %-25s  %8s  %s\n" "Phase" "Model" "Tokens" "Est. Cost"
-    echo "  ${_DASH}─"
-    awk -F'|' '
-        {
-            phase = $4
-            model = $3
-            key = phase "|" model
-            tokens[key] += $8
-            cost[key] += $9
-            calls[key]++
-            # Track which model was used per phase (last one wins for display)
-            phase_model[phase] = model
-            phase_tokens[phase] += $8
-            phase_cost[phase] += $9
-        }
-        END {
-            # Sort by phase name
-            n = asorti(phase_tokens, sorted)
-            for (i = 1; i <= n; i++) {
-                p = sorted[i]
-                printf "  %-12s  %-25s  %8d  $%.4f\n", p, phase_model[p], phase_tokens[p], phase_cost[p]
-            }
-        }
-    ' "$log_file"
-    echo ""
+    _octo_usage_report phases
 }
 
 # v8.49.0: Record agent start (returns metrics ID for correlation)
@@ -580,6 +534,19 @@ record_agent_start() {
     local prompt="$3"
     local phase="${4:-unknown}"
     local metrics_id="m-$(date +%s)-$$-${RANDOM}"
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        echo "$metrics_id"
+        return 0
+    fi
+    local metrics_base="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
+    local input_tokens
+    input_tokens="$(estimate_tokens "$prompt")"
+    if declare -f get_metrics_base >/dev/null 2>&1; then
+        metrics_base="$(get_metrics_base)"
+    fi
+    if [[ -n "$metrics_base" ]] && mkdir -p "$metrics_base" 2>/dev/null; then
+        (umask 077; printf '%s|%s\n' "$(date +%s)" "$input_tokens" > "${metrics_base}/.agent-start-${metrics_id}") 2>/dev/null || true
+    fi
     echo "$metrics_id"
 }
 
@@ -594,98 +561,142 @@ record_agent_complete() {
     local actual_tokens="${6:-}"
     local tool_uses="${7:-}"
     local duration_ms="${8:-0}"
+    local native_input_tokens="${9:-}"
+    local native_output_tokens="${10:-}"
+    local cached_input_tokens="${11:-0}"
+    local cache_write_tokens="${12:-0}"
+    local reasoning_tokens="${13:-0}"
+    local metrics_base="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
+    if declare -f get_metrics_base >/dev/null 2>&1; then
+        metrics_base="$(get_metrics_base)"
+    fi
+    local start_file="${metrics_base}/.agent-start-${metrics_id}"
 
     [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local usage_source="actual"
+    if [[ ! "$actual_tokens" =~ ^[0-9]+$ ]]; then
+        local start_record measured_input_tokens
+        start_record="$(cat "$start_file" 2>/dev/null || true)"
+        measured_input_tokens="${start_record#*|}"
+        if [[ "$start_record" == *"|"* && "$measured_input_tokens" =~ ^[0-9]+$ ]]; then
+            native_input_tokens="$measured_input_tokens"
+            native_output_tokens="$(estimate_tokens "$output")"
+            actual_tokens=$((native_input_tokens + native_output_tokens))
+            usage_source="estimated-output"
+        fi
+    fi
 
     # If we have actual token data from <usage> block, record a completion entry
     if [[ -n "$actual_tokens" && "$actual_tokens" =~ ^[0-9]+$ ]]; then
         local timestamp
         timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-        # Calculate cost with actual tokens
+        # Use native component counts when available. If the provider reports
+        # only a total, combine it with the prompt measurement captured at
+        # dispatch start instead of inventing a percentage split.
+        local input_tokens="" output_tokens=""
+        local reported_component_total=0
+        [[ "$cached_input_tokens" =~ ^[0-9]+$ ]] || cached_input_tokens=0
+        [[ "$cache_write_tokens" =~ ^[0-9]+$ ]] || cache_write_tokens=0
+        [[ "$reasoning_tokens" =~ ^[0-9]+$ ]] || reasoning_tokens=0
+        if [[ "$native_input_tokens" =~ ^[0-9]+$ && "$native_output_tokens" =~ ^[0-9]+$ ]]; then
+            reported_component_total=$((native_input_tokens + native_output_tokens + cached_input_tokens + cache_write_tokens + reasoning_tokens))
+        fi
+        if [[ "$native_input_tokens" =~ ^[0-9]+$ && "$native_output_tokens" =~ ^[0-9]+$ ]] &&
+           (( native_input_tokens + native_output_tokens == actual_tokens || reported_component_total == actual_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens="$native_output_tokens"
+        elif [[ "$native_input_tokens" =~ ^[0-9]+$ ]] && (( native_input_tokens <= actual_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens=$((actual_tokens - native_input_tokens))
+        elif [[ "$native_output_tokens" =~ ^[0-9]+$ ]] && (( native_output_tokens <= actual_tokens )); then
+            output_tokens="$native_output_tokens"
+            input_tokens=$((actual_tokens - native_output_tokens))
+        elif [[ -f "$start_file" ]]; then
+            local start_record measured_input_tokens
+            start_record="$(cat "$start_file" 2>/dev/null || true)"
+            measured_input_tokens="${start_record#*|}"
+            if [[ "$start_record" == *"|"* && "$measured_input_tokens" =~ ^[0-9]+$ ]]; then
+                input_tokens="$measured_input_tokens"
+                (( input_tokens > actual_tokens )) && input_tokens="$actual_tokens"
+                output_tokens=$((actual_tokens - input_tokens))
+            fi
+        fi
+
+        if [[ -z "$input_tokens" || -z "$output_tokens" ]]; then
+            log WARN "Skipping actual-cost entry without native token components or a measured prompt"
+            rm -f "$start_file" 2>/dev/null || true
+            return 0
+        fi
+
+        # Calculate cost with the measured token components.
         local pricing
-        pricing=$(get_model_pricing "$model")
+        pricing=$(get_model_pricing "$model" "$agent_type")
         local input_price="${pricing%%:*}"
         local output_price="${pricing##*:}"
-        # Assume 40% input, 60% output split for actual tokens
-        local input_tokens=$(( actual_tokens * 40 / 100 ))
-        local output_tokens=$(( actual_tokens * 60 / 100 ))
-        local cost
-        cost=$(awk "BEGIN {printf \"%.6f\", ($input_tokens * $input_price + $output_tokens * $output_price) / 1000000}")
+        pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+        input_price="${pricing%%:*}"
+        output_price="${pricing##*:}"
+        local cost="" cost_status="$usage_source"
+        if [[ "$cached_input_tokens" =~ ^[0-9]+$ && "$cache_write_tokens" =~ ^[0-9]+$ &&
+              "$reasoning_tokens" =~ ^[0-9]+$ ]] &&
+           (( cached_input_tokens > 0 || cache_write_tokens > 0 || reasoning_tokens > 0 )); then
+            # The canonical table currently has uncached input/output tariffs
+            # only. Preserve richer native components but do not silently price
+            # cached or reasoning usage as ordinary input/output.
+            cost_status="unknown-cache-tariff"
+        else
+            cached_input_tokens=0
+            cache_write_tokens=0
+            reasoning_tokens=0
+            cost=$(awk "BEGIN {printf \"%.6f\", ($input_tokens * $input_price + $output_tokens * $output_price) / 1000000}")
+        fi
 
-        # Append actual metrics (suffixed with :actual to distinguish from estimates)
+        # Append one terminal event using the reservation's call ID.
         if [[ -f "${USAGE_FILE}.log" ]]; then
-            echo "${timestamp}|${agent_type}|${model}|${phase}|actual|${input_tokens}|${output_tokens}|${actual_tokens}|${cost}|${duration_ms}|${metrics_id}" >> "${USAGE_FILE}.log"
-            log DEBUG "Recorded actual metrics: agent=$agent_type tokens=$actual_tokens cost=\$$cost duration=${duration_ms}ms"
+            _octo_usage_append --state completed --call-id "$metrics_id" \
+                --timestamp "$timestamp" --agent "$agent_type" --model "$model" \
+                --phase "$phase" --role actual --input-tokens "$input_tokens" \
+                --cached-input-tokens "$cached_input_tokens" \
+                --cache-write-tokens "$cache_write_tokens" \
+                --output-tokens "$output_tokens" --reasoning-tokens "$reasoning_tokens" \
+                --total-tokens "$actual_tokens" --usage-source "$usage_source" --cost "$cost" \
+                --cost-status "$cost_status" --duration-ms "$duration_ms" \
+                --tool-uses "$tool_uses" --billing-mode "$(_octo_usage_billing_mode "$agent_type")" \
+                --tariff-version "$(_octo_usage_tariff_version)"
+            log DEBUG "Completed call: id=$metrics_id agent=$agent_type tokens=$actual_tokens cost=${cost:-unknown} duration=${duration_ms}ms"
         fi
     fi
+    rm -f "$start_file" 2>/dev/null || true
+}
+
+record_agent_failure() {
+    local call_id="$1"
+    local duration_ms="${2:-0}"
+    local reason="${3:-Provider call failed}"
+    local state="${4:-failed}"
+    case "$state" in failed|cancelled|timeout) ;; *) state=failed ;; esac
+    [[ "${DRY_RUN:-false}" == "true" || -z "$call_id" ]] && return 0
+    _octo_usage_append --state "$state" --call-id "$call_id" \
+        --duration-ms "$duration_ms" --failure-reason "$reason" \
+        --usage-source estimated --cost-status estimated
+    local metrics_base="${WORKSPACE_DIR:-${HOME}/.claude-octopus}"
+    if declare -f get_metrics_base >/dev/null 2>&1; then
+        metrics_base="$(get_metrics_base)"
+    fi
+    rm -f "${metrics_base}/.agent-start-${call_id}" 2>/dev/null || true
 }
 
 # [EXTRACTED to lib/error-tracking.sh]
 
 # Generate CSV format report
 generate_usage_csv() {
-    echo "timestamp,agent,model,phase,role,input_tokens,output_tokens,total_tokens,cost_usd,duration_ms"
-    cat "${USAGE_FILE}.log" | tr '|' ','
+    _octo_usage_report csv
 }
 
-# Generate JSON format report (bash 3.x compatible)
 generate_usage_json() {
-    local log_file="${USAGE_FILE}.log"
-
-    # Calculate totals using awk
-    local totals
-    totals=$(awk -F'|' '
-        { calls++; tokens+=$8; cost+=$9 }
-        END { printf "%d|%d|%.6f", calls, tokens, cost }
-    ' "$log_file")
-
-    local total_calls total_tokens total_cost
-    total_calls="${totals%%|*}"
-    local _t_rest="${totals#*|}"; total_tokens="${_t_rest%%|*}"
-    local _t_rest2="${totals#*|}"; total_cost="${_t_rest2#*|}"
-
-    local session_id
-    session_id=$(grep -o '"session_id": "[^"]*"' "$USAGE_FILE" 2>/dev/null | cut -d'"' -f4)
-    local started_at
-    started_at=$(grep -o '"started_at": "[^"]*"' "$USAGE_FILE" 2>/dev/null | cut -d'"' -f4)
-
-    cat << EOF
-{
-  "session_id": "$session_id",
-  "started_at": "$started_at",
-  "generated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "totals": {
-    "calls": $total_calls,
-    "tokens": $total_tokens,
-    "cost_usd": $total_cost
-  },
-  "calls": [
-EOF
-
-    local first=true
-    while IFS='|' read -r timestamp agent model phase role input_tokens output_tokens tokens cost duration; do
-        [[ "$first" == "true" ]] || echo ","
-        first=false
-        cat << EOF
-    {
-      "timestamp": "$timestamp",
-      "agent": "$agent",
-      "model": "$model",
-      "phase": "$phase",
-      "role": "$role",
-      "input_tokens": $input_tokens,
-      "output_tokens": $output_tokens,
-      "total_tokens": $tokens,
-      "cost_usd": $cost,
-      "duration_ms": $duration
-    }
-EOF
-    done < "$log_file"
-
-    echo ""
-    echo "  ]"
-    echo "}"
+    _octo_usage_report json
 }
 
 
@@ -798,13 +809,8 @@ get_cost_tier_for_subscription() {
                 *) echo "pay-per-use" ;;
             esac
             ;;
-        gemini)
-            case "$sub_tier" in
-                free) echo "free" ;;
-                workspace) echo "bundled" ;;
-                api-only) echo "pay-per-use" ;;
-                *) echo "pay-per-use" ;;
-            esac
+        agy)
+            echo "bundled"
             ;;
         claude)
             case "$sub_tier" in
@@ -830,48 +836,49 @@ get_cost_tier_for_subscription() {
 
 get_model_pricing() {
     local model="$1"
-    case "$model" in
-        # OpenAI GPT-5.x models (v9.44: updated to Jun 2026 pricing)
-        gpt-5.5)                echo "5.00:30.00" ;;   # v9.44: GPT-5.5 (OAuth + API) — new premium default
-        gpt-5.5-pro)            echo "30.00:180.00" ;; # v9.44: GPT-5.5 Pro (API-key only)
-        gpt-5.4)                echo "2.50:15.00" ;;   # v8.39.0: GPT-5.4 (OAuth + API)
-        gpt-5.4-pro)            echo "30.00:180.00" ;; # v8.39.0: GPT-5.4 Pro (API-key only)
-        gpt-5.3-codex)          echo "1.75:14.00" ;;
-        gpt-5.3-codex-spark)    echo "1.75:14.00" ;;   # Spark - same API price, Pro-only
-        gpt-5.2-codex)          echo "1.75:14.00" ;;
-        gpt-5.1-codex-max)      echo "1.25:10.00" ;;
-        gpt-5.4-mini)           echo "0.25:2.00" ;;    # v8.39.0: Budget tier
-        gpt-5)                  echo "1.25:10.00" ;;   # v8.39.0: GPT-5 base
-        gpt-5.2)                echo "1.75:14.00" ;;
-        gpt-5.1)                echo "1.25:10.00" ;;
-        gpt-5-codex)            echo "1.25:10.00" ;;
-        # OpenAI Reasoning models (v8.9.0; v8.39.0: added o3-pro, o3-mini — all API-key only)
-        o3)                     echo "2.00:8.00" ;;
-        o3-pro)                 echo "20.00:80.00" ;;  # v8.39.0: API-key only
-        o3-mini)                echo "1.10:4.40" ;;    # v8.39.0: API-key only
-        # Google Gemini 3.0 models
-        gemini-3.1-pro-preview)   echo "2.50:10.00" ;;
-        gemini-3-flash-preview) echo "0.25:1.00" ;;
-        gemini-3-pro-image)         echo "5.35:21.40" ;;  # oco-803: Nano Banana Pro GA (~$0.134/1K-2K img, June 2026)
-        gemini-3.1-flash-image)     echo "0.25:1.00" ;;   # oco-803: Nano Banana 2 fast image tier (budget)
-        gemini-3-pro-image-preview) echo "5.00:20.00" ;;  # deprecated 2026-06-25, kept for back-compat
-        # Claude models
-        claude-sonnet-4.5)      echo "3.00:15.00" ;;
-        claude-sonnet-4.6)      echo "3.00:15.00" ;;   # v8.17: Sonnet 4.6 (same pricing as 4.5)
-        claude-fable-5)         echo "10.00:50.00" ;;  # v9.44: Fable 5 (Mythos-class) — opt-in, 1M ctx, 128K output
-        claude-opus-4.8)        echo "5.00:25.00" ;;   # v9.42: Opus 4.8 — same standard price as 4.7
-        claude-opus-4.8-fast)   echo "10.00:50.00" ;;  # v9.42: Fast mode - 2x cost for ~2.5x output speed
-        claude-opus-4.7)        echo "5.00:25.00" ;;   # legacy current-minus-one
-        claude-opus-4.6)        echo "5.00:25.00" ;;   # legacy — still available for --fast use case
-        claude-opus-4.6-fast)   echo "30.00:150.00" ;;  # legacy fast mode - 6x cost for lower latency
-        # OpenRouter models (v8.11.0)
-        z-ai/glm-5)             echo "0.80:2.56" ;;    # GLM-5: code review specialist
-        moonshotai/kimi-k2.5)   echo "0.45:2.25" ;;    # Kimi K2.5: research, 262K context
-        deepseek/deepseek-r1-0528) echo "0.70:2.50" ;; # DeepSeek R1: visible reasoning traces
-        # Perplexity Sonar models (v8.24.0 - Issue #22)
-        sonar-pro)              echo "3.00:15.00" ;;   # Sonar Pro: deep web research
-        sonar)                  echo "1.00:1.00" ;;    # Sonar: fast web search
-        # Default fallback
-        *)                      echo "1.00:5.00" ;;
+    local provider="${2:-}" kind="" id="" input_price="" output_price="" _notes=""
+    local model_price="" provider_price="" provider_override="" default_price="1.00:5.00"
+
+    if declare -f octo_model_canonical_id >/dev/null 2>&1; then
+        model="$(octo_model_canonical_id "$model")" || return 1
+    fi
+
+    case "$provider" in
+        claude-sdk*) provider="claude-sdk" ;;
+        claude*) provider="claude" ;;
+        codex*) provider="codex" ;;
+        agy*|antigravity|gemini*) provider="agy" ;;
+        openrouter*) provider="openrouter" ;;
+        openai-compatible*|openai-tools) provider="openai-compatible-agent" ;;
+        atlascloud*) provider="atlascloud" ;;
+        perplexity*) provider="perplexity" ;;
+        cursor-agent*) provider="cursor-agent" ;;
+        copilot*) provider="copilot" ;;
+        ollama*) provider="ollama" ;;
+        qwen*) provider="qwen" ;;
+        grok*) provider="grok" ;;
+        opencode*) provider="opencode" ;;
+        vibe*) provider="vibe" ;;
+        kimi*) provider="kimi" ;;
     esac
+
+    if [[ ! -r "$OCTOPUS_MODEL_PRICING_FILE" ]]; then
+        printf '%s\n' "$default_price"
+        return 0
+    fi
+
+    while IFS=$'\t' read -r kind id input_price output_price _notes; do
+        [[ -n "$kind" && "$kind" != \#* ]] || continue
+        if [[ "$kind" == "model" && "$id" == "$model" ]]; then
+            model_price="${input_price}:${output_price}"
+        elif [[ "$kind" == "provider-override" && "$id" == "$provider" ]]; then
+            provider_override="${input_price}:${output_price}"
+        elif [[ "$kind" == "provider" && "$id" == "$provider" ]]; then
+            provider_price="${input_price}:${output_price}"
+        elif [[ "$kind" == "provider" && "$id" == "default" ]]; then
+            default_price="${input_price}:${output_price}"
+        fi
+    done < "$OCTOPUS_MODEL_PRICING_FILE"
+
+    printf '%s\n' "${provider_override:-${model_price:-${provider_price:-$default_price}}}"
 }

@@ -21,7 +21,7 @@ Thanks for your interest in contributing to Claude Octopus! This document provid
 
 - Bash 3.2+ (bash 3.x compatible — no associative arrays)
 - jq (for JSON processing)
-- Codex CLI, Gemini CLI, Antigravity CLI (`agy`), Copilot CLI, Ollama (all optional — for multi-provider testing)
+- Codex CLI, Antigravity CLI (`agy`), Copilot CLI, Ollama (all optional — for multi-provider testing)
 
 ### Validate Your Changes
 
@@ -37,14 +37,10 @@ bash -n scripts/orchestrate.sh
 bash -n scripts/lib/*.sh
 
 # Run test suite
-bash tests/unit/test-openclaw-compat.sh
 bash tests/unit/test-adapter-flags.sh
 
-# Verify OpenClaw registry in sync
-scripts/build-openclaw.sh --check
-
 # Run full pre-push suite
-bash tests/run-pre-push.sh
+bash tests/run-all-tests.sh
 ```
 
 ## Making Changes
@@ -89,7 +85,7 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 ### PR Checklist
 
 - [ ] Shell scripts pass `bash -n` check
-- [ ] Tests pass: `bash tests/run-pre-push.sh`
+- [ ] Tests pass: `bash tests/run-all-tests.sh`
 - [ ] Generated plugin-root skills/commands refreshed and `claude plugin validate .claude-plugin/plugin.json` passes
 - [ ] Documentation updated (if applicable)
 - [ ] CHANGELOG.md updated (for features/fixes)

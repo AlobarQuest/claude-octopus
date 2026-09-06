@@ -23,7 +23,7 @@ PASSED=0
 
 # Test 1: Check all command files use 'command:' field
 echo "Testing: All command files use 'command:' field (not 'name:')..."
-COMMANDS_DIR="$PROJECT_ROOT/.claude/commands"
+COMMANDS_DIR="$PROJECT_ROOT/commands"
 
 if [ ! -d "$COMMANDS_DIR" ]; then
     echo -e "${RED}✗${NC} Commands directory not found: $COMMANDS_DIR"
@@ -40,8 +40,8 @@ else
     PASSED=$((PASSED + 1))
 fi
 
-if jq -e '.commands[]? | select(. == "./.claude/commands/doctor.md")' "$PROJECT_ROOT/.claude-plugin/plugin.json" >/dev/null; then
-    echo -e "${RED}✗${NC} plugin.json must not register .claude/commands/doctor.md"
+if jq -e '.commands[]? | select(. == "./commands/doctor.md")' "$PROJECT_ROOT/.claude-plugin/plugin.json" >/dev/null; then
+    echo -e "${RED}✗${NC} plugin.json must not register commands/doctor.md"
     FAILED=$((FAILED + 1))
 else
     echo -e "${GREEN}✓${NC} plugin.json does not register doctor.md"
@@ -54,6 +54,59 @@ if grep -R "^command:[[:space:]]*doctor$" "$COMMANDS_DIR" >/dev/null 2>&1; then
 else
     echo -e "${GREEN}✓${NC} no command frontmatter claims doctor"
     PASSED=$((PASSED + 1))
+fi
+
+count_doctor_references() {
+    local path="$1"
+    [[ -f "$path" && -r "$path" ]] || return 1
+    { grep -oF -- '/octo:doctor' "$path" || [[ $? -eq 1 ]]; } | awk 'END { print NR + 0 }'
+}
+
+test_case "Doctor reference counter rejects unavailable files"
+if count_doctor_references "$TEST_TMP_DIR/missing-doctor-surface" >/dev/null; then
+    test_fail "missing Doctor guidance surfaces must not count as zero references"
+else
+    test_pass
+fi
+
+PUBLIC_DOCTOR_SURFACES=(
+    "README.md|0"
+    "docs/README.md|0"
+    "docs/TROUBLESHOOTING.md|0"
+    ".claude/skills/skill-copilot-provider/SKILL.md|0"
+    ".claude/skills/skill-doctor/SKILL.md|1"
+    ".cursor-plugin/commands/octo-doctor.md|1"
+    "scripts/lib/review.sh|0"
+    "scripts/install-deps.sh|0"
+    "skills/skill-copilot-provider/SKILL.md|0"
+    "skills/skill-doctor/SKILL.md|1"
+    "commands/plan.md|0"
+    "commands/resume.md|0"
+    "commands/sentinel.md|0"
+)
+
+for surface in "${PUBLIC_DOCTOR_SURFACES[@]}"; do
+    relative_path="${surface%%|*}"
+    expected_count="${surface##*|}"
+    test_case "$relative_path uses only supported Doctor guidance"
+    if ! actual_count=$(count_doctor_references "$PROJECT_ROOT/$relative_path"); then
+        test_fail "$relative_path is missing or unreadable"
+    elif [[ "$actual_count" -eq "$expected_count" ]] &&
+       { [[ "$expected_count" -eq 0 ]] || grep -Fq '`/octo:doctor` was removed in v9.41.0' "$PROJECT_ROOT/$relative_path"; }; then
+        test_pass
+    else
+        test_fail "$relative_path has $actual_count retired /octo:doctor references; expected $expected_count intentional reference(s)"
+    fi
+done
+
+test_case "COMMAND-REFERENCE.md explains the retired Doctor command exactly once"
+if ! doctor_reference_count=$(count_doctor_references "$PROJECT_ROOT/docs/COMMAND-REFERENCE.md"); then
+    test_fail "docs/COMMAND-REFERENCE.md is missing or unreadable"
+elif [[ "$doctor_reference_count" -eq 1 ]] &&
+   grep -Fq 'intentionally leaves `/octo:doctor` unregistered' "$PROJECT_ROOT/docs/COMMAND-REFERENCE.md"; then
+    test_pass
+else
+    test_fail "docs/COMMAND-REFERENCE.md must explain retired /octo:doctor exactly once"
 fi
 
 for cmd_file in "$COMMANDS_DIR"/*.md; do

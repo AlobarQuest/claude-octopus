@@ -14,10 +14,14 @@ _OCTOPUS_MODELS_LOADED=true
 
 # Get model capabilities metadata
 # Returns: context_k|tools|images|reasoning|provider|tier|status
-get_model_catalog() {
+_octo_get_model_catalog_raw() {
     local model="$1"
     case "$model" in
         # OpenAI GPT-5.x
+        gpt-6-astra)            echo "1050|yes|yes|yes|codex|premium|limited" ;;
+        gpt-5.6|gpt-5.6-sol)    echo "1050|yes|yes|yes|codex|premium|active" ;;
+        gpt-5.6-terra)          echo "1050|yes|yes|yes|codex|standard|active" ;;
+        gpt-5.6-luna)           echo "1050|yes|yes|yes|codex|budget|active" ;;
         gpt-5.5)                echo "400|yes|yes|no|codex|premium|active" ;;
         gpt-5.5-pro)            echo "400|yes|yes|no|codex|premium|active" ;;
         gpt-5.4)                echo "400|yes|yes|no|codex|premium|active" ;;
@@ -31,33 +35,45 @@ get_model_catalog() {
         o3)                     echo "200|yes|no|yes|codex|premium|active" ;;
         o3-pro)                 echo "200|yes|no|yes|codex|premium|active" ;;
         o3-mini)                echo "200|yes|no|yes|codex|budget|active" ;;
-        # Gemini
-        gemini-3.1-pro-preview)   echo "1000|yes|yes|no|gemini|premium|active" ;;
-        gemini-3.5-flash)       echo "1000|yes|no|no|gemini|budget|active" ;;   # GA fast (supersedes gemini-3-flash-preview)
-        gemini-3.1-flash-lite)  echo "1000|yes|no|no|gemini|budget|active" ;;   # fastest/cheapest tier
-        gemini-3-flash-preview) echo "1000|yes|no|no|gemini|budget|active" ;;
-        gemini-3-pro-image)         echo "1000|yes|yes|no|gemini|premium|active" ;;   # Nano Banana Pro GA (oco-803, replaces preview 2026-06-25)
-        gemini-3.1-flash-image)     echo "1000|yes|yes|no|gemini|budget|active" ;;    # Nano Banana 2 fast image tier (oco-803)
-        gemini-3-pro-image-preview) echo "1000|yes|yes|no|gemini|premium|deprecated" ;;  # shutdown 2026-06-25, use gemini-3-pro-image
         # Antigravity CLI (agy routes to the user's configured Antigravity default)
         agy/default|default)       echo "1000|yes|yes|no|agy|standard|active" ;;
+        # GitHub Copilot CLI service-owned automatic model selection. Cursor CLI
+        # shares the bare `auto` ID (its own service-side pick); pricing is
+        # provider-aware so the cursor-agent route still bills as subscription.
+        auto)                      echo "128|yes|no|no|copilot|standard|active" ;;
         # Claude
+        claude-haiku-4.5)      echo "200|yes|yes|yes|claude|budget|active" ;;
+        claude-sonnet-5)       echo "1000|yes|yes|yes|claude|standard|active" ;;
         claude-sonnet-4.6)      echo "200|yes|yes|no|claude|standard|active" ;;
+        claude-fable-5-1)       echo "1000|yes|yes|yes|claude|premium|active" ;;
         claude-fable-5)         echo "1000|yes|yes|yes|claude|premium|active" ;;  # v9.44: Mythos-class, opt-in via OCTOPUS_OPUS_MODEL
+        claude-opus-5)          echo "1000|yes|yes|yes|claude|premium|active" ;;
+        claude-opus-5-fast)     echo "1000|yes|yes|yes|claude|premium|active" ;;
         claude-opus-4.8)        echo "1000|yes|yes|yes|claude|premium|active" ;;
         claude-opus-4.7)        echo "1000|yes|yes|yes|claude|premium|legacy" ;;
         claude-opus-4.6)        echo "200|yes|yes|yes|claude|premium|legacy" ;;
         claude-opus-4.8-fast)   echo "1000|yes|yes|yes|claude|premium|active" ;;
         claude-opus-4.6-fast)   echo "200|yes|yes|yes|claude|premium|legacy" ;;
-        # Cursor Agent (Grok via Cursor subscription)
-        grok-4-20)              echo "200|yes|no|no|cursor-agent|standard|active" ;;
-        grok-4-20-thinking)     echo "200|yes|no|yes|cursor-agent|premium|active" ;;
-        composer-2-fast)        echo "200|yes|no|no|cursor-agent|standard|active" ;;
-        composer-2)             echo "200|yes|no|no|cursor-agent|premium|active" ;;
+        # Cursor CLI (`agent`) — Cursor subscription catalog. Curated subset of
+        # `agent models`; any other flat ID from that list is accepted as a pin.
+        composer-2.5)                    echo "200|yes|no|no|cursor-agent|standard|active" ;;
+        composer-2.5-fast)               echo "200|yes|no|no|cursor-agent|standard|active" ;;
+        cursor-grok-4.6-high)            echo "200|yes|no|yes|cursor-agent|standard|active" ;;
+        cursor-grok-4.6-xhigh)           echo "200|yes|no|yes|cursor-agent|premium|active" ;;
+        gpt-5.6-sol-high)                echo "1000|yes|yes|yes|cursor-agent|premium|active" ;;
+        gpt-5.6-luna-high)               echo "1000|yes|yes|yes|cursor-agent|budget|active" ;;
+        claude-sonnet-5-thinking-high)   echo "1000|yes|yes|yes|cursor-agent|standard|active" ;;
+        claude-opus-5-thinking-high)     echo "1000|yes|yes|yes|cursor-agent|premium|active" ;;
+        gemini-3.7-flash-high)           echo "1000|yes|yes|yes|cursor-agent|budget|active" ;;
         # OpenRouter
         z-ai/glm-5)             echo "203|yes|no|no|openrouter|standard|active" ;;
         moonshotai/kimi-k2.5)   echo "262|yes|yes|no|openrouter|standard|active" ;;
-        deepseek/deepseek-r1-0528) echo "164|yes|no|yes|openrouter|standard|active" ;;
+        deepseek/deepseek-v4-pro)  echo "1000|yes|no|yes|openrouter|standard|active" ;;
+        deepseek/deepseek-r1-0528) echo "164|yes|no|yes|openrouter|standard|legacy" ;;
+        # OrcaRouter (gateway exposes anthropic/* namespace)
+        anthropic/claude-sonnet-4.6) echo "1000|yes|yes|no|orcarouter|standard|active" ;;
+        anthropic/claude-opus-4.8)   echo "1000|yes|yes|yes|orcarouter|premium|active" ;;
+        anthropic/claude-haiku-4.5)  echo "200|yes|yes|yes|orcarouter|budget|active" ;;
         # OpenCode (multi-provider router — models use opencode/<model> namespace)
         opencode/deepseek-v4-flash-free) echo "128|yes|no|no|opencode|budget|active" ;;
         opencode/gpt-5.4)       echo "400|yes|yes|no|opencode|premium|active" ;;
@@ -69,6 +85,116 @@ get_model_catalog() {
         # Unknown
         *)                      echo "128|yes|no|no|unknown|standard|unknown" ;;
     esac
+}
+
+# Resolve policy identity without changing the provider-native model spelling
+# used for transport. A provider-style qualifier (provider:model) and a gateway
+# namespace (vendor/model) are removed only when the remaining ID is a
+# catalogued model. Unknown custom IDs therefore remain byte-for-byte intact.
+octo_model_canonical_id() {
+    local model="${1:-}" candidate=""
+    [[ -n "$model" ]] || return 1
+
+    if [[ "$model" == *:* ]]; then
+        candidate="${model#*:}"
+        if [[ "$(_octo_get_model_catalog_raw "$candidate")" != *"|unknown" ]] ||
+           { [[ "$candidate" == */* ]] &&
+             [[ "$(_octo_get_model_catalog_raw "${candidate##*/}")" != *"|unknown" ]]; }; then
+            model="$candidate"
+        fi
+    fi
+
+    if [[ "$model" == */* ]]; then
+        candidate="${model##*/}"
+        if [[ "$(_octo_get_model_catalog_raw "$candidate")" != *"|unknown" ]]; then
+            model="$candidate"
+        fi
+    fi
+
+    printf '%s\n' "$model"
+}
+
+get_model_catalog() {
+    local model raw
+    model="${1:-}"
+    [[ -n "$model" ]] || return 1
+
+    # Transport-qualified catalog entries may intentionally override canonical
+    # metadata. OrcaRouter, for example, exposes a larger effective context for
+    # anthropic/claude-sonnet-4.6 than the native Claude transport. Preserve
+    # that transport contract for capability lookup while canonical policy,
+    # pricing, and family checks continue to use octo_model_canonical_id().
+    raw="$(_octo_get_model_catalog_raw "$model")"
+    if [[ "$raw" != *"|unknown" ]]; then
+        printf '%s\n' "$raw"
+        return 0
+    fi
+
+    model="$(octo_model_canonical_id "$model")" || return 1
+    _octo_get_model_catalog_raw "$model"
+}
+
+# Return routing policy metadata separate from the fixed seven-field capability
+# catalog so existing catalog consumers remain compatible.
+# Format: selection_policy|auto_eligible|max_auto_dispatches|max_escalated_dispatches|availability
+get_model_policy() {
+    local model
+    model="$(octo_model_canonical_id "$1")" || return 1
+    case "$model" in
+        claude-fable-5-1) echo "explicit|no|0|1|general" ;;
+        claude-fable-5)   echo "explicit|no|0|0|general" ;;
+        gpt-6-astra)      echo "explicit|no|0|0|limited" ;;
+        *)
+            if [[ "$(get_model_catalog "$model")" == *"|unknown" ]]; then
+                echo "explicit|no|0|0|unknown"
+            else
+                echo "automatic|yes|unlimited|unlimited|general"
+            fi
+            ;;
+    esac
+}
+
+# Automatic selectors can use this policy gate before admitting a model. Explicit
+# pins remain valid even when a model is ineligible for defaults or fallbacks.
+octo_model_auto_eligible() {
+    local policy
+    policy="$(get_model_policy "$1")"
+    [[ "$(printf '%s\n' "$policy" | cut -d'|' -f2)" == "yes" ]]
+}
+
+# Automatic config targets may be stored as either a bare model ID or a
+# provider-qualified target. Apply policy to the model portion in both forms.
+octo_model_automatic_target_allowed() {
+    local target="${1:-}" provider="${2:-}" target_provider=""
+    local model="$target"
+    [[ -n "$target" ]] || return 1
+
+    if [[ "$target" == *:* ]] && declare -f octo_provider_canonical >/dev/null 2>&1; then
+        target_provider="$(octo_provider_canonical "${target%%:*}" 2>/dev/null || true)"
+        if [[ -n "$target_provider" ]]; then
+            [[ -n "$provider" ]] || provider="$target_provider"
+            model="${target#*:}"
+            # Simple provider-qualified labels are symbolic capability routes,
+            # not transport model IDs. Their eventual configured model is
+            # admitted again after recursive resolution.
+            [[ "$model" =~ ^[a-z][a-z0-9_]*$ ]] && return 0
+        fi
+    fi
+    model="$(octo_model_canonical_id "$model")" || return 1
+
+    if is_known_model "$model"; then
+        octo_model_auto_eligible "$model"
+        return $?
+    fi
+
+    # Unknown IDs fail closed unless the provider explicitly advertises a
+    # dynamic/custom automatic catalog. This is separate from model-gateway:
+    # cross-vendor routing and unknown-ID admission are different contracts.
+    if [[ -n "$provider" ]] && declare -f octo_provider_has_capability >/dev/null 2>&1; then
+        octo_provider_has_capability "$provider" custom-model-auto
+        return $?
+    fi
+    return 1
 }
 
 # Check if a model is known in the catalog
@@ -100,6 +226,89 @@ get_model_capability() {
     esac
 }
 
+# Classify a concrete model identity. Agent/provider specs belong to
+# octo_agent_spec_model_family() in agent-spec.sh; keeping the two contracts
+# separate prevents a provider alias from being mistaken for model evidence.
+octo_model_family() {
+    local model="${1:-}" prefix
+    model="$(octo_model_canonical_id "$model" 2>/dev/null || printf '%s' "$model")"
+    case "$model" in
+        anthropic/*|*claude*) echo anthropic ;;
+        minimaxai/*|minimax/*|*minimax*) echo minimax ;;
+        deepseek/*|*deepseek*) echo deepseek ;;
+        openai/*|gpt-*|o[0-9]*|*chatgpt*|codex*) echo openai ;;
+        google/*|*gemini*|agy-*) echo google ;;
+        qwen/*|alibaba/*|*qwen*) echo alibaba ;;
+        moonshot/*|kimi-*|*kimi*) echo moonshot ;;
+        x-ai/*|xai/*|*grok*) echo xai ;;
+        composer*|cursor-agent*) echo cursor ;;
+        mistralai/*|*mistral*) echo mistral ;;
+        stealth/*) echo stealth ;;
+        sonar*) echo perplexity ;;
+        */*)
+            prefix="${model%%/*}"
+            [[ -n "$prefix" ]] && printf '%s\n' "$prefix" || printf 'unknown\n'
+            ;;
+        *) echo unknown ;;
+    esac
+}
+
+# Print every canonical model ID, one per line. Consumers such as model-config
+# must use this instead of maintaining another hand-written catalog.
+octo_model_ids() {
+    cat <<'EOF'
+gpt-6-astra
+gpt-5.6-sol
+gpt-5.6-terra
+gpt-5.6-luna
+gpt-5.5
+gpt-5.5-pro
+gpt-5.4
+gpt-5.4-pro
+gpt-5.3-codex
+gpt-5.3-codex-spark
+gpt-5.2-codex
+gpt-5.4-mini
+gpt-5.1-codex-max
+o3
+o3-pro
+o3-mini
+agy/default
+auto
+claude-haiku-4.5
+claude-sonnet-5
+claude-sonnet-4.6
+claude-fable-5-1
+claude-fable-5
+claude-opus-5
+claude-opus-5-fast
+claude-opus-4.8
+claude-opus-4.8-fast
+claude-opus-4.7
+claude-opus-4.6
+claude-opus-4.6-fast
+composer-2.5
+composer-2.5-fast
+cursor-grok-4.6-high
+cursor-grok-4.6-xhigh
+gpt-5.6-sol-high
+gpt-5.6-luna-high
+claude-sonnet-5-thinking-high
+claude-opus-5-thinking-high
+gemini-3.7-flash-high
+z-ai/glm-5
+moonshotai/kimi-k2.5
+deepseek/deepseek-v4-pro
+deepseek/deepseek-r1-0528
+opencode/deepseek-v4-flash-free
+opencode/gpt-5.4
+opencode/gpt-5.4-mini
+opencode/glm-5.1
+sonar-pro
+sonar
+EOF
+}
+
 # List all known models for a provider, optionally filtered by capability
 # Usage: list_models [provider] [--tools] [--images] [--reasoning] [--tier budget|standard|premium]
 # Note: calls get_model_pricing() which remains in orchestrate.sh or lib/cost-tracking.sh
@@ -117,20 +326,9 @@ list_models() {
         shift
     done
 
-    local -a all_models=(
-        gpt-5.5 gpt-5.5-pro gpt-5.4 gpt-5.4-pro gpt-5.3-codex gpt-5.2-codex
-        gpt-5.4-mini gpt-5.1-codex-max
-        o3 o3-pro o3-mini
-        gemini-3.1-pro-preview gemini-3.5-flash gemini-3.1-flash-lite gemini-3-flash-preview gemini-3-pro-image gemini-3.1-flash-image gemini-3-pro-image-preview
-        agy/default
-        claude-sonnet-4.6 claude-fable-5 claude-opus-4.8 claude-opus-4.8-fast claude-opus-4.7 claude-opus-4.6 claude-opus-4.6-fast
-        grok-4-20 grok-4-20-thinking composer-2-fast composer-2
-        z-ai/glm-5 moonshotai/kimi-k2.5 deepseek/deepseek-r1-0528
-        opencode/deepseek-v4-flash-free opencode/gpt-5.4 opencode/gpt-5.4-mini opencode/glm-5.1
-        sonar-pro sonar
-    )
-
-    for model in "${all_models[@]}"; do
+    local model
+    while IFS= read -r model; do
+        [[ -n "$model" ]] || continue
         local catalog
         catalog=$(get_model_catalog "$model")
         local ctx tools images reasoning provider tier status
@@ -143,11 +341,13 @@ list_models() {
         [[ -n "$require_reasoning" && "$reasoning" != "yes" ]] && continue
         [[ -n "$require_tier" && "$tier" != "$require_tier" ]] && continue
 
-        local pricing
+        local pricing policy selection
         pricing=$(get_model_pricing "$model")
+        policy=$(get_model_policy "$model")
+        selection="${policy%%|*}"
         local in_price="${pricing%%:*}"
         local out_price="${pricing##*:}"
-        printf "%-25s %5sK  tools=%-3s img=%-3s rsn=%-3s  \$%s/\$%s MTok  [%s]\n" \
-            "$model" "$ctx" "$tools" "$images" "$reasoning" "$in_price" "$out_price" "$tier"
-    done
+        printf "%-25s %5sK  tools=%-3s img=%-3s rsn=%-3s  \$%s/\$%s MTok  [%s; %s]\n" \
+            "$model" "$ctx" "$tools" "$images" "$reasoning" "$in_price" "$out_price" "$tier" "$selection"
+    done < <(octo_model_ids)
 }
