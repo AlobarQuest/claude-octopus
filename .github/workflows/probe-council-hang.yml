@@ -1,0 +1,46 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# test-council-command.sh finished in 381s alone on one runner and hung past 30
+# minutes alone on another. Six parallel samples, each capped at 540s with the
+# abort path so the job ENDS and its log — process tree, lsof, and the suite's
+# own partial output naming the last test case it printed — is retained.
+name: Probe council hang
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  council:
+    name: "council sample ${{ matrix.n }}"
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run council alone, capped, aborting on stall
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '540'
+          OCTOPUS_ABORT_ON_SUITE_TIMEOUT: '1'
+        run: |
+          rc=0
+          ./tests/run-all-tests.sh --suite=unit/test-council-command.sh || rc=$?
+          echo "COUNCIL-SAMPLE-${{ matrix.n }} exit=$rc"
+          if [ "$rc" = "90" ]; then echo "COUNCIL-SAMPLE-${{ matrix.n }} STALLED"; fi
+          exit 0
