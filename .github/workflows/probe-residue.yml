@@ -1,0 +1,151 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# Two macOS jobs, one variable: whether test-council-command.sh runs first.
+# Slice 1's 19 suites each finish in <=25s alone (council 381s) yet the same 19
+# in sequence kill the runner at ~48 minutes ("lost communication"). Both jobs
+# are sized to finish well inside that, so their logs survive.
+name: Probe residue
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  treatment:
+    name: TREATMENT: council then the other 18
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Snapshot BEFORE
+        env: {LABEL: before}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "runner-owned process count: $(ps -axo user | grep -c runner || true)"
+          echo "total process count:        $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- runner-owned processes (pid ppid etime command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk '$1 ~ /^runner/' | head -80
+          echo "--- memory ---"
+          vm_stat | head -8
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- open TCP / tty / lock handles held by runner ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock' | head -40 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Run council alone
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '900'
+        run: ./tests/run-all-tests.sh --suite=unit/test-council-command.sh
+
+      - name: Snapshot AFTER COUNCIL
+        env: {LABEL: after-council}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "runner-owned process count: $(ps -axo user | grep -c runner || true)"
+          echo "total process count:        $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- runner-owned processes (pid ppid etime command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk '$1 ~ /^runner/' | head -80
+          echo "--- memory ---"
+          vm_stat | head -8
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- open TCP / tty / lock handles held by runner ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock' | head -40 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Run the other 18 suites with a 60s cap
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '60'
+        run: ./tests/run-all-tests.sh --suite=unit/test-agy-parallel-synthesis.sh --suite=unit/test-ci-changed.sh --suite=unit/test-command-prd-score.sh --suite=unit/test-cost-pricing.sh --suite=unit/test-dependency-wbs.sh --suite=unit/test-execution-mechanism.sh --suite=unit/test-grok-provider.sh --suite=unit/test-lockout-integration.sh --suite=unit/test-ollama-provider.sh --suite=unit/test-phases-1-2-3.sh --suite=unit/test-progress-tracking-consistency.sh --suite=unit/test-provider-registry-governance.sh --suite=unit/test-response-mode.sh --suite=unit/test-routing-features-consumers.sh --suite=unit/test-shell-safe-provider-snippets.sh --suite=unit/test-tangle-context-review-loop.sh --suite=unit/test-tangle-run-worktree.sh --suite=unit/test-v8.25.0-dark-factory.sh || echo "run exited $?"
+
+      - name: Snapshot AFTER ALL
+        if: always()
+        env: {LABEL: after-all}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "runner-owned process count: $(ps -axo user | grep -c runner || true)"
+          echo "total process count:        $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- runner-owned processes (pid ppid etime command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk '$1 ~ /^runner/' | head -80
+          echo "--- memory ---"
+          vm_stat | head -8
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- open TCP / tty / lock handles held by runner ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock' | head -40 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+
+  control:
+    name: CONTROL: the other 18 only
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Snapshot BEFORE
+        env: {LABEL: before}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "runner-owned process count: $(ps -axo user | grep -c runner || true)"
+          echo "total process count:        $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- runner-owned processes (pid ppid etime command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk '$1 ~ /^runner/' | head -80
+          echo "--- memory ---"
+          vm_stat | head -8
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- open TCP / tty / lock handles held by runner ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock' | head -40 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Run the other 18 suites with a 60s cap
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '60'
+        run: ./tests/run-all-tests.sh --suite=unit/test-agy-parallel-synthesis.sh --suite=unit/test-ci-changed.sh --suite=unit/test-command-prd-score.sh --suite=unit/test-cost-pricing.sh --suite=unit/test-dependency-wbs.sh --suite=unit/test-execution-mechanism.sh --suite=unit/test-grok-provider.sh --suite=unit/test-lockout-integration.sh --suite=unit/test-ollama-provider.sh --suite=unit/test-phases-1-2-3.sh --suite=unit/test-progress-tracking-consistency.sh --suite=unit/test-provider-registry-governance.sh --suite=unit/test-response-mode.sh --suite=unit/test-routing-features-consumers.sh --suite=unit/test-shell-safe-provider-snippets.sh --suite=unit/test-tangle-context-review-loop.sh --suite=unit/test-tangle-run-worktree.sh --suite=unit/test-v8.25.0-dark-factory.sh || echo "run exited $?"
+
+      - name: Snapshot AFTER ALL
+        if: always()
+        env: {LABEL: after-all}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "runner-owned process count: $(ps -axo user | grep -c runner || true)"
+          echo "total process count:        $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- runner-owned processes (pid ppid etime command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk '$1 ~ /^runner/' | head -80
+          echo "--- memory ---"
+          vm_stat | head -8
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- open TCP / tty / lock handles held by runner ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock' | head -40 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
