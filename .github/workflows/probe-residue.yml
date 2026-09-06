@@ -7,7 +7,7 @@ name: Probe residue
 
 on:
   push:
-    branches: [ probe/macos-shard1-hang ]
+    branches: [ probe-disabled-do-not-use ]
   workflow_dispatch:
 
 permissions:

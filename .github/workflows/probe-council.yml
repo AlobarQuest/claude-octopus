@@ -1,0 +1,160 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# CONTROL (18 slice-1 suites, no council) passed in ~2 minutes. TREATMENT (the
+# same 18 with council run first) blew a 35-minute cap. Council itself passes in
+# 381s alone. So council's AFTERMATH is the pathology. Both jobs here finish
+# quickly enough that their logs are retained, which the killed jobs' were not.
+name: Probe council residue
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  council:
+    name: "AFTER COUNCIL"
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Snapshot BEFORE
+        env: {LABEL: before}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "total processes: $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- non-root user processes (user pid ppid etime stat command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk 'NR==1 || $1 != "root"' | head -100
+          echo "--- memory ---"
+          vm_stat | head -6
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- tty/pty/lock/TCP handles for this user ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock|worktree' | head -50 || true
+          echo "--- git worktrees left behind ---"
+          git worktree list 2>/dev/null | head -20 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Baseline timing of test-ci-changed.sh
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-ci-changed.sh > /tmp/base.log 2>&1 || echo "rc=$?"
+          echo "BASELINE test-ci-changed.sh took $(( $(date +%s) - s ))s"
+
+      - name: Run council alone
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-council-command.sh > /tmp/council.log 2>&1 || echo "council rc=$?"
+          echo "COUNCIL took $(( $(date +%s) - s ))s"
+          tail -25 /tmp/council.log
+
+      - name: Snapshot AFTER COUNCIL
+        if: always()
+        env: {LABEL: after-council}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "total processes: $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- non-root user processes (user pid ppid etime stat command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk 'NR==1 || $1 != "root"' | head -100
+          echo "--- memory ---"
+          vm_stat | head -6
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- tty/pty/lock/TCP handles for this user ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock|worktree' | head -50 || true
+          echo "--- git worktrees left behind ---"
+          git worktree list 2>/dev/null | head -20 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Re-time test-ci-changed.sh after council
+        if: always()
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-ci-changed.sh > /tmp/after.log 2>&1 || echo "rc=$?"
+          echo "AFTER-COUNCIL test-ci-changed.sh took $(( $(date +%s) - s ))s"
+
+  nocouncil:
+    name: "CONTROL - a different suite instead of council"
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Snapshot BEFORE
+        env: {LABEL: before}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "total processes: $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- non-root user processes (user pid ppid etime stat command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk 'NR==1 || $1 != "root"' | head -100
+          echo "--- memory ---"
+          vm_stat | head -6
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- tty/pty/lock/TCP handles for this user ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock|worktree' | head -50 || true
+          echo "--- git worktrees left behind ---"
+          git worktree list 2>/dev/null | head -20 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Baseline timing of test-ci-changed.sh
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-ci-changed.sh > /tmp/base.log 2>&1 || echo "rc=$?"
+          echo "BASELINE test-ci-changed.sh took $(( $(date +%s) - s ))s"
+
+      - name: Run a different suite instead of council
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-lockout-integration.sh > /tmp/other.log 2>&1 || echo "rc=$?"
+          echo "OTHER SUITE took $(( $(date +%s) - s ))s"
+
+      - name: Snapshot AFTER OTHER
+        if: always()
+        env: {LABEL: after-other}
+        run: |
+          echo "=== SNAPSHOT $LABEL ==="
+          echo "total processes: $(ps -ax | wc -l | tr -d ' ')"
+          echo "--- non-root user processes (user pid ppid etime stat command) ---"
+          ps -axo user,pid,ppid,etime,stat,command | awk 'NR==1 || $1 != "root"' | head -100
+          echo "--- memory ---"
+          vm_stat | head -6
+          sysctl vm.swapusage 2>/dev/null || true
+          echo "--- load ---"
+          uptime
+          echo "--- tty/pty/lock/TCP handles for this user ---"
+          lsof -n -P -u "$(id -un)" 2>/dev/null | grep -E 'TCP|/dev/tty|/dev/pty|\.lock|worktree' | head -50 || true
+          echo "--- git worktrees left behind ---"
+          git worktree list 2>/dev/null | head -20 || true
+          echo "=== END SNAPSHOT $LABEL ==="
+
+      - name: Re-time test-ci-changed.sh after the other suite
+        if: always()
+        run: |
+          s=$(date +%s)
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-ci-changed.sh > /tmp/after.log 2>&1 || echo "rc=$?"
+          echo "AFTER-OTHER test-ci-changed.sh took $(( $(date +%s) - s ))s"
