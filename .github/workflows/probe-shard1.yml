@@ -1,0 +1,40 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# Reproduces `Unit Tests (macos-latest, shard 1/2)` alone, with a per-suite
+# cap so the job COMPLETES and names the hung suite. Delete with the branch.
+name: Probe macOS shard 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe Unit Tests (macos-latest, shard 1/2)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run unit tests (shard 1/2) with a per-suite cap
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '900'
+        run: ./tests/run-all.sh unit --shard-index=0 --shard-count=2
+
+      - name: Upload suite logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: probe-suite-logs
+          path: /tmp/test_*.log
+          retention-days: 7

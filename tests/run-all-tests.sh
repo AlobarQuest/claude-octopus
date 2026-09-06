@@ -72,6 +72,111 @@ Options:
 EOF
 }
 
+
+# ---------------------------------------------------------------------------
+# PROBE INSTRUMENTATION (throwaway branch probe/macos-shard1-hang).
+# Bounds each suite so a hung suite is named and diagnosed instead of stalling
+# the whole job past its timeout, where GitHub retains no log at all.
+# Inert unless OCTOPUS_SUITE_TIMEOUT_SECONDS is set to a positive integer.
+# Bash 3.2 only: no associative arrays, no namerefs, no `wait -n`.
+# ---------------------------------------------------------------------------
+
+descendant_pids() {
+    local parent="$1"
+    local child
+    for child in $(pgrep -P "$parent" 2>/dev/null); do
+        printf '%s\n' "$child"
+        descendant_pids "$child"
+    done
+}
+
+suite_timeout_dump() {
+    local pid="$1"
+    local log="$2"
+    local p
+    local pids
+    pids="$pid $(descendant_pids "$pid" | tr '\n' ' ')"
+    echo "PROBE-DUMP wall-clock: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "PROBE-DUMP pid tree under $pid: $pids"
+    echo "PROBE-DUMP --- ps for those pids ---"
+    for p in $pids; do
+        ps -o pid=,ppid=,stat=,etime=,command= -p "$p" 2>/dev/null
+    done
+    echo "PROBE-DUMP --- open files (lsof) ---"
+    for p in $pids; do
+        echo "PROBE-DUMP lsof pid=$p"
+        lsof -n -P -p "$p" 2>/dev/null | head -60
+    done
+    echo "PROBE-DUMP --- network sockets (lsof -i) ---"
+    for p in $pids; do
+        lsof -n -P -i -a -p "$p" 2>/dev/null | head -20
+    done
+    echo "PROBE-DUMP --- suite log staleness (slow vs hung) ---"
+    ls -l "$log" 2>/dev/null
+    if [[ -f "$log" ]]; then
+        echo "PROBE-DUMP log mtime epoch: $(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null)"
+        echo "PROBE-DUMP now epoch:       $(date +%s)"
+        echo "PROBE-DUMP log bytes:       $(wc -c < "$log")"
+        echo "PROBE-DUMP --- last 60 lines of suite output ---"
+        tail -60 "$log" 2>/dev/null
+    fi
+    echo "PROBE-DUMP --- full process table (head 120) ---"
+    ps -axo pid,ppid,stat,etime,command 2>/dev/null | head -120
+}
+
+kill_tree() {
+    local pid="$1"
+    local p
+    local pids
+    pids="$(descendant_pids "$pid" | tr '\n' ' ') $pid"
+    for p in $pids; do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    sleep 2
+    for p in $pids; do
+        kill -KILL "$p" 2>/dev/null || true
+    done
+}
+
+run_suite_with_timeout() {
+    local test_file="$1"
+    local test_name="$2"
+    local limit="$3"
+    local safe log pid elapsed rc
+
+    safe="$(printf '%s' "$test_name" | tr -c 'A-Za-z0-9' '_')"
+    log="/tmp/test_probe_${safe}.log"
+    rm -f "$log"
+
+    echo "PROBE-START $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} (cap ${limit}s)"
+
+    if [[ "$test_file" == "$SCRIPT_DIR/live/"* ]]; then
+        bash "$test_file" >"$log" 2>&1 &
+    else
+        OCTOPUS_SKIP_PROVIDER_PROBES=true bash "$test_file" >"$log" 2>&1 &
+    fi
+    pid=$!
+
+    elapsed=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [[ "$elapsed" -ge "$limit" ]]; then
+            echo ""
+            echo "PROBE-TIMEOUT ${test_name} exceeded ${limit}s -- diagnosing then killing"
+            suite_timeout_dump "$pid" "$log"
+            kill_tree "$pid"
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    rc=0
+    wait "$pid" 2>/dev/null || rc=$?
+    cat "$log" 2>/dev/null
+    echo "PROBE-END $(date -u +%Y-%m-%dT%H:%M:%SZ) ${test_name} rc=${rc} elapsed=${elapsed}s"
+    return "$rc"
+}
+
 # Function to run a test suite
 run_test_suite() {
     local test_file="$1"
@@ -92,7 +197,10 @@ run_test_suite() {
     # Non-live suites must never launch real provider/auth probes. Besides
     # spending API quota, a CLI blocked on Keychain can stall the entire gate.
     local test_rc=0
-    if [[ "$test_file" == "$SCRIPT_DIR/live/"* ]]; then
+    local suite_limit="${OCTOPUS_SUITE_TIMEOUT_SECONDS:-0}"
+    if [[ "$suite_limit" =~ ^[0-9]+$ ]] && [[ "$suite_limit" -gt 0 ]]; then
+        run_suite_with_timeout "$test_file" "$test_name" "$suite_limit" || test_rc=$?
+    elif [[ "$test_file" == "$SCRIPT_DIR/live/"* ]]; then
         bash "$test_file" || test_rc=$?
     else
         OCTOPUS_SKIP_PROVIDER_PROBES=true bash "$test_file" || test_rc=$?
