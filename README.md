@@ -13,7 +13,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 <p align="center">
   <a href="https://claude.ai"><img src="https://img.shields.io/badge/Claude-Built_with_AI-c96442?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwbTAgMS44YTEuMiAxLjIgMCAwIDEgLjg1LjM1bDEuNSA0LjVhLjYuNiAwIDAgMCAuMzUuMzVsNC41IDEuNWExLjIgMS4yIDAgMCAxIDAgMi4yN2wtNC41IDEuNWEuNi42IDAgMCAwLS4zNS4zNWwtMS41IDQuNWExLjIgMS4yIDAgMCAxLTIuMjcgMGwtMS41LTQuNWEuNi42IDAgMCAwLS4zNS0uMzVsLTQuNS0xLjVhMS4yIDEuMiAwIDAgMSAwLTIuMjdsNC41LTEuNWEuNi42IDAgMCAwIC4zNS0uMzVsMS41LTQuNUExLjIgMS4yIDAgMCAxIDEyIDMuOCIvPjwvc3ZnPg==&labelColor=333" alt="Built with Claude"></a>
   <a href="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml"><img src="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/Version-11.0.0-blue" alt="Version 11.0.0">
+  <img src="https://img.shields.io/badge/Version-11.0.1-blue" alt="Version 11.0.1">
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.14+_required-blueviolet" alt="Requires Claude Code v2.1.14+">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
@@ -37,7 +37,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 ## What's New
 
 <!-- BEGIN CURRENT RELEASE -->
-> 🆕 **v11.0.0 — Harden provider isolation, model routing, council evidence, and cross-host plugin contracts.**
+> 🆕 **v11.0.1 — Remove the unused OpenClaw integration and simplify MCP setup.**
 >
 > **Default roster:** Claude Opus 5 leads architecture, planning, security reasoning, and final judgment; GPT-5.6 Sol is the independent implementation/review peer; Claude Sonnet 5 is the standard Claude seat; Fable 5.1 remains an opt-in judgment escalation. Existing model pins and provider configuration still win. See [the routing strategy](docs/MODEL-ROUTING-STRATEGY.md).
 <!-- END CURRENT RELEASE -->
@@ -58,7 +58,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 
 | Version | Best Features |
 |---------|--------------|
-| **v11.0.0** (new) | Harden provider isolation, model routing, council evidence, and cross-host plugin contracts. |
+| **v11.0.1** (new) | Remove the unused OpenClaw integration and simplify MCP setup. |
 | **v9.50** | **Claude Code 2026 compatibility layer** — routines manifest (schedule + GitHub-event automations), SubagentStop quality/cost gate, `/octo:usage` cost attribution, `worktree.bgIsolation` opt-out, Claude Agent SDK seat (introduced with Opus 4.8 and now following the current Opus 5 default), starter skills pack, `/plugin browse` manifest with projected context cost. |
 | **v9.41** | **`/octo:council`** promoted to first-class workflow — structured multi-LLM deliberation with goal modes, adversarial/red-team styles, benchmark-aware persona routing, quorum and critical-veto gates, budget preflight, and gated worktree handoff for approved implementation plans. |
 | **v9** | Up to 10 external provider integrations (Codex, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OrcaRouter, OpenCode, and Grok) alongside the Claude Code host. Structured provider debates and configurable multi-LLM councils. Explicit-only activation by default, with an optional smart router. Agent summary tables show which providers actually contributed. Provider-aware prompt preflight prevents silent oversize failures. Research breadth modes fan out light, standard, or exhaustive investigations. Setup aliases and fuzzy `/octo:*` corrections reduce command friction. Opt-in discipline gates and token compression. Two-stage review. Circuit breakers with automatic provider recovery inside active workflows. Cursor + OpenCode + Codex cross-compatibility. `bin/octopus` CLI. 182 Claude Code capability flags through v2.1.219, including Opus 5, Sonnet 5, and dynamic workflow awareness. |
@@ -197,7 +197,6 @@ cd ~/.cursor/claude-octopus/mcp-server && npm install
       "command": "npx",
       "args": ["tsx", "${userHome}/.cursor/claude-octopus/mcp-server/src/index.ts"],
       "env": {
-        "OCTO_CLAW_ENABLED": "true",
         "OPENAI_API_KEY": "${env:OPENAI_API_KEY}"
       }
     }
@@ -367,7 +366,7 @@ Nine high-traffic commands cover the common Octopus workflows: lifecycle executi
 
 `/octo:council` uses the real runner by default. Single-model simulation is only used when explicitly requested with `--simulate` or `--single-model`; `--research-first` writes a research artifact before fanout, and `--corpus-mode append|require` preserves synthesis and plans in project corpus workflows.
 
-Plus 40+ more: review, debug, extract, deck, docs, schedule, parallel, sentinel, optimize, brainstorm, claw, doctor, and [the full set](docs/COMMAND-REFERENCE.md).
+Plus 40+ more: review, debug, extract, deck, docs, schedule, parallel, sentinel, optimize, brainstorm, doctor, and [the full set](docs/COMMAND-REFERENCE.md).
 
 Don't remember the command name? Just describe what you need:
 
@@ -607,43 +606,31 @@ A SessionStart hook injects the dispatch profile (prompt anti-patterns, judgment
 
 ---
 
-## Works With OpenClaw
-
-Claude Octopus ships with a compatibility layer for [OpenClaw](https://github.com/openclaw/openclaw), the open-source AI assistant framework. This lets you expose Octopus workflows to messaging platforms (Telegram, Discord, Signal, WhatsApp) without modifying the Claude Code plugin.
+## MCP Server
 
 ### Architecture
 
-```
-Claude Code Plugin (unchanged)
-  └── .mcp.json ─── MCP Server ─── orchestrate.sh
-                                        ↑
-OpenClaw Extension ─────────────────────┘
+```text
+MCP Client ─── MCP Server ─── orchestrate.sh ─── provider CLIs and APIs
 ```
 
-Three components, zero changes to the core plugin:
+The standalone MCP server exposes Claude Octopus workflows to compatible IDEs
+and clients without changing the Claude Code plugin.
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| MCP Server | `mcp-server/` | Exposes 10 Octopus tools via Model Context Protocol |
-| OpenClaw Extension | `openclaw/` | Wraps workflows for OpenClaw's extension API |
-| Skill Schema | `mcp-server/src/schema/skill-schema.json` | Universal skill metadata format |
+| MCP Server | `mcp-server/` | Exposes 12 Octopus tools via Model Context Protocol |
+| Skill Schema | `mcp-server/src/schema/skill-schema.json` | Shared skill metadata format |
 
-### MCP Server
-
-The MCP server is **opt-in** — it does not start automatically. This prevents a permanent `✘ failed` status in Claude Code's `/mcp` panel for users who don't need it.
-
-To enable it, add the server to your project's `.mcp.json` or global Claude Code settings:
+Add the server to your project's MCP configuration or global client settings:
 
 ```json
 {
   "mcpServers": {
-    "octo-claw": {
+    "claude-octopus": {
       "command": "node",
       "args": ["--require", "./mcp-server/check-node-version.js", "./mcp-server/dist/index.js"],
-      "cwd": "<path-to-claude-octopus>",
-      "env": {
-        "OCTO_CLAW_ENABLED": "true"
-      }
+      "cwd": "<path-to-claude-octopus>"
     }
   }
 }
@@ -654,37 +641,14 @@ Once enabled, it exposes:
 - `octopus_discover`, `octopus_define`, `octopus_develop`, `octopus_deliver` — Individual phases
 - `octopus_embrace` — Full Double Diamond workflow
 - `octopus_debate`, `octopus_council`, `octopus_review`, `octopus_security` — Specialized workflows
+- `octopus_set_editor_context` — IDE editor-state context
 - `octopus_list_skills`, `octopus_status` — Introspection
 
 Any MCP-compatible client can connect to the server.
 
 In v11, workflow tools and status require an absolute `project_root` for each
-call. See [the migration guide](docs/MIGRATING-V11.md) before updating an existing
-MCP or OpenClaw integration.
-
-### OpenClaw Extension
-
-Install in an OpenClaw instance from git:
-
-```bash
-npm install github:nyldn/claude-octopus#main --prefix openclaw
-```
-
-Or clone and link locally:
-
-```bash
-cd openclaw && npm install && npm run build
-```
-
-The extension registers as an OpenClaw plugin with configurable workflows, autonomy modes, and Claude Code path resolution.
-
-### Build & Validate
-
-```bash
-./scripts/build-openclaw.sh          # Regenerate skill registry from frontmatter
-./scripts/build-openclaw.sh --check  # CI mode — exits non-zero if out of sync
-./tests/validate-openclaw.sh         # 13-check validation suite
-```
+call. See [the migration guide](docs/MIGRATING-V11.md) before updating an
+existing MCP integration.
 
 ---
 
