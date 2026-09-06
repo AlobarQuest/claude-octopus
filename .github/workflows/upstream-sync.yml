@@ -61,8 +61,25 @@ jobs:
         if: steps.check.outputs.has_changes == 'true'
         run: |
           git checkout -B upstream-sync upstream/main
-          # Preserve our own workflow and script files — we control our own CI, not upstream
-          git checkout origin/main -- .github/workflows/ .github/scripts/
+          # Preserve the fork's OWN CI -- derived from what upstream does not have, never a
+          # hand-kept list, because a blanket `git checkout origin/main -- .github/` freezes
+          # UPSTREAM's files too and nobody chose that. On 2026-09-06 it had frozen
+          # test.yml, claude-octopus.yml and post_reddit_update.py at their June versions;
+          # upstream's own tests/smoke/test-packaging-integrity.sh asserts test.yml contains a
+          # `package-integrity:` job, so upstream's NEW test ran against the fork's OLD workflow
+          # and failed on a tree where each parent passes alone. Neither of the three had ever
+          # been edited here.
+          #
+          # Deriving it is self-maintaining in both directions: a new fork-owned file is
+          # preserved without anyone remembering to list it, and a file upstream later adopts
+          # under the same path stops being frozen -- which is the right answer, and the same
+          # one the flock hardening got when upstream wrote `_publish_session_state`.
+          git ls-tree -r --name-only origin/main .github/ | while IFS= read -r f; do
+            if ! git cat-file -e "upstream/main:$f" 2>/dev/null; then
+              git checkout origin/main -- "$f"
+              echo "preserved (fork-owned, absent upstream): $f"
+            fi
+          done
           git commit -m "ci: preserve fork workflow and script files" --allow-empty
           git push origin upstream-sync --force
 

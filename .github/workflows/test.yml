@@ -5,20 +5,241 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+  # Required before a merge queue can be enabled on main. The queue dispatches
+  # merge_group events against a temporary branch holding the projected result
+  # of merging the queued PRs; if no workflow answers that event, the required
+  # checks never report and every queue entry hangs until it times out. Adding
+  # the trigger is inert until a queue exists, so it lands first, on its own.
+  merge_group:
   schedule:
     # Nightly builds at 2 AM UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Two pull_request runs for the same SHA have repeatedly raced here, and the
+# loser is reported as a failed required check even though the winner passed —
+# which blocked merges four times while the underlying tests were green.
+# Collapse duplicates per PR so only the newest run reports.
+#
+# cancel-in-progress is deliberately restricted to pull_request. A main-branch
+# run must never be cancelled: RELEASING.md step 9 gates the release tag on the
+# Test Suite for the exact post-squash commit, and cancelling it would either
+# block a valid release or, worse, leave main unverified.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+
 jobs:
-  smoke:
-    name: Smoke Tests
+  classify-changes:
+    name: Classify Changes
+    runs-on: ubuntu-latest
+    outputs:
+      heavy_tests: ${{ steps.classify.outputs.heavy_tests }}
+      fast_path: ${{ steps.classify.outputs.fast_path }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          else
+            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
+            echo "fast_path=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$base" "$head")"
+          if [[ -z "$changed" ]]; then
+            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
+            echo "fast_path=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          fast_path=true
+          while IFS= read -r file; do
+            case "$file" in
+              package.json|README.md|CHANGELOG.md|docs/*|.claude-plugin/plugin.json|.claude-plugin/marketplace.json|.codex-plugin/plugin.json|.cursor-plugin/plugin.json|.factory-plugin/plugin.json|.factory-plugin/marketplace.json)
+                ;;
+              *)
+                fast_path=false
+                ;;
+            esac
+          done <<< "$changed"
+
+          if [[ "$fast_path" == "true" ]]; then
+            echo "heavy_tests=false" >> "$GITHUB_OUTPUT"
+            echo "fast_path=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
+            echo "fast_path=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  vendor-freshness:
+    name: Vendor Freshness
+    # Nightly/manual only — not a PR gate. Fails when a vendored dependency is
+    # stale (exit 2) or unhealthy (exit 1) so maintainers see it in the nightly run.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check vendored dependencies against upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/check-vendor-updates.sh --ci
+
+  package-integrity:
+    name: Package Artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    needs: classify-changes
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate extracted npm archive
+        run: bash tests/smoke/test-packaging-integrity.sh
+
+  portability-lint:
+    name: Portability Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+
+      - name: Verify Codex skills are up to date
+        run: ./scripts/build-codex-skills.sh --check
+
+      - name: Check for GNU-only sed patterns
+        run: |
+          echo "Checking for non-portable sed usage..."
+          FAIL=0
+          # GNU-only command grouping in sed address ranges: sed '/pat/,/pat/{...}'
+          # This is the actual bug class from issue #255. sed -i is handled with
+          # platform conditionals throughout the codebase (see lib/config-display.sh).
+          if grep -rnE "sed\s.*'/[^']*,/[^']*\{" scripts/ hooks/ 2>/dev/null; then
+            echo "FAIL: GNU-only sed command grouping found. Use awk instead."
+            FAIL=1
+          fi
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "Policy: use awk/grep for multi-line extraction. Reserve sed for single-line s/// only."
+            exit 1
+          fi
+          echo "OK: No non-portable sed patterns found."
+
+      # CLAUDE.md sets a Bash 3.2 floor because macOS ships /bin/bash 3.2.57,
+      # which has no associative arrays or namerefs. Nothing caught this before:
+      # the macOS runner resolves `#!/usr/bin/env bash` to Homebrew bash 5 on
+      # PATH, so a `declare -A` passes CI and then dies on a maintainer's stock
+      # shell with `line N: <key>: unbound variable`. tests/ is included because
+      # that is where the violation landed (#782).
+      - name: Check for Bash 4+ constructs below the 3.2 floor
+        run: |
+          FAIL=0
+          if grep -rnE '^[[:space:]]*(declare|local|typeset)[[:space:]]+-[A-Za-z]*A' \
+              scripts/ hooks/ tests/ 2>/dev/null; then
+            echo "::error::associative arrays require Bash 4; the floor is 3.2 (macOS /bin/bash)"
+            FAIL=1
+          fi
+          if grep -rnE '^[[:space:]]*(declare|local)[[:space:]]+-n[[:space:]]' \
+              scripts/ hooks/ tests/ 2>/dev/null; then
+            echo "::error::namerefs require Bash 4.3; the floor is 3.2 (macOS /bin/bash)"
+            FAIL=1
+          fi
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "No Bash 4+ constructs found."
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get install -y shellcheck
+          # Print the version: the runner's ShellCheck can be older than a
+          # contributor's local build and emit codes local runs never show
+          # (SC2120 did exactly that). When CI flags something you cannot
+          # reproduce, compare this against your `shellcheck --version` and
+          # suppress with a targeted `# shellcheck disable=` plus a reason.
+          shellcheck --version
+
+      # Enforcing, not advisory. This step used to end in `|| true`, so 406
+      # warnings accumulated unseen — including the SC2221/SC2222 that marked a
+      # dead `xai` allowlist arm and the SC2154 that marked a jq filter broken
+      # by premature shell expansion. Both were live bugs.
+      #
+      # Excluded codes are stylistic and pervasive in this codebase:
+      #   SC2034 unused variable (lib files export vars for their sourcers)
+      #   SC2155 declare-and-assign masks the return value
+      #   SC1090/SC1091 shellcheck cannot follow dynamic `source` paths
+      # Everything else must stay at zero. Suppress a genuine false positive
+      # with a targeted `# shellcheck disable=` and a reason, not by widening
+      # this list.
+      - name: Run ShellCheck on core scripts
+        run: |
+          shellcheck -s bash -S warning \
+            -e SC2034,SC2155,SC1090,SC1091 \
+            scripts/orchestrate.sh \
+            scripts/lib/*.sh \
+            hooks/*.sh
+
+      # Exec-bit lint: shell/python entrypoints must stay 100755. Both contributor
+      # tooling and editor-based rewrites have silently dropped exec bits (root
+      # cause of PR #579's "Permission denied" failures). Intentional mode changes:
+      # add the 'allow-mode-change' label to the PR.
+      - name: Executable-bit lint
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          ALLOW_MODE_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'allow-mode-change') }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF" --depth=100 2>/dev/null || git fetch --no-tags origin "$BASE_REF"
+          changes=$(git diff --summary "origin/${BASE_REF}...HEAD" 2>/dev/null | grep "mode change" || true)
+          if [[ -z "$changes" ]]; then
+            echo "OK: no file-mode changes vs ${BASE_REF}."
+            exit 0
+          fi
+          echo "File-mode changes detected vs ${BASE_REF}:"
+          echo "$changes"
+          if [[ "$ALLOW_MODE_CHANGE" == "true" ]]; then
+            echo "Label 'allow-mode-change' present; passing."
+            exit 0
+          fi
+          echo ""
+          echo "Shell scripts and Python helpers must keep the executable bit (100755)."
+          echo "Fix: chmod +x <file> && git add <file>, or add the 'allow-mode-change' label if intentional."
+          exit 1
+
+  smoke:
+    name: Smoke Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    needs: classify-changes
+    if: needs.classify-changes.outputs.heavy_tests == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
 
       - name: Make scripts executable
         run: |
@@ -35,21 +256,45 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: smoke-test-logs
+          name: smoke-test-logs-${{ matrix.os }}
           path: /tmp/test_*.log
           retention-days: 7
 
   unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: smoke
+    name: Unit Tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    # The unsharded macOS matrix crossed 25 minutes in run 33899702427. Two
+    # duration-weighted deterministic shards preserve full coverage and avoid
+    # concentrating the slow Council/provider suites on one runner.
+    # Ubuntu remains one complete control run.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    needs: [classify-changes, smoke, portability-lint]
+    if: needs.classify-changes.outputs.heavy_tests == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: ubuntu-latest
+            timeout_minutes: 25
+            shard_index: 0
+            shard_count: 1
+          - os: macos-latest
+            label: macos-latest, shard 1/2
+            timeout_minutes: 45
+            shard_index: 0
+            shard_count: 2
+          - os: macos-latest
+            label: macos-latest, shard 2/2
+            timeout_minutes: 45
+            shard_index: 1
+            shard_count: 2
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Make scripts executable
         run: |
@@ -57,35 +302,132 @@ jobs:
           chmod +x tests/**/*.sh
           find tests -name "*.sh" -type f -exec chmod +x {} \;
 
+      - name: Install adapter test dependencies
+        run: make test-deps
+
       - name: Run unit tests
-        run: make test-unit
+        run: ./tests/run-all.sh unit --shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: unit-test-results
+          name: unit-test-results-${{ matrix.os }}-${{ matrix.shard_index }}
           path: test-results*.xml
           retention-days: 30
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: unit-test-logs
+          name: unit-test-logs-${{ matrix.os }}-${{ matrix.shard_index }}
           path: /tmp/test_*.log
           retention-days: 7
 
-  integration:
-    name: Integration Tests
+  # Catches tests that conflate logical and physical paths. This failure mode is
+  # invisible to every other job by construction: runners check out under a real
+  # path, so a test deriving PROJECT_ROOT with `cd && pwd` while the code under
+  # test resolves with `cd -P && pwd` agrees there and diverges anywhere behind a
+  # symlink. #712 hit exactly that — test-feature-disclosure.sh failed only in a
+  # /tmp release worktree on macOS, which is the workflow RELEASING.md §0
+  # recommends, so it bit at release time and CI could never have warned.
+  #
+  # Ubuntu only: the divergence is a property of symlinked paths, not of macOS.
+  # Pull requests run the dynamically discovered path-sensitive suites instead
+  # of duplicating every unit suite. Main, schedule, and manual runs retain the
+  # complete symlinked suite as a release gate.
+  symlinked-path:
+    name: Symlinked Path
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: unit
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    needs: [classify-changes, smoke, portability-lint]
+    if: needs.classify-changes.outputs.heavy_tests == 'true'
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run the proportional unit gate through a symlinked path
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          link="$(mktemp -d)/octo-linked"
+          ln -s "$GITHUB_WORKSPACE" "$link"
+          echo "Real path:    $GITHUB_WORKSPACE"
+          echo "Via symlink:  $link"
+          # Verify the link really is a distinct logical path, or this job would
+          # silently duplicate the ordinary unit run and prove nothing.
+          if [[ "$(cd "$link" && pwd)" == "$(cd "$link" && pwd -P)" ]]; then
+            echo "::error::logical and physical paths match — the symlink is not exercising anything"
+            exit 1
+          fi
+          cd "$link"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            make test-symlink-sensitive
+          else
+            make test-unit
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: symlinked-path-logs
+          path: /tmp/test_*.log
+          retention-days: 7
+
+  smoke-required:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [classify-changes, smoke]
+    if: always()
+    steps:
+      - name: Verify smoke matrix passed
+        run: |
+          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
+            echo "Fast path: skipping smoke matrix for release/docs-only changes."
+          elif [[ "${{ needs.smoke.result }}" != "success" ]]; then
+            echo "Smoke matrix result: ${{ needs.smoke.result }}"
+            exit 1
+          fi
+
+  unit-required:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: [classify-changes, unit, symlinked-path]
+    if: always()
+    steps:
+      - name: Verify unit matrix passed
+        run: |
+          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
+            echo "Fast path: skipping unit matrix for release/docs-only changes."
+          elif [[ "${{ needs.unit.result }}" != "success" ]]; then
+            echo "Unit matrix result: ${{ needs.unit.result }}"
+            exit 1
+          elif [[ "${{ needs.symlinked-path.result }}" != "success" ]]; then
+            echo "Symlinked-path result: ${{ needs.symlinked-path.result }}"
+            exit 1
+          fi
+
+  integration-heavy:
+    name: Integration Tests (full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [classify-changes, unit-required]
+    if: needs.classify-changes.outputs.heavy_tests == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
 
       - name: Make scripts executable
         run: |
@@ -98,7 +440,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: integration-test-results
           path: test-results*.xml
@@ -106,63 +448,40 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: integration-test-logs
           path: /tmp/test_*.log
           retention-days: 7
 
-  e2e:
-    name: End-to-End Tests
+  integration:
+    name: Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: [smoke, unit, integration]
-    # Only run E2E on main branch, scheduled builds, or manual trigger
-    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-
+    needs: [classify-changes, unit-required, integration-heavy]
+    if: always()
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Make scripts executable
+      - name: Verify integration tests passed
         run: |
-          chmod +x scripts/orchestrate.sh
-          chmod +x tests/**/*.sh
-          find tests -name "*.sh" -type f -exec chmod +x {} \;
-
-      - name: Run E2E tests
-        run: make test-e2e
-        env:
-          # Add any necessary API keys or credentials here
-          # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CI: true
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-test-results
-          path: test-results*.xml
-          retention-days: 30
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-test-logs
-          path: /tmp/test_*.log
-          retention-days: 7
+          if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
+            echo "Fast path: skipping integration tests for release/docs-only changes."
+          elif [[ "${{ needs.unit-required.result }}" != "success" ]]; then
+            echo "Integration Tests did not run: blocked by Unit Tests (${{ needs.unit-required.result }}), not an integration failure."
+            exit 1
+          elif [[ "${{ needs.integration-heavy.result }}" != "success" ]]; then
+            echo "Integration result: ${{ needs.integration-heavy.result }}"
+            exit 1
+          fi
 
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [smoke, unit, integration]
+    needs: [smoke-required, unit-required, integration, portability-lint, package-integrity]
     if: always()
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
+        continue-on-error: true
 
       - name: Create test summary
         run: |
@@ -172,6 +491,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Category | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Smoke | ${{ needs.smoke.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit | ${{ needs.unit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke | ${{ needs.smoke-required.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit | ${{ needs.unit-required.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration | ${{ needs.integration.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Portability | ${{ needs.portability-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | ${{ needs.package-integrity.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ needs.package-integrity.result }}" != "success" ]]; then
+            echo "Package integrity result: ${{ needs.package-integrity.result }}"
+            exit 1
+          fi
