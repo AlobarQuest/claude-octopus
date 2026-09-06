@@ -1,6 +1,7 @@
 ---
 name: octopus-security-audit
 description: "OWASP compliance, vulnerability scanning, and adversarial red team testing — use for security reviews"
+disable-model-invocation: true
 ---
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
@@ -52,6 +53,10 @@ ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh auto "security audit the p
 - The user explicitly says "deep", "full", "comprehensive", or "CSO"
 
 No user action needed — mode detection happens automatically from the git diff context.
+
+## Model Selection Caveat: Fable 5.1
+
+By default, do not dispatch security-audit passes to Claude Fable 5.1 or the preserved Fable 5 ID. Their safety classifiers can refuse adversarial red-team phrasing in authorized audits. Route these passes to `OCTOPUS_FABLE5_FALLBACK_MODEL` (default `claude-opus-5`) and keep prompts defensively framed (find and report vulnerabilities; do not request working exploits). Reject an exact model-qualified override that targets `claude-fable-5-1` or `claude-fable-5`. On refusal, retry exactly once on the fallback unless `OCTOPUS_FABLE5_NO_RETRY=1`; when retries are disabled or the retry refuses, surface the refusal without further dispatches. `OCTOPUS_FABLE5_MODE=off` is the explicit exception: it disables automatic rerouting for ordinary environment pins, while exact Fable security seats still fail closed. Details: `skills/blocks/fable5-prompting.md`.
 
 ## Capabilities
 
@@ -144,9 +149,9 @@ This skill wraps the `security-auditor` persona defined in:
 For comprehensive security testing, use the squeeze workflow which runs a 4-phase adversarial cycle:
 
 1. **Blue Team** (Defense): Codex reviews code, identifies attack surface, proposes defenses
-2. **Red Team** (Attack): Gemini attempts to break defenses, generates exploit PoCs
+2. **Red Team** (Attack): Antigravity attempts to break defenses, generates exploit PoCs
 3. **Remediation** (Fix): Codex patches all vulnerabilities found
-4. **Validation** (Verify): Gemini re-tests, confirms fixes or fails
+4. **Validation** (Verify): Antigravity re-tests, confirms fixes or fails
 
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh squeeze "[user's security request]"

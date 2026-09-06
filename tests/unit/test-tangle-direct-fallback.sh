@@ -12,14 +12,11 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "tangle direct fallback"
 
-test_case "workflows.sh has valid bash syntax"
-if bash -n "$WORKFLOWS" 2>/dev/null; then
-    test_pass
-else
-    test_fail "syntax error in workflows.sh"
-fi
+# These tests exercise tangle dispatch/validation behavior, not contextual review.
+export OCTOPUS_TANGLE_CODE_REVIEW=false
 
 # shellcheck source=/dev/null
+source "$PROJECT_ROOT/scripts/lib/testing.sh"
 source "$WORKFLOWS"
 
 CYAN=""

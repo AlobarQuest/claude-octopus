@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Claude Octopus — UserPromptSubmit Hook (v9.11.0)
-# Fires before user prompt is processed. Classifies task intent
-# with confidence levels, injects routing context, and optionally
-# auto-invokes matching /octo: workflows.
+# Explicit /octo:* commands always get alias/title handling. Plain-language
+# classification and routing are opt-in.
 #
-# v9.11.0: Auto-invoke mode — strong signals fire immediately,
+# v9.11.0: Opt-in auto-invoke mode — strong signals fire immediately,
 # weak signals fire on repeat intent in the same session.
 # Controlled by OCTOPUS_AUTO_ROUTER_MODE=off|suggest|invoke.
 # Legacy OCTOPUS_AUTO_INVOKE remains supported.
@@ -92,6 +91,27 @@ else
 fi
 [[ -z "$INPUT" ]] && exit 0
 
+# Fast path for the default-off mode. Avoid starting Python/jq on ordinary
+# prompts; only explicit /octo:* input needs parsing when no opt-in is present.
+_router_override="${OCTOPUS_AUTO_ROUTER_MODE:-${OCTOPUS_AUTO_INVOKE:-}}"
+_router_setting_present=false
+for _router_file in \
+    "${CLAUDE_PLUGIN_ROOT:-.}/settings.json" \
+    "${CLAUDE_PLUGIN_ROOT:-.}/.claude-plugin/settings.json" \
+    "${HOME}/.claude-octopus/preferences.json"
+do
+    if [[ -r "$_router_file" ]] && grep -qE '"(OCTOPUS_AUTO_ROUTER_MODE|OCTOPUS_AUTO_INVOKE|auto_router_mode|auto_invoke)"' "$_router_file" 2>/dev/null; then
+        _router_setting_present=true
+        break
+    fi
+done
+if [[ -z "$_router_override" && "$_router_setting_present" == "false" ]]; then
+    case "$INPUT" in
+        *'"prompt":"/octo:'*|*'"prompt": "/octo:'*|*'"prompt":"octo:'*|*'"prompt": "octo:'*) ;;
+        *) exit 0 ;;
+    esac
+fi
+
 # Extract the user's prompt text (python3 preferred, jq fallback)
 if command -v python3 &>/dev/null; then
     PROMPT=$(printf '%s' "$INPUT" | python3 -c "
@@ -107,12 +127,23 @@ fi
 [[ -z "$PROMPT" ]] && exit 0
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# GUARD: Never route on system-generated events (issue #632). Task notifications,
+# system reminders, and other harness-injected turns are not user intent.
+# ═══════════════════════════════════════════════════════════════════════════════
+PROMPT_HEAD="${PROMPT#"${PROMPT%%[![:space:]]*}"}"
+case "$PROMPT_HEAD" in
+    "[SYSTEM NOTIFICATION"*|"<task-notification>"*|"<system-reminder>"*|"<local-command-stdout>"*)
+        exit 0
+        ;;
+esac
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # GUARD: Skip if user already invoked an /octo: command (prevent double-exec)
 # ═══════════════════════════════════════════════════════════════════════════════
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo ".")"
 OCTO_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$HOOK_DIR/.." && pwd 2>/dev/null || echo ".")}"
-OCTO_COMMANDS_DIR="${OCTO_PLUGIN_ROOT}/.claude/commands"
+OCTO_COMMANDS_DIR="${OCTO_PLUGIN_ROOT}/commands"
 
 octo_command_exists() {
     local cmd="$1"
@@ -191,7 +222,7 @@ if [[ "$PROMPT_LOWER" == /octo:* ]] || [[ "$PROMPT_LOWER" == "octo:"* ]]; then
     if [[ -n "$_CMD" ]] && ! octo_command_exists "$_CMD"; then
         if _ALIAS=$(octo_alias_for "$_CMD") && octo_command_exists "$_ALIAS"; then
             octo_log_alias_event "alias" "$_RAW_CMD" "$_ALIAS"
-            emit_user_prompt_context "[🐙 Octopus] Alias resolved: /octo:${_RAW_CMD} -> /octo:${_ALIAS}. Treat this invocation as /octo:${_ALIAS}; invoke Skill(skill: \"octo:${_ALIAS}\", args: \"$(escape_for_json "$_ARGS")\") before responding."
+            emit_user_prompt_context "[🐙 Octopus] Alias resolved: /octo:${_RAW_CMD} -> /octo:${_ALIAS}. Treat this explicit invocation as /octo:${_ALIAS}; load and follow ${OCTO_COMMANDS_DIR}/${_ALIAS}.md with arguments \"$(escape_for_json "$_ARGS")\" before responding."
             exit 0
         fi
         _SUGGESTIONS=$(octo_fuzzy_suggestions "$_CMD" || true)
@@ -229,7 +260,7 @@ fi
 # SETTINGS: Load auto-router preference
 # Precedence (highest wins): Env var > preferences.json > settings.json > default
 # ═══════════════════════════════════════════════════════════════════════════════
-AUTO_ROUTER_MODE="invoke"  # Default preserves legacy strong-signal auto-invoke.
+AUTO_ROUTER_MODE="off"
 
 # Tier 1: settings.json (plugin default). Prefer the current plugin-root
 # settings.json path, but keep the old .claude-plugin/settings.json fallback.
@@ -376,25 +407,27 @@ if [[ -n "$INTENT" && -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
 
     # Provider pre-warming
     PRIMED="[]"
-    _codex=false; _gemini=false; _opencode=false
+    _codex=false; _agy=false; _opencode=false
     command -v codex &>/dev/null && [[ -n "${OPENAI_API_KEY:-}" || -f "${HOME}/.codex/auth.json" ]] && _codex=true
-    command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}" || -f "${HOME}/.gemini/oauth_creds.json" ]] && _gemini=true
+    command -v agy &>/dev/null && _agy=true
     command -v opencode &>/dev/null && _opencode=true
     PRIMED=$(python3 -c "
 import json
 p = ['claude']
 if $_codex: p.insert(0, 'codex')
-if $_gemini: p.insert(1 if $_codex else 0, 'gemini')
+if $_agy: p.insert(1 if $_codex else 0, 'agy')
 if $_opencode: p.append('opencode')
 print(json.dumps(p))
 " 2>/dev/null) || PRIMED='["claude"]'
 
     # Update session state
-    TMP="${SESSION_FILE}.tmp"
-    jq --arg intent "$INTENT" --arg conf "$CONFIDENCE" --argjson providers "$PRIMED" \
-        '.detected_intent = $intent | .intent_confidence = $conf | .primed_providers = $providers' \
-        "$SESSION_FILE" > "$TMP" 2>/dev/null && \
-        mv "$TMP" "$SESSION_FILE" 2>/dev/null || rm -f "$TMP"
+    TMP=""
+    if TMP=$(mktemp "${SESSION_FILE}.tmp.XXXXXX"); then
+        jq --arg intent "$INTENT" --arg conf "$CONFIDENCE" --argjson providers "$PRIMED" \
+            '.detected_intent = $intent | .intent_confidence = $conf | .primed_providers = $providers' \
+            "$SESSION_FILE" > "$TMP" 2>/dev/null && \
+            mv "$TMP" "$SESSION_FILE" 2>/dev/null || rm -f "$TMP"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -443,11 +476,13 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 if [[ -n "$INTENT" ]]; then
     if [[ "$SHOULD_AUTO_INVOKE" == "true" ]]; then
-        # Auto-invoke: inject MANDATORY skill invocation instruction
+        # Auto-invoke: inject advisory skill routing instruction (issue #632:
+        # advisory, never coercive — the agent may decline a mis-route).
         # Escape the prompt once for the Skill args string inside JSON output.
         ESCAPED_ARGS=$(escape_for_json "$PROMPT")
 
-        CONTEXT_MSG="[🐙 Octopus] Auto-invoke: ${INTENT} (${CONFIDENCE}, ${SIGNAL_STRENGTH}). MANDATORY: Invoke Skill(skill: \"${SKILL_NAME}\", args: \"${ESCAPED_ARGS}\") before responding. The skill handles the full response."
+        _ROUTED_COMMAND="${SKILL_NAME#octo:}"
+        CONTEXT_MSG="[🐙 Octopus] Opt-in auto-route: ${INTENT} (${CONFIDENCE}, ${SIGNAL_STRENGTH}). If that matches what the user asked for, load and follow ${OCTO_COMMANDS_DIR}/${_ROUTED_COMMAND}.md with arguments \"${ESCAPED_ARGS}\". If this routing does not fit the request, ignore it and answer normally."
     else
         # Standard behavior: inject persona context only
         CONTEXT_MSG="[🐙 Octopus] Detected intent: ${INTENT} (${CONFIDENCE} confidence)."

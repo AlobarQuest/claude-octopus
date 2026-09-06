@@ -9,10 +9,9 @@ structured Double Diamond workflows.
 - `scripts/orchestrate.sh` — Main orchestration entry point (~5K lines + ~22K in scripts/lib/)
 - `scripts/lib/` — Modular libraries (providers, doctor, model-resolver, dispatch)
 - `.claude/skills/` — Skill definitions (52 skills)
-- `.claude/commands/` — Slash commands (48 commands)
+- `commands/` — Slash commands (50 commands)
 - `.claude/agents/` — Subagent definitions (10 agents)
 - `mcp-server/` — MCP server adapter (bridges MCP clients to orchestrate.sh)
-- `openclaw/` — OpenClaw extension adapter
 
 ## Conventions
 
@@ -23,5 +22,5 @@ structured Double Diamond workflows.
 
 ## Testing
 
-Run the pre-push test suite: `bash tests/run-pre-push.sh`
+Run the pre-push test suite: `bash tests/run-all-tests.sh`
 Run a single test: `bash tests/unit/test-<name>.sh`

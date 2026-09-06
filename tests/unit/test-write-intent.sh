@@ -69,7 +69,7 @@ test_principle_has_idempotence_section() {
 test_dev_checks_existing_state_first() {
     test_case "/octo:dev instructions check current state before writing"
     local content
-    content=$(<"$PROJECT_ROOT/.claude/commands/dev.md")
+    content=$(<"$PROJECT_ROOT/commands/dev.md")
     # Must mention both: "does NOT exist → show confirmation only" AND "already in Dev Work Mode"
     if grep -qi "do not create the file\|Do not rewrite the file" <<< "$content"; then
         test_pass
@@ -81,7 +81,7 @@ test_dev_checks_existing_state_first() {
 test_dev_references_write_intent_principle() {
     test_case "/octo:dev cross-references the write-intent principle"
     local content
-    content=$(<"$PROJECT_ROOT/.claude/commands/dev.md")
+    content=$(<"$PROJECT_ROOT/commands/dev.md")
     if grep -q 'write-intent\.md\|write-intent-principle' <<< "$content"; then
         test_pass
     else
@@ -96,7 +96,7 @@ test_dev_references_write_intent_principle() {
 test_km_checks_existing_state_first() {
     test_case "/octo:km instructions check current state before writing"
     local content
-    content=$(<"$PROJECT_ROOT/.claude/commands/km.md")
+    content=$(<"$PROJECT_ROOT/commands/km.md")
     if grep -qi "do not create the file\|Do not rewrite the file" <<< "$content"; then
         test_pass
     else
@@ -107,7 +107,7 @@ test_km_checks_existing_state_first() {
 test_km_references_write_intent_principle() {
     test_case "/octo:km cross-references the write-intent principle"
     local content
-    content=$(<"$PROJECT_ROOT/.claude/commands/km.md")
+    content=$(<"$PROJECT_ROOT/commands/km.md")
     if grep -q 'write-intent\.md\|write-intent-principle' <<< "$content"; then
         test_pass
     else
@@ -131,11 +131,11 @@ test_version_advisory_hook_exists() {
 
 test_version_advisory_wired_in_hooks_json() {
     test_case "version-advisory.sh registered in SessionStart hooks"
-    local hooks_json="$PROJECT_ROOT/.claude-plugin/hooks.json"
+    local hooks_json="$PROJECT_ROOT/hooks/hooks.json"
     if command -v jq >/dev/null 2>&1; then
         # Check that some SessionStart hook references version-advisory.sh
         local found
-        found=$(jq -r '.SessionStart[]?.hooks[]?.command // empty' "$hooks_json" 2>/dev/null | grep -c 'version-advisory\.sh' || true)
+        found=$(jq -r '(.hooks // .) | .SessionStart[]?.hooks[]?.command // empty' "$hooks_json" 2>/dev/null | grep -c 'version-advisory\.sh' || true)
         found=${found:-0}
         if [[ "$found" -ge 1 ]]; then
             test_pass
@@ -203,11 +203,16 @@ test_version_advisory_emits_on_version_change() {
     output=$(HOME="$tmpdir" CLAUDE_PLUGIN_ROOT="$PROJECT_ROOT" bash "$hook" 2>&1 || true)
     rm -rf "$tmpdir"
     if version_ge "$current_version" "$min_version" &&
-       [[ "$output" == *"$min_version"* && "$output" == *"$current_version"* ]] &&
-       grep -q '/octo:setup\|OCTOPUS_LEGACY_ROLES' <<< "$output"; then
+       jq -e --arg old "$min_version" --arg current "$current_version" '
+           (.systemMessage // "") as $msg
+           | (has("hookSpecificOutput") | not)
+             and ($msg | contains($old))
+             and ($msg | contains($current))
+             and ($msg | contains("/octo:whats-new"))
+       ' <<<"$output" >/dev/null 2>&1; then
         test_pass
     else
-        test_fail "advisory missing or malformed. Got: $output"
+        test_fail "advisory is not valid SessionStart hook JSON. Got: $output"
     fi
 }
 

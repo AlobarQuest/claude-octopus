@@ -5,6 +5,56 @@
 # Extracted from orchestrate.sh
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Shared credential-value parsing. Provider admission surfaces must not trust a
+# file merely because an assignment exists: blank and quoted-empty values are
+# unauthenticated, while a # inside a quoted credential is data, not a comment.
+_octo_value_has_nonwhitespace() {
+    local value
+    value="$(printf '%s\n' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -n "$value" ]]
+}
+
+_octo_strip_unquoted_comment() {
+    local input="$1" output="" quote="" char
+    local index=0 escaped=0 length=${#1}
+    while (( index < length )); do
+        char="${input:index:1}"
+        if (( escaped )); then
+            output="${output}${char}"
+            escaped=0
+        elif [[ "$quote" == '"' && "$char" == "\\" ]]; then
+            output="${output}${char}"
+            escaped=1
+        elif [[ -z "$quote" && "$char" == "#" ]]; then
+            break
+        else
+            output="${output}${char}"
+            if [[ -z "$quote" && ( "$char" == '"' || "$char" == "'" ) ]]; then
+                quote="$char"
+            elif [[ -n "$quote" && "$char" == "$quote" ]]; then
+                quote=""
+            fi
+        fi
+        index=$((index + 1))
+    done
+    printf '%s\n' "$output"
+}
+
+_octo_assignment_has_nonempty_value() {
+    local file="$1" key="$2" value
+    [[ -f "$file" ]] || return 1
+
+    value="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" 2>/dev/null | tail -n 1)"
+    value="$(printf '%s\n' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    value="$(_octo_strip_unquoted_comment "$value")"
+    value="$(printf '%s\n' "$value" | sed 's/[[:space:]]*$//')"
+    case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    _octo_value_has_nonwhitespace "$value"
+}
+
 # Check if Codex is authenticated
 # Returns auth method: "api_key", "oauth", or "none"
 # Always returns 0 (success) - use the output to determine status
@@ -43,7 +93,7 @@ check_codex_auth() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Generic OAuth token expiry validator (oco-dar)
-# Gemini-CLI-family creds (qwen, gemini) store `expiry_date` as epoch MILLISECONDS.
+# Gemini-CLI-family credentials used by Qwen store `expiry_date` as epoch milliseconds.
 # Codex stores `expires_at` as epoch seconds (handled by check_codex_auth above).
 #
 # Usage: octo_oauth_token_valid <creds_file> [skew_seconds]
@@ -54,9 +104,8 @@ check_codex_auth() {
 #
 # NOTE: this is a strict check. Use it only for providers whose refresh is NOT
 # reliable (qwen free-tier OAuth was EOL'd 2026-04-15, so an expired access
-# token never recovers). Do NOT gate gemini on this — gemini access tokens
-# expire ~hourly but auto-refresh seamlessly; the universal hang protection for
-# refresh-capable providers is the process-group timeout kill in heartbeat.sh.
+# token never recovers). For refresh-capable providers, the universal hang
+# protection is the process-group timeout kill in heartbeat.sh.
 octo_oauth_token_valid() {
     local creds_file="$1"
     local skew="${2:-60}"
@@ -191,20 +240,14 @@ handle_auth_command() {
                     ;;
             esac
 
-            # Check Gemini
+            # Check Antigravity (the sole Google seat)
             echo ""
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-                echo -e "  Gemini:  ${GREEN}✓ Authenticated (OAuth)${NC}"
-                local auth_type
-                auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")
-                echo -e "  Type:    $auth_type"
-            elif [[ -n "$GEMINI_API_KEY" ]]; then
-                local gemini_preview="${GEMINI_API_KEY:0:8}...${GEMINI_API_KEY: -4}"
-                echo -e "  Gemini:  ${GREEN}✓ Authenticated (API Key)${NC}"
-                echo -e "  Key:     $gemini_preview"
+            if command -v agy &>/dev/null; then
+                echo -e "  Antigravity: ${GREEN}✓ CLI installed${NC}"
+                echo "               Launch plain 'agy' and complete browser sign-in if its session needs refreshing"
             else
-                echo -e "  Gemini:  ${YELLOW}○ Not configured${NC}"
-                echo "           Run 'gemini' to login OR set GEMINI_API_KEY"
+                echo -e "  Antigravity: ${YELLOW}○ Not configured${NC}"
+                echo "               Install agy from Google Antigravity"
             fi
             ;;
 

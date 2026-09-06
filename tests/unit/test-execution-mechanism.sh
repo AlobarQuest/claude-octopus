@@ -25,7 +25,7 @@ MULTI_LLM_COMMANDS="embrace discover define develop deliver multi review securit
 echo "=== EXECUTION MECHANISM Enforcement ==="
 
 for cmd in $MULTI_LLM_COMMANDS; do
-    cc="$PROJECT_ROOT/.claude/commands/${cmd}.md"
+    cc="$PROJECT_ROOT/commands/${cmd}.md"
     if [[ -f "$cc" ]]; then
         if grep -q 'EXECUTION MECHANISM' "$cc" 2>/dev/null; then
             pass "$cmd.md has EXECUTION MECHANISM"
@@ -41,7 +41,7 @@ echo ""
 echo "=== EXECUTION MECHANISM Contains PROHIBITED ─────"
 
 for cmd in $MULTI_LLM_COMMANDS; do
-    cc="$PROJECT_ROOT/.claude/commands/${cmd}.md"
+    cc="$PROJECT_ROOT/commands/${cmd}.md"
     if [[ -f "$cc" ]] && grep -q 'EXECUTION MECHANISM' "$cc" 2>/dev/null; then
         # Check the enforcement block contains prohibition markers
         if grep -A 10 'EXECUTION MECHANISM' "$cc" | grep -qE '❌|PROHIBITED'; then
@@ -95,7 +95,7 @@ fi
 echo ""
 echo "=== Embrace Chains Direct Workflow Dispatches ==="
 
-EMBRACE="$PROJECT_ROOT/.claude/commands/embrace.md"
+EMBRACE="$PROJECT_ROOT/commands/embrace.md"
 if [[ -f "$EMBRACE" ]]; then
     missing_dispatches=()
     for workflow in probe grasp tangle ink; do
@@ -125,7 +125,7 @@ fi
 echo ""
 echo "=== Develop Direct Dispatch Preserves Preflight ==="
 
-for develop_file in "$PROJECT_ROOT/.claude/commands/develop.md" "$PROJECT_ROOT/.cursor-plugin/commands/octo-develop.md"; do
+for develop_file in "$PROJECT_ROOT/commands/develop.md" "$PROJECT_ROOT/.cursor-plugin/commands/octo-develop.md"; do
     develop_name=$(basename "$develop_file")
     if [[ -f "$develop_file" ]]; then
         preflight_line=$(grep -n 'helpers/check-providers.sh' "$develop_file" | head -1 | cut -d: -f1 || true)
@@ -154,7 +154,7 @@ for develop_file in "$PROJECT_ROOT/.claude/commands/develop.md" "$PROJECT_ROOT/.
 
         if grep -q 'OCTOPUS_EFFORT_OVERRIDE' "$develop_file" \
            && grep -q 'OCTOPUS_OPUS_MODE' "$develop_file" \
-           && grep -q 'Fast Opus 4.8 mode is 2x standard cost' "$develop_file" \
+           && grep -qi 'legacy.*standard.*dispatch' "$develop_file" \
            && grep -q 'project memory' "$develop_file"; then
             pass "$develop_name documents model effort and memory policy"
         else

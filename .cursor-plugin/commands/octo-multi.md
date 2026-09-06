@@ -1,5 +1,6 @@
 ---
-description: "\"[advanced] Force multi-provider parallel execution for any task - manual override mode\""
+description: "[advanced] Force multi-provider parallel execution for any task - manual override mode"
+disable-model-invocation: true
 ---
 
 # Multi - Multi-Provider Override
@@ -10,7 +11,7 @@ description: "\"[advanced] Force multi-provider parallel execution for any task 
 
 ### EXECUTION MECHANISM — NON-NEGOTIABLE
 
-**You MUST dispatch work to external providers (Codex, Gemini, Antigravity, etc.) for this command. You are PROHIBITED from:**
+**You MUST dispatch work to external providers (Codex, Antigravity, etc.) for this command. You are PROHIBITED from:**
 - ❌ Executing the entire task using only Claude-native tools
 - ❌ Using a single Agent subagent instead of multi-provider dispatch
 - ❌ Skipping provider dispatch because "I can handle this alone"
@@ -63,36 +64,32 @@ AskUserQuestion({
 
 ### Step 2: Check Provider Availability & Execute
 
-Check which AI providers are available:
+Use the Bash tool to run the shared live readiness check. This command asks for
+multiple providers, so its provider probe is explicit and bounded:
 
-```javascript
-const codexAvailable = await checkCommandAvailable('codex');
-const geminiAvailable = await checkCommandAvailable('gemini');
-const agyAvailable = await checkCommandAvailable('agy');
-const copilotAvailable = await checkCommandAvailable('copilot');
-const qwenAvailable = await checkCommandAvailable('qwen');
-const opencodeAvailable = await checkCommandAvailable('opencode');
-const ollamaAvailable = await checkCommandAvailable('ollama');
-const anyProviderAvailable = [
-  codexAvailable,
-  geminiAvailable,
-  agyAvailable,
-  copilotAvailable,
-  qwenAvailable,
-  opencodeAvailable,
-  ollamaAvailable
-].some(Boolean);
+```bash
+OCTO_ROOT="${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude-octopus/plugin}"
+provider_helper="$OCTO_ROOT/scripts/helpers/check-providers.sh"
+if [[ ! -x "$provider_helper" ]]; then
+  echo "ERROR: Claude Octopus provider readiness helper is unavailable. Run /octo:setup." >&2
+  exit 1
+fi
 
-if (!anyProviderAvailable) {
-  console.log("⚠️ No external providers available. Multi-provider mode requires at least one supported provider.");
-  console.log("Run `/octo:setup` to configure external providers, or use Claude directly.");
-  return;
-}
+PROVIDER_STATUS="$(OCTOPUS_PREFLIGHT_PROBE=1 "$provider_helper" 2>/dev/null || true)"
+printf '%s\n' "$PROVIDER_STATUS"
 
-// Proceed with available providers
+READY_EXTERNAL="$(printf '%s\n' "$PROVIDER_STATUS" |
+  awk -F: '$1 !~ /^claude($|-)/ && $2 == "available" { print $1 }')"
+if [[ -z "$READY_EXTERNAL" ]]; then
+  echo "No external provider is ready. Multi-provider mode needs at least one supported external provider."
+  echo "Run /octo:setup to configure one, or use Claude directly."
+  exit 1
+fi
 ```
 
-Execute the task with all available providers, incorporating user intent from Step 1.
+Treat the emitted `provider:status` lines as authoritative. Execute the task
+with the providers listed in `READY_EXTERNAL`, incorporating the user's intent
+from Step 1. Do not re-detect binaries or credentials inside this command.
 
 ### Step 3: Adversarial Synthesis (MANDATORY — do NOT skip)
 
@@ -115,7 +112,7 @@ The whole point of multi-provider execution is diversity of opinion. Presenting 
 
 ### Divergence
 - 🔴 **Codex**: "[direct quote or close paraphrase]"
-- 🟡 **Gemini**: "[direct quote or close paraphrase]"
+- 🧭 **Antigravity**: "[direct quote or close paraphrase]"
 - 🔵 **Claude**: "[direct quote or close paraphrase]"
 
 ### Resolution
@@ -150,7 +147,7 @@ Or use explicit commands:
 
 This command activates the multi-provider skill in **forced mode**, which:
 - Executes multi-provider analysis even for simple tasks
-- Uses Claude plus all available external providers, including Codex, Gemini, and Antigravity when installed
+- Uses Claude plus all available external providers, including Codex and Antigravity when installed
 - Provides multiple perspectives when you need comprehensive analysis
 - Bypasses automatic routing that might use only Claude
 
@@ -184,7 +181,6 @@ Forcing parallel mode uses external CLIs for every task:
 | Provider | Cost per Query | What It Uses |
 |----------|----------------|--------------|
 | 🔴 Codex CLI | ~$0.01-0.05 | Your OPENAI_API_KEY |
-| 🟡 Gemini CLI | ~$0.01-0.03 | Your GEMINI_API_KEY |
 | 🧭 Antigravity CLI (`agy`) | Included with access/subscription | Antigravity CLI auth |
 | 🔵 Claude | Included | Claude Code subscription |
 
@@ -231,7 +227,6 @@ Force parallel execution
 
 Providers:
 🔴 Codex CLI - [Role in this task]
-🟡 Gemini CLI - [Role in this task]
 🧭 Antigravity CLI - [Role in this task]
 🔵 Claude - [Role in this task]
 ```

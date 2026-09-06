@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+_profile_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -f octopus_resolve_reasoning_level >/dev/null 2>&1; then
+    source "${_profile_lib_dir}/execution-profile.sh" 2>/dev/null || true
+fi
 # agent-utils.sh — Agent execution utilities: roles, RALPH loops, retry, image, resume
 # Contains: get_role_mapping, get_role_agent, get_role_model, log_role_assignment,
 #           has_curated_agents, parse_yaml_value, check_completion_promise,
@@ -25,34 +29,12 @@
 #   OCTOPUS_CODING_AGENT
 #   <default passed by caller>
 octopus_agent_override() {
-    local phase="$1"
-    local role="$2"
-    local default_agent="$3"
-    local phase_key role_key env_name value
-
-    phase_key=$(printf '%s' "$phase" | tr '[:lower:]-' '[:upper:]_' | sed -E 's/[^A-Z0-9_]+/_/g; s/^_+//; s/_+$//')
-    role_key=$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_' | sed -E 's/[^A-Z0-9_]+/_/g; s/^_+//; s/_+$//')
-
-    if [[ -n "$phase_key" && -n "$role_key" ]]; then
-        env_name="OCTOPUS_${phase_key}_${role_key}_AGENT"
-        value="${!env_name:-}"
-        [[ -n "$value" ]] && { echo "$value"; return 0; }
-    fi
-
-    if [[ -n "$phase_key" ]]; then
-        env_name="OCTOPUS_${phase_key}_AGENT"
-        value="${!env_name:-}"
-        [[ -n "$value" ]] && { echo "$value"; return 0; }
-    fi
-
-    if [[ -n "$role_key" ]]; then
-        env_name="OCTOPUS_${role_key}_AGENT"
-        value="${!env_name:-}"
-        [[ -n "$value" ]] && { echo "$value"; return 0; }
-    fi
-
-    echo "$default_agent"
+    local phase="$1" operation="$2" default_agent="$3"
+    local explicit
+    explicit="$(octopus_explicit_provider_override "$phase" "$operation" 2>/dev/null || true)"
+    printf '%s\n' "${explicit:-$default_agent}"
 }
+
 
 # v9.19.0: Safe default for --bare flag (set by providers.sh, but guard for standalone sourcing)
 _BARE_OPT="${_BARE_OPT:-}"
@@ -60,12 +42,44 @@ _BARE_OPT="${_BARE_OPT:-}"
 # Role-to-agent mapping (function-based for bash 3.x compatibility)
 # Returns agent:model format for a given role
 #
-# v9.29: Role defaults refreshed based on April 2026 benchmark + forum consensus.
-#   - architect/strategist/security-reviewer → claude-opus (SWE-bench Pro 64.3, LMArena #1, MCP-Atlas +9.2)
-#   - code-reviewer/implementer              → gpt-5.5    (Terminal-Bench 75.1, edge-case review)
+# Current role defaults keep one capable owner per job and add a second model
+# only when it provides a distinct implementation/review perspective.
+#   - architect/strategist/security-reviewer → current Opus (Opus 5 on CC 2.1.219+)
+#   - code-reviewer/implementer              → current Codex (GPT-5.6 Sol)
+#   - synthesizer                            → current Sonnet (Sonnet 5 on CC 2.1.197+)
 # Opt-out:   OCTOPUS_LEGACY_ROLES=1 restores the v9.28 mapping.
 # Fallback:  consumers (see lib/agents.sh get_fallback_agent) silently downshift when the
-#            preferred CLI is unavailable (e.g. no Anthropic auth → architect → gpt-5.5).
+#            preferred CLI is unavailable (e.g. no Anthropic auth → architect → current Codex).
+
+# _octo_reviewer_flip_active — true when code review should move off the Codex
+# seat because Codex is the implementer.
+#
+# Gated on explicit consent (progressive disclosure feature `codex-reviewer-flip`,
+# or OCTOPUS_REVIEWER_FLIP as a session override) rather than on by default: it
+# shifts review spend from a Codex seat onto a premium Opus seat, which is a cost
+# change users should opt into knowingly.
+#
+# Also requires the Codex CLI to actually be present. Without it the implementer
+# falls back off Codex anyway, so flipping review away from Codex would remove
+# vendor diversity instead of creating it.
+_octo_reviewer_flip_active() {
+    command -v codex >/dev/null 2>&1 || return 1
+    # Legacy truthy/falsy values are normalized here, before consulting
+    # octo_features_choice, because that resolver only passes an env value
+    # through when it matches a declared choice ("claude"/"codex") — "1",
+    # "on", etc. would otherwise be silently dropped in favor of the ledger
+    # or manifest default, breaking an existing OCTOPUS_REVIEWER_FLIP=1.
+    case "${OCTOPUS_REVIEWER_FLIP:-}" in
+        claude|1|on|true|yes) return 0 ;;
+        codex|0|off|false|no) return 1 ;;
+    esac
+    if declare -f octo_features_choice >/dev/null 2>&1; then
+        [[ "$(octo_features_choice "codex-reviewer-flip")" == "claude" ]]
+        return $?
+    fi
+    return 1
+}
+
 get_role_mapping() {
     local role="$1"
 
@@ -73,7 +87,7 @@ get_role_mapping() {
     if [[ "${OCTOPUS_LEGACY_ROLES:-0}" == "1" ]]; then
         case "$role" in
             architect)    echo "codex:gpt-5.5" ;;
-            researcher)   echo "gemini:gemini-3.1-pro-preview" ;;
+            researcher)   echo "agy:default" ;;
             reviewer|code-reviewer|security-reviewer) echo "codex-review:gpt-5.5" ;;
             implementer|implementer-heavy) echo "codex:gpt-5.5" ;;
             synthesizer)  echo "claude:claude-sonnet-4.6" ;;
@@ -84,15 +98,27 @@ get_role_mapping() {
     fi
 
     case "$role" in
-        architect)         echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-4.7)" ;;  # Planning, UI/UX, architecture
-        researcher)        echo "gemini:gemini-3.1-pro-preview" ;;                                          # Deep investigation
-        reviewer|code-reviewer) echo "codex-review:gpt-5.5" ;;                                              # Code review, edge cases; `reviewer` = alias
-        security-reviewer) echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-4.7)" ;;  # Adversarial reasoning
-        implementer)       echo "codex:gpt-5.5" ;;                                                          # Default code generation; terminal-heavy
-        implementer-heavy) echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-4.7)" ;;  # Opt-in: greenfield/refactor/UI-heavy
-        synthesizer)       echo "claude:claude-sonnet-4.6" ;;                                               # Result aggregation
-        strategist)        echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-4.7)" ;;  # Premium synthesis
-        *)                 echo "codex:gpt-5.5" ;;                                                          # Safe default
+        architect)         echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-5)" ;;  # Planning, UI/UX, architecture
+        researcher)        echo "agy:Gemini 3.1 Pro (High)" ;;                                             # Deep investigation via Antigravity (Google seat)
+        reviewer|code-reviewer)
+            # Authorship-aware review. The static table sends both `implementer`
+            # and `code-reviewer` to Codex, so by default Codex reviews its own
+            # output — the same echo problem that makes Fable-reviews-Opus a weak
+            # check, just with the vendors swapped. When the flip is enabled and
+            # the implementer seat is Codex, review moves to the Claude opus seat
+            # so the reviewer and the author are different vendors.
+            if _octo_reviewer_flip_active; then
+                echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-5)"
+            else
+                echo "codex-review:$(codex_default_model 2>/dev/null || echo gpt-5.6-sol)"
+            fi
+            ;;
+        security-reviewer) echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-5)" ;;     # Adversarial reasoning
+        implementer)       echo "codex:$(codex_default_model 2>/dev/null || echo gpt-5.6-sol)" ;;             # Default code generation; terminal-heavy
+        implementer-heavy) echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-5)" ;;     # Opt-in: greenfield/refactor/UI-heavy
+        synthesizer)       echo "claude:$(sonnet_default_model 2>/dev/null || echo claude-sonnet-5)" ;;       # Result aggregation
+        strategist)        echo "claude-opus:$(opus_default_model 2>/dev/null || echo claude-opus-5)" ;;     # Premium synthesis
+        *)                 echo "codex:$(codex_default_model 2>/dev/null || echo gpt-5.6-sol)" ;;             # Safe default
     esac
 }
 
@@ -121,6 +147,25 @@ log_role_assignment() {
     local has_persona="no"
     [[ -n "$(get_persona_instruction "$role" 2>/dev/null)" ]] && has_persona="yes"
     log DEBUG "Using ${role} role (${agent}, persona: ${has_persona}) for: ${purpose}"
+}
+
+
+# Resolve a phase/operation override on top of the configured execution-profile
+# role. Explicit env overrides keep their existing precedence; routing.roles is
+# used before the historical caller default.
+octopus_role_profile_agent_override() {
+    local phase="$1"
+    local override_role="$2"
+    local execution_role="$3"
+    local historical_default="$4"
+    local profile_default="$historical_default"
+
+    if declare -f octopus_profile_provider >/dev/null 2>&1; then
+        profile_default=$(octopus_profile_provider "$phase" "$execution_role" "$historical_default" 2>/dev/null || printf '%s\n' "$historical_default")
+        profile_default="${profile_default:-$historical_default}"
+    fi
+
+    octopus_agent_override "$phase" "$override_role" "$profile_default"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -461,9 +506,9 @@ Output ONLY the refined prompt, nothing else."
             ;;
     esac
 
-    # Use Gemini for intelligent prompt refinement
+    # Use Antigravity for intelligent prompt refinement
     local refined
-    refined=$(run_agent_sync "gemini-fast" "$refinement_prompt" 60 2>/dev/null) || {
+    refined=$(run_agent_sync "agy" "$refinement_prompt" 60 2>/dev/null) || {
         log WARN "Prompt refinement failed, using original"
         echo "$raw_prompt"
         return
@@ -495,6 +540,331 @@ detect_image_type() {
 # Store failed tasks for retry (global array - bash 3.x compatible)
 FAILED_SUBTASKS=""  # Newline-separated list for compatibility
 
+# Print `<format-line>:<prompt-bytes>` for the current length-framed result
+# format. Stop at legacy prompt/output boundaries so legacy prompt content that
+# resembles frame metadata cannot be misclassified.
+tangle_result_prompt_frame() {
+    local result_file="$1"
+    awk '
+        /^# Prompt: / || /^# Started: / || /^## Output[[:space:]]*$/ { exit }
+        /^# Prompt-Format: octopus-length-v1$/ {
+            format_line=NR
+            if ((getline) > 0 && $0 ~ /^# Prompt-Bytes: [0-9]+$/) {
+                print format_line ":" $3
+            } else {
+                print format_line ":INVALID"
+            }
+            exit
+        }
+    ' "$result_file" 2>/dev/null || true
+}
+
+# Extract a multiline prompt from a tangle result file. Current result files
+# length-prefix the prompt so heading-shaped prompt content is unambiguous.
+# Retain the delimiter-based parser for pre-upgrade result files.
+extract_tangle_retry_prompt() {
+    local result_file="$1"
+    local prompt prompt_frame prompt_line prompt_bytes actual_bytes first_prompt_line
+    local result_dir task_id previous_task_id previous_result_file
+    prompt_frame=$(tangle_result_prompt_frame "$result_file")
+    if [[ -n "$prompt_frame" ]]; then
+        prompt_line="${prompt_frame%%:*}"
+        prompt_bytes="${prompt_frame#*:}"
+        if [[ "$prompt_line" =~ ^[1-9][0-9]*$ && "$prompt_bytes" =~ ^[0-9]+$ ]]; then
+            first_prompt_line=$((prompt_line + 2))
+            # Append a non-newline sentinel inside the substitution so Bash
+            # does not strip legal trailing newline bytes from the frame.
+            prompt=$(tail -n "+${first_prompt_line}" "$result_file" 2>/dev/null \
+                | dd bs=1 count="$prompt_bytes" 2>/dev/null; printf '\034')
+            prompt="${prompt%$'\034'}"
+            actual_bytes=$(LC_ALL=C printf '%s' "$prompt" | wc -c | tr -d '[:space:]')
+            if [[ "$actual_bytes" == "$prompt_bytes" ]]; then
+                printf '%s\n' "$prompt"
+                return 0
+            fi
+        fi
+        return 1
+    fi
+
+    prompt=$(awk '
+        /^# Prompt: / {
+            sub(/^# Prompt: /, "")
+            print
+            in_prompt=1
+            next
+        }
+        /^# Started:/ { exit }
+        in_prompt { print }
+    ' "$result_file" 2>/dev/null || true)
+
+    if [[ -n "$prompt" ]]; then
+        printf '%s\n' "$prompt"
+        return 0
+    fi
+
+    # Continuation result files can lack a # Prompt header. When retrying a
+    # failed retry artifact, fall back to the previous artifact for the same
+    # subtask so the original context is not lost.
+    result_dir=$(dirname "$result_file")
+    task_id=$(tangle_result_task_id "$result_file")
+    previous_task_id=$(tangle_previous_retry_task_id "$task_id")
+    if [[ -n "$previous_task_id" ]]; then
+        previous_result_file=$(find "$result_dir" -maxdepth 1 -type f -name "*-${previous_task_id}.md" 2>/dev/null | head -1 || true)
+        if [[ -n "$previous_result_file" && -f "$previous_result_file" && "$previous_result_file" != "$result_file" ]]; then
+            extract_tangle_retry_prompt "$previous_result_file"
+        fi
+    fi
+}
+
+# Extract provider output without mistaking heading-shaped prompt content for
+# result metadata. Length-framed files skip the exact prompt byte count before
+# scanning for the real Started/Output headings; legacy files retain the old
+# delimiter parser.
+tangle_result_output_excerpt() {
+    local result_file="$1"
+    local prompt_frame prompt_line prompt_bytes first_prompt_line
+    local -a pipeline_status
+    prompt_frame=$(tangle_result_prompt_frame "$result_file")
+    if [[ -n "$prompt_frame" ]]; then
+        prompt_line="${prompt_frame%%:*}"
+        prompt_bytes="${prompt_frame#*:}"
+        if ! [[ "$prompt_line" =~ ^[1-9][0-9]*$ && "$prompt_bytes" =~ ^[0-9]+$ ]]; then
+            return 1
+        fi
+        first_prompt_line=$((prompt_line + 2))
+        tail -n "+${first_prompt_line}" "$result_file" 2>/dev/null \
+            | dd bs=1 skip="$prompt_bytes" 2>/dev/null \
+            | awk '
+                /^# Started:/ { saw_started=1; after_started=1; next }
+                after_started && /^## Output$/ { saw_output=1; in_output=1; next }
+                after_started && /^## Status:/ { in_output=0 }
+                in_output { print }
+                END { exit(saw_started && saw_output ? 0 : 1) }
+            '
+        pipeline_status=("${PIPESTATUS[@]}")
+        [[ "${pipeline_status[0]}" -eq 0 &&
+           "${pipeline_status[1]}" -eq 0 &&
+           "${pipeline_status[2]}" -eq 0 ]]
+        return
+    fi
+
+    awk '
+        /^# Started:/ { after_started=1; next }
+        after_started && /^## Output$/ { in_output=1; next }
+        after_started && /^## Status:/ { in_output=0 }
+        in_output { print }
+    ' "$result_file" 2>/dev/null || true
+}
+tangle_result_header_value() {
+    local result_file="$1"
+    local prefix="$2"
+    awk -v prefix="$prefix" '
+        index($0, prefix) == 1 {
+            sub(prefix, "")
+            print
+            exit
+        }
+    ' "$result_file" 2>/dev/null || true
+}
+
+tangle_result_last_status() {
+    local result_file="$1"
+    awk '
+        /^## Status: / {
+            sub(/^## Status: /, "")
+            value=$0
+        }
+        END { print value }
+    ' "$result_file" 2>/dev/null || true
+}
+
+normalize_tangle_result_agent() {
+    local agent="$1"
+    printf '%s\n' "$agent" | sed 's/ (.*$//'
+}
+
+tangle_result_agent() {
+    local result_file="$1"
+    local agent base
+    agent=$(tangle_result_header_value "$result_file" "# Agent: ")
+    agent=$(normalize_tangle_result_agent "$agent")
+    if [[ -z "$agent" ]]; then
+        base=$(basename "$result_file" .md)
+        if [[ "$base" == *-tangle-* ]]; then
+            agent="${base%%-tangle-*}"
+        fi
+    fi
+    printf '%s\n' "$agent"
+}
+
+tangle_result_task_id() {
+    local result_file="$1"
+    local task_id base suffix
+    task_id=$(tangle_result_header_value "$result_file" "# Task ID: ")
+    if [[ -z "$task_id" ]]; then
+        base=$(basename "$result_file" .md)
+        if [[ "$base" == *-tangle-* ]]; then
+            suffix="${base#*-tangle-}"
+            task_id="tangle-${suffix}"
+        fi
+    fi
+    printf '%s\n' "$task_id"
+}
+
+
+tangle_previous_retry_task_id() {
+    local task_id="$1"
+    local parsed group retry_num suffix
+    parsed=$(printf '%s\n' "$task_id" | sed -n 's/^tangle-\(.*\)-retry\([0-9][0-9]*\)-\([0-9][0-9]*\)$/\1|\2|\3/p')
+    [[ -n "$parsed" ]] || return 0
+    IFS='|' read -r group retry_num suffix <<EOF_PREVIOUS_TASK_ID
+$parsed
+EOF_PREVIOUS_TASK_ID
+    if [[ "$retry_num" -le 1 ]]; then
+        printf 'tangle-%s-%s\n' "$group" "$suffix"
+    else
+        printf 'tangle-%s-retry%s-%s\n' "$group" "$((retry_num - 1))" "$suffix"
+    fi
+}
+
+tangle_result_workdir() {
+    local result_file="$1"
+    awk '
+        /^workdir: / {
+            sub(/^workdir: /, "")
+            print
+            exit
+        }
+    ' "$result_file" 2>/dev/null || true
+}
+
+tangle_result_transcript_files() {
+    local result_file="$1"
+    local dir base suffix candidate
+    dir=$(dirname "$result_file")
+    base=$(basename "$result_file" .md)
+    if [[ "$base" == *-tangle-* ]]; then
+        suffix="${base#*-tangle-}"
+        for candidate in \
+            "$dir/.tmp-tangle-${suffix}.err" \
+            "$dir/.tmp-tangle-${suffix}.out" \
+            "$dir/.raw-tangle-${suffix}.out"; do
+            [[ -f "$candidate" ]] && printf '%s\n' "$candidate"
+        done
+    fi
+}
+
+tangle_retry_error_diagnostics() {
+    local result_file="$1"
+    local files diagnostics
+    files="$result_file"
+    files="$files"$'\n'"$(tangle_result_transcript_files "$result_file")"
+    diagnostics=$(printf '%s\n' "$files" | while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        grep -nEi '(^|[^A-Za-z])(SyntaxError|ReferenceError|TypeError|Error:|Cannot find module|Invalid or unexpected token|FAIL:|START FAILED|FATAL|exited [1-9]|EADDRINUSE|Permission denied|No such file|cat:|timeout|timedOut|missing-done|Empty output)' "$file" 2>/dev/null | sed "s#^#$file:#"
+    done | tail -80)
+    printf '%s\n' "$diagnostics"
+}
+
+tangle_retry_worktree_diagnostics() {
+    local result_file="$1"
+    local workdir changed_files suspicious
+    workdir=$(tangle_result_workdir "$result_file")
+    [[ -n "$workdir" && -d "$workdir/.git" ]] || return 0
+
+    {
+        echo "Worktree status:"
+        git -C "$workdir" status --short 2>/dev/null | sed -n '1,80p' || true
+        echo ""
+        echo "Diff stat:"
+        git -C "$workdir" diff --stat 2>/dev/null | sed -n '1,80p' || true
+    }
+
+    changed_files=$(git -C "$workdir" status --short 2>/dev/null | awk '{print $NF}' | sed -n '1,120p' || true)
+    suspicious=$(printf '%s\n' "$changed_files" | while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        if [[ "$path" != *.js && "$path" != *.mjs && "$path" != *.cjs && "$path" != *.ts && "$path" != *.mts && "$path" != *.cts ]]; then
+            continue
+        fi
+        [[ -f "$workdir/$path" ]] || continue
+        grep -nE '\\\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$workdir/$path" 2>/dev/null | sed "s#^#$path:#" | sed -n '1,12p'
+    done | sed -n '1,40p')
+    if [[ -n "$suspicious" ]]; then
+        echo ""
+        echo "Suspicious literal template placeholders in changed JS/TS files:"
+        printf '%s\n' "$suspicious"
+    fi
+}
+
+tangle_retry_diagnostics() {
+    local result_file="$1"
+    local error_diagnostics worktree_diagnostics
+    error_diagnostics=$(tangle_retry_error_diagnostics "$result_file")
+    worktree_diagnostics=$(tangle_retry_worktree_diagnostics "$result_file")
+
+    if [[ -z "$error_diagnostics" && -z "$worktree_diagnostics" ]]; then
+        printf '<no additional diagnostics captured>\n'
+        return 0
+    fi
+
+    if [[ -n "$error_diagnostics" ]]; then
+        echo "Transcript/error indicators:"
+        printf '%s\n' "$error_diagnostics"
+    fi
+    if [[ -n "$worktree_diagnostics" ]]; then
+        [[ -n "$error_diagnostics" ]] && echo ""
+        echo "Worktree/diff indicators:"
+        printf '%s\n' "$worktree_diagnostics"
+    fi
+}
+
+# Build a retry prompt that explains the failed output/completion quality while
+# keeping the same provider path. This is deliberately not a provider fallback:
+# empty/partial output, missing completion markers, plan-only responses and
+# missing worktree evidence should get feedback and another attempt first.
+build_tangle_retry_feedback_prompt() {
+    local result_file="$1"
+    local original_prompt="$2"
+    local task_id status role agent output_excerpt diagnostics
+
+    task_id=$(tangle_result_task_id "$result_file")
+    status=$(tangle_result_last_status "$result_file")
+    role=$(tangle_result_header_value "$result_file" "# Role: ")
+    agent=$(tangle_result_agent "$result_file")
+    output_excerpt=$(tangle_result_output_excerpt "$result_file" || true)
+    output_excerpt=$(printf '%s\n' "$output_excerpt" | tail -80 || true)
+    diagnostics=$(tangle_retry_diagnostics "$result_file")
+
+    cat <<EOF
+RETRY FEEDBACK:
+The previous attempt for ${task_id:-this tangle subtask} failed output/quality validation.
+Failure status: ${status:-unknown}
+Previous provider/agent: ${agent:-unknown}
+Previous role: ${role:-unknown}
+
+This is an output/completion-quality retry, not a provider availability fallback.
+Use the same provider/role path for this retry unless the operator explicitly configured OCTOPUS_TANGLE_RETRY_SWITCH_PROVIDER=true.
+
+Retry rules:
+- Do not restart the whole roadmap.
+- Complete only the failed assigned subtask.
+- Use the existing worktree state and preserve successful edits from other subtasks.
+- If this is a [CODING] task, edit repository files directly; do not only describe a plan.
+- Finish with explicit sections: ## Worktree Changes, ## Integration Evidence, and ## Verification.
+- If a boundary blocks completion, report the blocker explicitly instead of returning empty or partial output.
+
+${TANGLE_HARD_GATE_RETRY_FEEDBACK:-}
+Previous output excerpt, if any:
+${output_excerpt:-<no useful output captured>}
+
+Observed diagnostics from transcript and worktree:
+${diagnostics:-<no additional diagnostics captured>}
+
+Original subtask prompt:
+${original_prompt}
+EOF
+}
+
 # Retry failed subtasks
 retry_failed_subtasks() {
     local task_group="$1"
@@ -508,7 +878,11 @@ retry_failed_subtasks() {
     # Count tasks (newline-separated)
     local task_count
     task_count=$(echo "$FAILED_SUBTASKS" | grep -c .)
-    log INFO "Retrying $task_count failed subtasks (attempt $retry_count/${MAX_QUALITY_RETRIES})..."
+    local retry_limit_display="${MAX_QUALITY_RETRIES:-${CLAUDE_OCTOPUS_MAX_RETRIES:-3}}"
+    if declare -f quality_retry_limit >/dev/null 2>&1; then
+        retry_limit_display=$(quality_retry_limit)
+    fi
+    log INFO "Retrying $task_count failed subtasks (attempt $retry_count/${retry_limit_display})..."
 
     local pids=""
     local subtask_num=0
@@ -518,21 +892,61 @@ retry_failed_subtasks() {
     while IFS= read -r failed_task; do
         [[ -z "$failed_task" ]] && continue
 
-        # Parse failed task info (format: agent:prompt)
-        local agent="${failed_task%%:*}"
-        local prompt="${failed_task#*:}"
+        # Parse failed task info. New result-file entries preserve multiline prompts
+        # and carry failure status; the legacy agent:prompt format remains supported.
+        local agent=""
+        local prompt=""
+        local role="implementer"
+        local result_file=""
+        local result_task_id=""
+        local result_task_suffix=""
+        local retry_from_result=false
+        if [[ "$failed_task" == result:* ]]; then
+            result_file="${failed_task#result:}"
+            agent=$(tangle_result_agent "$result_file")
+            role=$(tangle_result_header_value "$result_file" "# Role: ")
+            [[ -z "$role" ]] && role="implementer"
+            result_task_id=$(tangle_result_task_id "$result_file")
+            result_task_suffix="${result_task_id##*-}"
+            [[ "$result_task_suffix" =~ ^[0-9]+$ ]] || result_task_suffix="$subtask_num"
+            prompt=$(extract_tangle_retry_prompt "$result_file")
+            if [[ -z "$prompt" && -n "${WORKSPACE_DIR:-}" && -n "$result_task_id" ]]; then
+                local retry_instruction_file="${WORKSPACE_DIR}/agent-teams/${result_task_id}.json"
+                if [[ -f "$retry_instruction_file" ]] && command -v jq >/dev/null 2>&1; then
+                    prompt=$(jq -r '.prompt // empty' "$retry_instruction_file" 2>/dev/null || true)
+                fi
+            fi
+            prompt=$(build_tangle_retry_feedback_prompt "$result_file" "$prompt")
+            retry_from_result=true
+        else
+            # Legacy format: agent:prompt
+            agent="${failed_task%%:*}"
+            prompt="${failed_task#*:}"
+        fi
 
-        # v8.18.0: Lockout protocol - reroute to alternate provider if locked
-        if is_provider_locked "$agent"; then
+        # v8.18.0: Provider lockout was designed for provider availability failures.
+        # For result-file retries, keep the same provider by default and send feedback;
+        # only switch if an operator explicitly opts in.
+        if [[ "$retry_from_result" == "true" ]]; then
+            if [[ "${OCTOPUS_TANGLE_RETRY_SWITCH_PROVIDER:-false}" == "true" ]] && is_provider_locked "$agent"; then
+                local alt_agent
+                alt_agent=$(get_alternate_provider "$agent")
+                log WARN "Provider $agent is locked out, rerouting retry to $alt_agent"
+                agent="$alt_agent"
+            fi
+        elif is_provider_locked "$agent"; then
             local alt_agent
             alt_agent=$(get_alternate_provider "$agent")
             log WARN "Provider $agent is locked out, rerouting retry to $alt_agent"
             agent="$alt_agent"
         fi
 
-        # Determine role based on agent type for retries
-        local role="implementer"
-        [[ "$agent" == "gemini" || "$agent" == "gemini-fast" ]] && role="researcher"
+        # Determine role based on agent type for legacy retries. Result-file retries
+        # keep the role captured in the failed artifact.
+        if [[ "$retry_from_result" != "true" ]]; then
+            role="implementer"
+            [[ "$agent" == "gemini" || "$agent" == "gemini-fast" ]] && role="researcher"
+        fi
 
         # v8.19.0: Search for similar errors and inject context into retry prompt
         local error_keyword
@@ -547,13 +961,18 @@ $prompt"
         fi
 
         # v8.30: Attempt agent continuation/resume before cold spawn
-        local retry_task_id="tangle-${task_group}-retry${retry_count}-${subtask_num}"
+        local retry_suffix="$subtask_num"
+        [[ "$retry_from_result" == "true" && -n "$result_task_suffix" ]] && retry_suffix="$result_task_suffix"
+        local retry_task_id="tangle-${task_group}-retry${retry_count}-${retry_suffix}"
         local _did_resume=false
         if [[ "$SUPPORTS_CONTINUATION" == "true" ]]; then
-            # Look up agent_id from the original task (subtask_num maps to original)
-            local orig_task_id="tangle-${task_group}-${subtask_num}"
-            if [[ $retry_count -gt 1 ]]; then
-                orig_task_id="tangle-${task_group}-retry$((retry_count - 1))-${subtask_num}"
+            # Result-file retries resume the exact failed artifact. Legacy retries
+            # retain the historical loop-index mapping.
+            local orig_task_id="tangle-${task_group}-${retry_suffix}"
+            if [[ "$retry_from_result" == "true" && -n "$result_task_id" ]]; then
+                orig_task_id="$result_task_id"
+            elif [[ $retry_count -gt 1 ]]; then
+                orig_task_id="tangle-${task_group}-retry$((retry_count - 1))-${retry_suffix}"
             fi
             local prev_agent_id
             prev_agent_id=$(bridge_get_agent_id "$orig_task_id" 2>/dev/null) || true
@@ -659,7 +1078,7 @@ MEMORY_INJECTION_ENABLED="${OCTOPUS_MEMORY_INJECTION:-true}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # AGENT TEAMS CONDITIONAL MIGRATION (v8.5 - Claude Code v2.1.34+)
 # Claude-to-Claude agents can use native Agent Teams instead of bash subprocesses
-# Codex and Gemini remain bash-spawned (external CLIs)
+# External providers remain bash-spawned CLIs.
 # ═══════════════════════════════════════════════════════════════════════════════
 OCTOPUS_AGENT_TEAMS="${OCTOPUS_AGENT_TEAMS:-auto}"  # auto | native | legacy
 
@@ -680,6 +1099,20 @@ resume_agent() {
     # Gate: continuation must be supported
     if [[ "$SUPPORTS_CONTINUATION" != "true" ]]; then
         log "DEBUG" "resume_agent: SUPPORTS_CONTINUATION=false, falling back"
+        return 1
+    fi
+
+    # Native continuation has the same Claude Code limitation as a fresh
+    # teammate: plugins receive no PID or cancellation handle. A bounded retry
+    # must cold-spawn through the supervised subprocess instead of escaping its
+    # timeout budget via SendMessage.
+    if declare -F octopus_agent_teams_can_honor_timeout >/dev/null 2>&1; then
+        if ! octopus_agent_teams_can_honor_timeout "${TIMEOUT:-0}"; then
+            log "DEBUG" "resume_agent: bounded dispatch requires the supervised provider subprocess"
+            return 1
+        fi
+    elif [[ "${TIMEOUT:-0}" =~ ^[1-9][0-9]*$ ]]; then
+        log "DEBUG" "resume_agent: timeout policy unavailable; refusing bounded native continuation"
         return 1
     fi
 

@@ -164,7 +164,7 @@ After all scenarios, output:
 
     # Cross-model holdout evaluation for objectivity
     local eval_result
-    eval_result=$(run_agent_sync "gemini" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
+    eval_result=$(run_agent_sync "agy" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
 
     if [[ -z "$eval_result" ]]; then
         eval_result=$(run_agent_sync "codex" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
@@ -189,9 +189,9 @@ After all scenarios, output:
     if [[ -z "$holdout_score" ]]; then
         # Fallback: count PASS/PARTIAL/FAIL verdicts
         local pass_count partial_count fail_count total_count
-        pass_count=$(echo "$eval_result" | grep -ci 'verdict.*pass' || echo "0")
-        partial_count=$(echo "$eval_result" | grep -ci 'verdict.*partial' || echo "0")
-        fail_count=$(echo "$eval_result" | grep -ci 'verdict.*fail' || echo "0")
+        pass_count=$(echo "$eval_result" | grep -ci 'verdict.*pass') || pass_count=0
+        partial_count=$(echo "$eval_result" | grep -ci 'verdict.*partial') || partial_count=0
+        fail_count=$(echo "$eval_result" | grep -ci 'verdict.*fail') || fail_count=0
         total_count=$(( pass_count + partial_count + fail_count ))
 
         if [[ $total_count -gt 0 ]]; then
@@ -258,8 +258,11 @@ factory_run() {
     # ── Phase 1: Parse spec ──────────────────────────────────────────────
     echo -e "${YELLOW}[1/7]${NC} Parsing factory spec..."
     local satisfaction_target
-    satisfaction_target=$(parse_factory_spec "$spec_path" "$run_dir")
-    if [[ $? -ne 0 || -z "$satisfaction_target" ]]; then
+    if ! satisfaction_target=$(parse_factory_spec "$spec_path" "$run_dir" "$maturity_json" "$holdout_ratio" "$max_retries"); then
+        log ERROR "Failed to parse factory spec"
+        return 1
+    fi
+    if [[ -z "$satisfaction_target" ]]; then
         log ERROR "Failed to parse factory spec"
         return 1
     fi
@@ -298,7 +301,7 @@ factory_run() {
         return 1
     fi
     local scenario_count
-    scenario_count=$(grep -c '### Scenario' "$run_dir/scenarios-all.md" || echo "0")
+    scenario_count=$(grep -c '### Scenario' "$run_dir/scenarios-all.md") || scenario_count=0
     echo -e "${GREEN}  ✓${NC} Generated $scenario_count scenarios"
 
     # ── Phase 3: Split holdout ───────────────────────────────────────────
@@ -306,8 +309,8 @@ factory_run() {
     echo -e "${YELLOW}[3/7]${NC} Splitting holdout scenarios (${holdout_ratio})..."
     split_holdout_scenarios "$run_dir/scenarios-all.md" "$run_dir" "$holdout_ratio"
     local visible_count holdout_count
-    visible_count=$(grep -c '### Scenario' "$run_dir/scenarios-visible.md" 2>/dev/null || echo "0")
-    holdout_count=$(grep -c '### Scenario' "$run_dir/scenarios-holdout.md" 2>/dev/null || echo "0")
+    visible_count=$(grep -c '### Scenario' "$run_dir/scenarios-visible.md" 2>/dev/null) || visible_count=0
+    holdout_count=$(grep -c '### Scenario' "$run_dir/scenarios-holdout.md" 2>/dev/null) || holdout_count=0
     echo -e "${GREEN}  ✓${NC} Visible: $visible_count, Holdout: $holdout_count"
 
     # ── Phase 4: Embrace workflow ────────────────────────────────────────

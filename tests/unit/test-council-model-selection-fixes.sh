@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# Regression tests for PR #600 (agy model-validation stdin leak, the
+# council_pick_provider diversity short-circuit) and issue #599 problem 3
+# (roster entries recording the persona's pinned model instead of the model
+# dispatch actually resolves for the seated provider). Every test fails on
+# the corresponding pre-fix code (verified) — they are not string greps.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "council model selection fixes (#600)"
+
+TEST_TMP_DIR="/tmp/octopus-tests-$$"
+trap 'rm -rf "$TEST_TMP_DIR"' EXIT
+
+# ── agy stdin leak ─────────────────────────────────────────────────────────
+# The real agy CLI consumes stdin. When validate_agy_model_name ran
+# `agy models` inside a command substitution with the parent's stdin attached
+# to a prompt pipe, agy ate the prompt and returned chat output instead of a
+# model list, so valid pins were rejected. The mock reproduces that behavior:
+# with data on stdin it returns garbage; with empty stdin (the </dev/null fix)
+# it returns the model list.
+STUB_BIN="$TEST_TMP_DIR/bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/agy" <<'MOCK_AGY'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "models" ]]; then
+    stdin_content="$(cat)"
+    if [[ -n "$stdin_content" ]]; then
+        echo "I received your prompt: $stdin_content"
+        exit 0
+    fi
+    printf '%s\n' \
+        'Gemini 3.5 Flash (Low)' \
+        'Claude Sonnet 4.6 (Thinking)'
+    exit 0
+fi
+exit 0
+MOCK_AGY
+chmod 755 "$STUB_BIN/agy"
+
+test_case "agy model pin validates even when parent stdin is a pipe"
+if printf 'council prompt payload' | env PATH="$STUB_BIN:$PATH" bash -c '
+    log() { :; }
+    source "'"$PROJECT_ROOT"'/scripts/lib/model-resolver.sh" 2>/dev/null
+    validate_agy_model_name "Gemini 3.5 Flash (Low)"
+' 2>/dev/null; then
+    test_pass
+else
+    test_fail "pin rejected under piped stdin — agy models consumed the prompt (stdin leak regressed)"
+fi
+
+test_case "agy model pin still rejects unknown labels"
+if printf 'payload' | env PATH="$STUB_BIN:$PATH" bash -c '
+    log() { :; }
+    source "'"$PROJECT_ROOT"'/scripts/lib/model-resolver.sh" 2>/dev/null
+    validate_agy_model_name "Nonexistent Model (Ultra)"
+' 2>/dev/null; then
+    test_fail "unknown model label was accepted"
+else
+    test_pass
+fi
+
+# ── "cannot validate" != "invalid" ─────────────────────────────────────────
+# A restricted sandbox (or an offline host) can make `agy models` return an
+# empty catalog. Treating that like a bad pin turned OCTOPUS_AGY_MODEL resolution
+# into a spawn-time abort even when the pin was valid. Validation must fail OPEN
+# when the catalog is unreachable (agy still rejects a genuinely bad model at
+# dispatch), and only fail closed under an explicit strict opt-in.
+STUB_EMPTY="$TEST_TMP_DIR/bin-empty"
+mkdir -p "$STUB_EMPTY"
+cat > "$STUB_EMPTY/agy" <<'MOCK_AGY_EMPTY'
+#!/usr/bin/env bash
+# Offline/sandboxed: `agy models` yields no catalog.
+[[ "${1:-}" == "models" ]] && exit 0
+exit 0
+MOCK_AGY_EMPTY
+chmod 755 "$STUB_EMPTY/agy"
+
+test_case "agy pin fails open when the catalog is unreachable (sandboxed/offline)"
+if printf 'payload' | env "PATH=$STUB_EMPTY:$PATH" bash -c '
+    log() { :; }
+    source "'"$PROJECT_ROOT"'/scripts/lib/model-resolver.sh" 2>/dev/null
+    validate_agy_model_name "Gemini 3.5 Flash (Low)"
+' 2>/dev/null; then
+    test_pass
+else
+    test_fail "unreachable catalog hard-failed validation instead of failing open"
+fi
+
+test_case "OCTOPUS_AGY_MODEL_STRICT=1 restores fail-closed on an unreachable catalog"
+if printf 'payload' | env "PATH=$STUB_EMPTY:$PATH" "OCTOPUS_AGY_MODEL_STRICT=1" bash -c '
+    log() { :; }
+    source "'"$PROJECT_ROOT"'/scripts/lib/model-resolver.sh" 2>/dev/null
+    validate_agy_model_name "Gemini 3.5 Flash (Low)"
+' 2>/dev/null; then
+    test_fail "strict mode accepted a pin it could not validate"
+else
+    test_pass
+fi
+
+# ── council diversity short-circuit ────────────────────────────────────────
+pick_provider() {
+    local roster_json="$1" preferred="$2"
+    bash -c '
+        log() { :; }
+        source "'"$PROJECT_ROOT"'/scripts/lib/council.sh" 2>/dev/null
+        COUNCIL_ROSTER_JSON="$1"
+        COUNCIL_PROVIDER_STATUS_JSON="{\"claude\":\"host-native\",\"opencode\":\"available\"}"
+        COUNCIL_PROVIDERS="claude,opencode"
+        council_pick_provider "$2"
+    ' _ "$roster_json" "$preferred"
+}
+
+test_case "preferred provider passed over when its model family already holds a seat"
+out=$(pick_provider '[{"persona":"strategy-analyst","provider":"claude","provider_org":"anthropic"}]' claude)
+if [[ "$out" == "opencode" ]]; then
+    test_pass
+else
+    test_fail "expected opencode (anthropic model family already seated), got '$out'"
+fi
+
+test_case "preferred provider kept when its model family is not yet seated"
+out=$(pick_provider '[]' claude)
+if [[ "$out" == "claude" ]]; then
+    test_pass
+else
+    test_fail "expected claude on empty roster, got '$out'"
+fi
+
+test_case "falls back to an available provider when every model family is already seated"
+out=$(bash -c '
+    log() { :; }
+    source "'"$PROJECT_ROOT"'/scripts/lib/council.sh" 2>/dev/null
+    COUNCIL_ROSTER_JSON="[{\"persona\":\"a\",\"provider\":\"claude\",\"provider_org\":\"anthropic\"},{\"persona\":\"b\",\"provider\":\"opencode\",\"provider_org\":\"opencode\"}]"
+    COUNCIL_PROVIDER_STATUS_JSON="{\"claude\":\"host-native\",\"opencode\":\"available\"}"
+    COUNCIL_PROVIDERS="claude,opencode"
+    council_pick_provider claude
+')
+if [[ "$out" == "claude" || "$out" == "opencode" ]]; then
+    test_pass
+else
+    test_fail "expected an available provider from the any-available fallback, got '$out'"
+fi
+
+# ── roster model lineage (issue #599 problem 3) ────────────────────────────
+# council_roster_entry_json recorded council_persona_model (the persona's
+# configured pin) even when seating placed the persona on a different
+# provider, so summary.json/config.json could label a seat with a model it
+# never ran — and benchmark_signal/score were computed against that wrong
+# model. Post-fix the entry records the same resolution dispatch uses
+# (get_agent_model provider/council/persona), with the persona pin kept only
+# as the fallback when the resolver isn't loaded. The stubs isolate the
+# behavior from the repo's live agents/config.yaml and providers.json.
+# The resolver stub records its received arguments to a file (the stub runs in
+# the bash -c subshell, so a variable would not survive back to this shell) —
+# letting the call-site's argument order/values be asserted, not just the
+# return-value plumbing.
+GET_AGENT_MODEL_ARGS_FILE="$TEST_TMP_DIR/get-agent-model-args.txt"
+roster_entry_model() {
+    local persona="$1" provider="$2" mode="$3"
+    bash -c '
+        log() { :; }
+        source "'"$PROJECT_ROOT"'/scripts/lib/council.sh" 2>/dev/null
+        COUNCIL_ROSTER_JSON="[]"
+        council_agent_config_value() {
+            [[ "$2" == "model" ]] && echo "persona-pinned-model"
+            return 0
+        }
+        case "$3" in
+            *resolver-empty*) get_agent_model() { return 1; } ;;
+            *resolver*) get_agent_model() {
+                printf "%s|%s|%s\n" "$1" "$2" "$3" > "'"$GET_AGENT_MODEL_ARGS_FILE"'"
+                echo "dispatch-resolved-model"
+            } ;;
+        esac
+        case "$3" in
+            *agy*) agy_current_model() { echo "agy-actual-model"; } ;;
+        esac
+        council_roster_entry_json "$1" "$2" | jq -r .model
+    ' _ "$persona" "$provider" "$mode"
+}
+
+test_case "seat records the dispatch-resolved model, not the persona pin"
+rm -f "$GET_AGENT_MODEL_ARGS_FILE"
+out=$(roster_entry_model security-auditor opencode resolver)
+if [[ "$out" == "dispatch-resolved-model" ]]; then
+    test_pass
+else
+    test_fail "roster recorded '$out' — persona pin leaked into the seat artifact (lineage regressed)"
+fi
+
+test_case "resolver is called with the seated provider, the council phase, and the persona as role"
+# Pins the call-site contract: get_agent_model(provider, "council", persona) —
+# the same tuple run_agent_sync resolves with, which is the symmetry the fix
+# claims. An argument-order regression would silently resolve the wrong model.
+if [[ "$(cat "$GET_AGENT_MODEL_ARGS_FILE" 2>/dev/null)" == "opencode|council|security-auditor" ]]; then
+    test_pass
+else
+    test_fail "expected opencode|council|security-auditor, got '$(cat "$GET_AGENT_MODEL_ARGS_FILE" 2>/dev/null)'"
+fi
+
+test_case "persona pin remains the fallback when the dispatch resolver is not loaded"
+out=$(roster_entry_model security-auditor opencode plain)
+if [[ "$out" == "persona-pinned-model" ]]; then
+    test_pass
+else
+    test_fail "expected persona-pinned-model without a resolver, got '$out'"
+fi
+
+test_case "persona pin is used when the loaded resolver fails or returns empty"
+out=$(roster_entry_model security-auditor opencode resolver-empty)
+if [[ "$out" == "persona-pinned-model" ]]; then
+    test_pass
+else
+    test_fail "expected persona-pinned-model when resolver returns non-zero/empty, got '$out'"
+fi
+
+test_case "agy seat still records agy_current_model, not the generic resolver"
+out=$(roster_entry_model backend-architect agy "resolver agy")
+if [[ "$out" == "agy-actual-model" ]]; then
+    test_pass
+else
+    test_fail "expected agy-actual-model (agy carve-out), got '$out'"
+fi
+
+test_summary

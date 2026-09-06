@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+
+test_suite "Command Code Harness"
+
+FIXTURE_DIR="$TEST_TMP_DIR/commandcode"
+MOCK_ARGS="$FIXTURE_DIR/args"
+mkdir -p "$FIXTURE_DIR/bin"
+cat > "$FIXTURE_DIR/bin/command-code" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$MOCK_ARGS"
+cat > "${MOCK_STDIN:-/dev/null}"
+printf '%s\n' '{"type":"event","event":{"type":"tool_running"}}'
+printf '%s\n' "${MOCK_RESULT:-{\"type\":\"result\",\"subtype\":\"success\",\"sessionId\":\"abc\",\"finalText\":\"HARNESS_OK\"}}"
+exit "${MOCK_RC:-0}"
+EOF
+chmod +x "$FIXTURE_DIR/bin/command-code"
+unset OCTOPUS_COMMANDCODE_BIN MOCK_RESULT MOCK_RC
+export PATH="$FIXTURE_DIR/bin:$PATH" MOCK_ARGS MOCK_STDIN="$FIXTURE_DIR/stdin"
+
+test_case "extracts final text and passes plan-mode arguments"
+out=$(printf 'inspect only' | "$PROJECT_ROOT/scripts/helpers/commandcode-exec.sh" deepseek/deepseek-v4-pro plan)
+if [[ "$out" == "HARNESS_OK" ]] && grep -Fx -- '--permission-mode' "$MOCK_ARGS" >/dev/null && grep -Fx -- 'plan' "$MOCK_ARGS" >/dev/null && grep -Fx -- '--output-format' "$MOCK_ARGS" >/dev/null && grep -Fx -- 'json' "$MOCK_ARGS" >/dev/null && ! grep -Fx -- '--max-turns' "$MOCK_ARGS" >/dev/null && ! grep -Fx -- 'inspect only' "$MOCK_ARGS" >/dev/null && [[ "$(cat "$MOCK_STDIN")" == "inspect only" ]]; then
+    test_pass
+else
+    test_fail "expected finalText and plan/json arguments without an Octopus max-turns override"
+fi
+
+test_case "uses yolo only when explicitly selected"
+out=$(printf 'implement' | "$PROJECT_ROOT/scripts/helpers/commandcode-exec.sh" minimaxai/minimax-m3 yolo)
+if [[ "$out" == "HARNESS_OK" ]] && grep -Fx -- '--yolo' "$MOCK_ARGS" >/dev/null && grep -Fx -- 'minimaxai/minimax-m3' "$MOCK_ARGS" >/dev/null; then
+    test_pass
+else
+    test_fail "expected explicit yolo and selected model"
+fi
+
+test_case "returns non-zero for a structured error result"
+export MOCK_RESULT='{"type":"result","subtype":"error","error":{"message":"denied"}}' MOCK_RC=0
+if printf 'fail' | "$PROJECT_ROOT/scripts/helpers/commandcode-exec.sh" deepseek/deepseek-v4-pro plan >/dev/null 2>&1; then
+    test_fail "expected structured error to fail"
+else
+    test_pass
+fi
+unset MOCK_RESULT MOCK_RC
+
+test_case "preserves non-zero CLI exit status"
+export MOCK_RESULT='{"type":"result","subtype":"error","error":{"message":"failed"}}' MOCK_RC=7
+set +e
+printf 'fail' | "$PROJECT_ROOT/scripts/helpers/commandcode-exec.sh" deepseek/deepseek-v4-pro plan >/dev/null 2>&1
+rc=$?
+set -e
+unset MOCK_RESULT MOCK_RC
+if [[ "$rc" -eq 7 ]]; then test_pass; else test_fail "expected exit 7, got $rc"; fi
+
+test_case "dispatch selects yolo for implementers and plan for verifiers"
+export PLUGIN_DIR="$PROJECT_ROOT" OCTOPUS_PLATFORM=Linux HOME="$FIXTURE_DIR/home"
+mkdir -p "$HOME/.claude-octopus/config"
+# dispatch.sh's log() lives in orchestrate.sh, which this harness never
+# sources; stub it so ERROR-path assertions can see the emitted text
+# instead of a bare "log: command not found".
+log() { local level="$1"; shift; printf '%s: %s\n' "$level" "$*" >&2; }
+source "$PROJECT_ROOT/scripts/lib/validation.sh"
+source "$PROJECT_ROOT/scripts/lib/model-cache-path.sh"
+source "$PROJECT_ROOT/scripts/lib/model-resolver.sh"
+source "$PROJECT_ROOT/scripts/lib/provider-routing.sh"
+source "$PROJECT_ROOT/scripts/lib/dispatch.sh"
+export OCTOPUS_COMMANDCODE_MODEL=deepseek/deepseek-v4-pro
+impl_cmd="$(get_agent_command commandcode tangle implementer)"
+verify_cmd="$(get_agent_command commandcode verify verifier)"
+if [[ "$impl_cmd" == *'commandcode-exec.sh deepseek/deepseek-v4-pro yolo' ]] && [[ "$verify_cmd" == *'commandcode-exec.sh deepseek/deepseek-v4-pro plan' ]]; then
+    test_pass
+else
+    test_fail "unexpected role permission mapping"
+fi
+
+# Issue #710: OCTOPUS_COMMANDCODE_PERMISSION_MODE was accepted by
+# commandcode-exec.sh but dispatch always passed an explicit positional
+# argument, so the env var was dead on the dispatch path.
+test_case "OCTOPUS_COMMANDCODE_PERMISSION_MODE override is honoured on the dispatch path"
+override_mismatch=""
+for mode in plan default dont-ask auto-accept yolo; do
+    export OCTOPUS_COMMANDCODE_PERMISSION_MODE="$mode"
+    override_cmd="$(get_agent_command commandcode tangle implementer)"
+    if [[ "$override_cmd" != *"commandcode-exec.sh deepseek/deepseek-v4-pro ${mode}" ]]; then
+        override_mismatch="mode=${mode} got: ${override_cmd}"
+        break
+    fi
+done
+unset OCTOPUS_COMMANDCODE_PERMISSION_MODE
+if [[ -z "$override_mismatch" ]]; then
+    test_pass
+else
+    test_fail "expected env override to win over the role-derived default, ${override_mismatch}"
+fi
+
+test_case "invalid OCTOPUS_COMMANDCODE_PERMISSION_MODE is rejected and falls back to the role default"
+export OCTOPUS_COMMANDCODE_PERMISSION_MODE=danger-full-access
+error_log="$FIXTURE_DIR/invalid-commandcode-permission-mode.err"
+invalid_cmd="$(get_agent_command commandcode tangle implementer 2>"$error_log")"
+unset OCTOPUS_COMMANDCODE_PERMISSION_MODE
+if [[ "$invalid_cmd" == *'commandcode-exec.sh deepseek/deepseek-v4-pro yolo' ]] &&
+   grep -F -- 'ERROR: Invalid OCTOPUS_COMMANDCODE_PERMISSION_MODE value:' "$error_log" >/dev/null; then
+    test_pass
+else
+    test_fail "expected fallback to role default (yolo) with logged error, got: $invalid_cmd"
+fi
+
+test_case "override dispatch command passes validate_agent_command"
+source "$PROJECT_ROOT/scripts/lib/utils.sh"
+export OCTOPUS_COMMANDCODE_PERMISSION_MODE=auto-accept
+override_valid_cmd="$(get_agent_command commandcode verify verifier)"
+unset OCTOPUS_COMMANDCODE_PERMISSION_MODE
+if [[ "$override_valid_cmd" != *' auto-accept' ]]; then
+    test_fail "expected auto-accept override to be forwarded, got: $override_valid_cmd"
+elif validate_agent_command "$override_valid_cmd" >/dev/null 2>&1; then
+    test_pass
+else
+    test_fail "override dispatch command rejected by validate_agent_command"
+fi
+
+# The command dispatch actually returns must survive validate_agent_command, or
+# every commandcode dispatch aborts the phase before the CLI is ever invoked —
+# the same failure mode as #697 (copilot-exec.sh) and #705 (agy-exec.sh). Asserting
+# the shape of get_agent_command's output is not enough; validate it.
+test_case "dispatch commands for commandcode pass validate_agent_command"
+source "$PROJECT_ROOT/scripts/lib/utils.sh"
+if validate_agent_command "$impl_cmd" >/dev/null 2>&1 && validate_agent_command "$verify_cmd" >/dev/null 2>&1; then
+    test_pass
+else
+    test_fail "commandcode dispatch command rejected by validate_agent_command"
+fi
+
+test_case "provider environment forwards only dedicated controls"
+export COMMAND_CODE_API_KEY=test-key CMD_ZDR=1 OCTOPUS_COMMANDCODE_BIN=/custom/cmd
+build_provider_env commandcode
+joined=" ${PROVIDER_ENV_ARRAY[*]} "
+if [[ "$joined" == *' COMMAND_CODE_API_KEY=test-key '* ]] && [[ "$joined" == *' CMD_ZDR=1 '* ]] && [[ "$joined" == *' OCTOPUS_COMMANDCODE_BIN=/custom/cmd '* ]]; then
+    test_pass
+else
+    test_fail "missing isolated Command Code environment entries"
+fi
+
+test_summary

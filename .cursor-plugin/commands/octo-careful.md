@@ -1,5 +1,6 @@
 ---
-description: "\"[advanced] Activate destructive command warnings for the session\""
+description: "[advanced] Activate destructive command warnings for the session"
+disable-model-invocation: true
 ---
 
 # Careful Mode - Destructive Command Warnings
@@ -41,13 +42,13 @@ rm -f "/tmp/octopus-careful-${_OCTO_SESSION_ID}.txt"
 
 ### Usage
 
-```
+```text
 /octo:careful
 ```
 
 After activation, confirm to the user:
 
-```
+```text
 ⚠️ Careful mode activated. Destructive commands will now require confirmation before executing.
 ```
 

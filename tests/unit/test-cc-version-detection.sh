@@ -69,6 +69,63 @@ for flag in SUPPORTS_MCP_ELICITATION SUPPORTS_WORKTREE_SPARSE_PATHS \
     fi
 done
 
+if grep -c 'SUPPORTS_EFFORT_CLI_FLAG=false' "$ORCH" >/dev/null 2>&1; then
+    pass "Declaration: SUPPORTS_EFFORT_CLI_FLAG"
+else
+    fail "Declaration: SUPPORTS_EFFORT_CLI_FLAG" "missing runtime CLI effort capability flag"
+fi
+
+if grep -q -- '--help' "$PROJECT_ROOT/scripts/lib/providers.sh" &&
+   grep -q -- "'--effort'" "$PROJECT_ROOT/scripts/lib/providers.sh" &&
+   grep -q 'SUPPORTS_EFFORT_CLI_FLAG=true' "$PROJECT_ROOT/scripts/lib/providers.sh"; then
+    pass "CLI help detection: SUPPORTS_EFFORT_CLI_FLAG"
+else
+    fail "CLI help detection: SUPPORTS_EFFORT_CLI_FLAG" "missing --help-based effort argv detection"
+fi
+
+test_case "CLI capability help probe is skippable and wall-clock bounded"
+capability_bin="$TEST_TMP_DIR/capability-bin"
+capability_marker="$TEST_TMP_DIR/capability-help-called"
+mkdir -p "$capability_bin"
+cat > "$capability_bin/claude" <<'FAKE_CLAUDE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --version) printf '%s\n' '2.1.219' ;;
+    --help)
+        printf 'called\n' > "$CAPABILITY_MARKER"
+        sleep 3
+        printf '%s\n' 'usage: claude --effort high'
+        ;;
+esac
+FAKE_CLAUDE
+chmod +x "$capability_bin/claude"
+source "$PROJECT_ROOT/scripts/lib/providers.sh"
+log() { :; }
+OCTOPUS_HOST=claude
+CLAUDE_CODE_VERSION=""
+rm -f "$capability_marker"
+PATH="$capability_bin:$PATH" CAPABILITY_MARKER="$capability_marker" \
+    OCTOPUS_CLAUDE_BIN=claude OCTOPUS_SKIP_PROVIDER_PROBES=true \
+    detect_claude_code_version >/dev/null 2>&1
+skip_ok=false
+[[ ! -e "$capability_marker" && "$SUPPORTS_EFFORT_CLI_FLAG" == "false" ]] && skip_ok=true
+
+CLAUDE_CODE_VERSION=""
+rm -f "$capability_marker"
+started_at=$(date +%s)
+PATH="$capability_bin:$PATH" CAPABILITY_MARKER="$capability_marker" \
+    OCTOPUS_CLAUDE_BIN=claude OCTOPUS_SKIP_PROVIDER_PROBES=false \
+    OCTOPUS_BARE_PROBE_TIMEOUT=1 detect_claude_code_version >/dev/null 2>&1
+elapsed=$(( $(date +%s) - started_at ))
+if [[ "$skip_ok" == true && -e "$capability_marker" && "$elapsed" -lt 3 &&
+      "$SUPPORTS_EFFORT_CLI_FLAG" == "false" ]] &&
+   grep -Fq '_octo_run_bare_probe_with_timeout' "$PROJECT_ROOT/scripts/lib/providers.sh" &&
+   ! grep -Eq 'grep -q -- .--effort.' "$PROJECT_ROOT/scripts/lib/providers.sh"; then
+    test_pass
+else
+    test_fail "capability help ignored probe controls (skip=$skip_ok elapsed=${elapsed}s effort=$SUPPORTS_EFFORT_CLI_FLAG)"
+fi
+
 # v2.1.77 flags
 for flag in SUPPORTS_ALLOW_READ_SANDBOX SUPPORTS_COPY_INDEX \
             SUPPORTS_COMPOUND_BASH_PERMISSION_FIX SUPPORTS_RESUME_TRUNCATION_FIX \
@@ -87,6 +144,15 @@ for flag in SUPPORTS_OPUS_4_8 SUPPORTS_DYNAMIC_WORKFLOWS \
             SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT SUPPORTS_AGENT_SETTINGS_AGENT_FIELD \
             SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD SUPPORTS_ENTER_WORKTREE_SWITCH \
             SUPPORTS_TOOL_DECISION_PARAMS_OTEL; do
+    if grep -c "${flag}=false" "$ORCH" >/dev/null 2>&1; then
+        pass "Declaration: $flag"
+    else
+        fail "Declaration: $flag" "missing ${flag}=false"
+    fi
+done
+
+# v2.1.197-219 model flags
+for flag in SUPPORTS_SONNET_5 SUPPORTS_OPUS_5; do
     if grep -c "${flag}=false" "$ORCH" >/dev/null 2>&1; then
         pass "Declaration: $flag"
     else
@@ -209,6 +275,22 @@ for flag in SUPPORTS_AGENT_SETTINGS_AGENT_FIELD SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD
     fi
 done
 
+# --- v2.1.197 Sonnet 5 block ---
+v21197_block=$(grep -A6 'version_compare.*2\.1\.197' "$PROJECT_ROOT/scripts/lib/providers.sh" | head -6)
+if echo "$v21197_block" | grep -q 'SUPPORTS_SONNET_5=true'; then
+    pass "v2.1.197 block sets: SUPPORTS_SONNET_5"
+else
+    fail "v2.1.197 block sets: SUPPORTS_SONNET_5" "not found in v2.1.197 detection block"
+fi
+
+# --- v2.1.219 Opus 5 block ---
+v21219_block=$(grep -A6 'version_compare.*2\.1\.219' "$PROJECT_ROOT/scripts/lib/providers.sh" | head -6)
+if echo "$v21219_block" | grep -q 'SUPPORTS_OPUS_5=true'; then
+    pass "v2.1.219 block sets: SUPPORTS_OPUS_5"
+else
+    fail "v2.1.219 block sets: SUPPORTS_OPUS_5" "not found in v2.1.219 detection block"
+fi
+
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║  4. Logging lines                                                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
@@ -249,6 +331,14 @@ done
 for label in "Opus 4.8" "Dynamic Workflows" "Lean Prompt Default" \
              "Agent Settings Agent Field" "Skills Auto Plugin Load" \
              "EnterWorktree Switch" "Tool Decision Params OTel"; do
+    if grep -c "$label" "$ORCH" >/dev/null 2>&1; then
+        pass "Logged: $label"
+    else
+        fail "Logged: $label" "not found in detection logging"
+    fi
+done
+
+for label in "Sonnet 5" "Opus 5"; do
     if grep -c "$label" "$ORCH" >/dev/null 2>&1; then
         pass "Logged: $label"
     else
@@ -376,7 +466,7 @@ for label in "plugin-validate" "allow-read-sandbox" "branch-command" "sendmessag
 done
 
 # resume command references
-resume_cmd="$PROJECT_ROOT/.claude/commands/resume.md"
+resume_cmd="$PROJECT_ROOT/commands/resume.md"
 if [[ -f "$resume_cmd" ]]; then
     if grep -c 'v2.1.77' "$resume_cmd" >/dev/null 2>&1; then
         pass "resume.md references v2.1.77"
@@ -521,6 +611,28 @@ if [[ $block_count -ge 29 ]]; then
     pass "Version compare block count: $block_count (expected >= 29)"
 else
     fail "Version compare block count: $block_count" "expected >= 29 blocks"
+fi
+
+# The telemetry opt-in script has its own minimum-version gate. An installed
+# CLI with unexpected output must fail closed rather than silently bypassing it.
+telemetry_test_root="$TEST_TMP_DIR/telemetry-version"
+telemetry_mock_bin="$telemetry_test_root/mock-bin"
+mkdir -p "$telemetry_test_root/scripts" "$telemetry_mock_bin"
+cp "$PROJECT_ROOT/scripts/enable-http-telemetry.sh" "$telemetry_test_root/scripts/"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "Claude Code development build"' \
+    > "$telemetry_mock_bin/claude"
+chmod +x "$telemetry_mock_bin/claude"
+telemetry_output="$telemetry_test_root/output.txt"
+if PATH="$telemetry_mock_bin:$PATH" \
+    bash "$telemetry_test_root/scripts/enable-http-telemetry.sh" \
+        "https://example.invalid/hook" >"$telemetry_output" 2>&1; then
+    fail "Telemetry rejects unparseable installed Claude versions" \
+        "unparseable claude --version output bypassed the minimum-version gate"
+elif grep -q "returned no parseable version" "$telemetry_output"; then
+    pass "Telemetry rejects unparseable installed Claude versions"
+else
+    fail "Telemetry rejects unparseable installed Claude versions" \
+        "the version failure was not reported explicitly"
 fi
 
 # ╔══════════════════════════════════════════════════════════════════════╗

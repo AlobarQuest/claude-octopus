@@ -9,9 +9,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../helpers/test-framework.sh"
 test_suite "(renamed from /octo:octo in v9.5.0; legacy octo.md is a redirect)"
 
-OCTO_MD="$PROJECT_ROOT/.claude/commands/auto.md"
-LEGACY_MD="$PROJECT_ROOT/.claude/commands/octo.md"
-COMMANDS_DIR="$PROJECT_ROOT/.claude/commands"
+OCTO_MD="$PROJECT_ROOT/commands/auto.md"
+LEGACY_MD="$PROJECT_ROOT/commands/octo.md"
+COMMANDS_DIR="$PROJECT_ROOT/commands"
 SKILLS_DIR="$PROJECT_ROOT/.claude/skills"
 
 pass() { test_case "$1"; test_pass; }
@@ -149,7 +149,7 @@ assert_contains "$OCTO_MD" "CLAUDE OCTOPUS ACTIVATED" "has visual indicator bann
 # ── Prohibited actions ────────────────────────────────────────────────────────
 
 assert_contains "$OCTO_MD" "Prohibited" "has Prohibited Actions section"
-assert_contains "$OCTO_MD" "MUST use Skill tool" "prohibits simulating workflow execution"
+assert_contains "$OCTO_MD" "following the selected command file" "prohibits simulating workflow execution"
 
 # ── No chain workflows documentation (removed — not implemented) ──────────────
 

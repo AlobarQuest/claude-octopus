@@ -12,6 +12,10 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "develop Markdown plan resolution"
 
+# These tests exercise tangle dispatch/validation behavior, not contextual review.
+export OCTOPUS_TANGLE_CODE_REVIEW=false
+source "$PROJECT_ROOT/scripts/lib/testing.sh"
+
 assert_has() {
     local pattern="$1"
     local label="$2"
@@ -33,13 +37,6 @@ assert_lacks() {
         test_pass
     fi
 }
-
-test_case "workflows.sh has valid bash syntax"
-if bash -n "$WORKFLOWS" 2>/dev/null; then
-    test_pass
-else
-    test_fail "syntax error in workflows.sh"
-fi
 
 assert_lacks 'grep -oE .*\.\.md.*head -1|grep -oE .*\\.md.*head -1' \
     "plan reference scan avoids grep|head pipeline"
@@ -63,12 +60,43 @@ NC=""
 TMUX_MODE=false
 DRY_RUN=false
 SUPPORTS_PARALLEL_FILE_SAFETY=false
-RESULTS_DIR="$(mktemp -d)"
+RESULTS_DIR="$TEST_TMP_DIR/develop-md-resolution"
 LOGS_DIR="$RESULTS_DIR/logs"
 WORKSPACE_DIR="$RESULTS_DIR/workspace"
 mkdir -p "$WORKSPACE_DIR/.octo/agents"
 DECOMPOSE_CAPTURE_FILE="$RESULTS_DIR/decompose.prompt"
-trap 'rm -rf "$RESULTS_DIR"' EXIT
+
+test_case "default Tangle run IDs stay unique within the same second"
+date() {
+    if [[ "${1:-}" == "+%s" ]]; then
+        printf '%s\n' "1234567890"
+        return 0
+    fi
+    command date "$@"
+}
+first_run_id=$(tangle_next_run_id)
+second_run_id=$(tangle_next_run_id)
+unset -f date
+if [[ "$first_run_id" != "$second_run_id" ]] && \
+   [[ "$first_run_id" == 1234567890-* ]] && \
+   [[ "$second_run_id" == 1234567890-* ]]; then
+    test_pass
+else
+    test_fail "same-second Tangle run IDs collided: $first_run_id"
+fi
+
+test_case "direct Tangle ID allocation prunes expired reservations"
+tangle_reservation_dir="$WORKSPACE_DIR/.octo/task-ids"
+expired_tangle_reservation="$tangle_reservation_dir/expired-tangle-reservation"
+find "$tangle_reservation_dir" -type f -name '.pruned-*' -delete 2>/dev/null || true
+: > "$expired_tangle_reservation"
+touch -t 202001010000 "$expired_tangle_reservation"
+tangle_next_run_id >/dev/null
+if [[ ! -e "$expired_tangle_reservation" ]]; then
+    test_pass
+else
+    test_fail "expired direct Tangle reservation was not pruned"
+fi
 
 log() { :; }
 octopus_phase_banner() { :; }
@@ -78,8 +106,12 @@ reset_provider_lockouts() { :; }
 fleet_dispatch_begin() { :; }
 fleet_dispatch_end() { :; }
 run_agent_sync() {
+    if [[ "${OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED:-}" == "tangle-decomposition-adequacy" ]]; then
+        printf '%s\n' 'VERDICT: PASS' 'REASONS: fixture decomposition is adequate' 'SCOPE_REVIEW: NONE'
+        return 0
+    fi
     printf '%s' "$2" > "$DECOMPOSE_CAPTURE_FILE"
-    printf '%s\n' "1. [CODING] Validate resolved plan context. Files: scripts/lib/workflows.sh"
+    printf '%s\n' "1. [CODING] Validate resolved plan context. Files: scripts/lib/workflows.sh — Task: validate the resolved plan context"
 }
 validate_tangle_results() {
     CAPTURED_VALIDATE_PROMPT="$2"
@@ -139,6 +171,26 @@ else
     test_fail "bare plan.md was not treated as an eligible plan file"
 fi
 
+test_case "bare SPEC.md references inject content case-insensitively"
+spec_file="$RESULTS_DIR/SPEC.md"
+printf '%s\n' "Apply the explicit specification safely." > "$spec_file"
+run_tangle_case "implement $spec_file"
+if [[ "$CAPTURED_DECOMPOSE_PROMPT" == *"Apply the explicit specification safely."* ]]; then
+    test_pass
+else
+    test_fail "bare SPEC.md was not treated as an eligible context file"
+fi
+
+test_case "bare BRIEF.md references inject content case-insensitively"
+brief_file="$RESULTS_DIR/BRIEF.md"
+printf '%s\n' "Apply the explicit brief safely." > "$brief_file"
+run_tangle_case "implement $brief_file"
+if [[ "$CAPTURED_DECOMPOSE_PROMPT" == *"Apply the explicit brief safely."* ]]; then
+    test_pass
+else
+    test_fail "bare BRIEF.md was not treated as an eligible context file"
+fi
+
 test_case "wildcard-looking Markdown tokens are not glob-expanded"
 glob_dir="$RESULTS_DIR/glob-case"
 mkdir -p "$glob_dir"
@@ -178,7 +230,11 @@ log() {
     printf '%s %s\n' "${1:-}" "${2:-}" >> "$LOG_CAPTURE_FILE"
 }
 run_agent_sync() {
-    printf '%s\n' "1. [CODING] stalled implementation. Files: scripts/lib/workflows.sh"
+    if [[ "${OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED:-}" == "tangle-decomposition-adequacy" ]]; then
+        printf '%s\n' 'VERDICT: PASS' 'REASONS: stalled fixture decomposition is adequate' 'SCOPE_REVIEW: NONE'
+        return 0
+    fi
+    printf '%s\n' "1. [CODING] stalled implementation. Files: scripts/lib/workflows.sh — Task: implement the requested change"
 }
 spawn_agent_capture_pid() {
     printf '%s\n' "999999"
@@ -204,7 +260,7 @@ date() {
         if [[ $count -le 2 ]]; then
             printf '%s\n' "100"
         else
-            printf '%s\n' "101"
+            printf '%s\n' "102"
         fi
         return 0
     fi
@@ -213,7 +269,8 @@ date() {
 
 CAPTURED_VALIDATE_PROMPT=""
 deadline_override_ok=false
-if OCTOPUS_TANGLE_DEADLINE=0 tangle_develop "deadline override task" >/dev/null 2>&1 && \
+if OCTOPUS_TANGLE_RUN_ID=100 OCTOPUS_TANGLE_DEADLINE=1 \
+   tangle_develop "deadline override task" >/dev/null 2>&1 && \
    grep -q "deadline exceeded" "$LOG_CAPTURE_FILE" && \
    grep -q "finished with status: timeout" "$LOG_CAPTURE_FILE" && \
    [[ "$CAPTURED_VALIDATE_PROMPT" == "deadline override task" ]]; then

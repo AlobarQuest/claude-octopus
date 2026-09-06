@@ -8,17 +8,23 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "Council Command"
 
+CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY=""
+CACHED_COUNCIL_STANDARD_RUN_DIR=""
+CACHED_COUNCIL_CHAIR_FALLBACK_RUN_DIR=""
+CACHED_COUNCIL_CHAIR_FALLBACK_OUTPUT=""
+CACHED_COUNCIL_ALL_APPROVE_RUN_DIR=""
+
 test_council_command_files_are_registered() {
     test_case "Council command and skill are registered"
 
-    local command_file="$PROJECT_ROOT/.claude/commands/council.md"
+    local command_file="$PROJECT_ROOT/commands/council.md"
     local skill_file="$PROJECT_ROOT/skills/skill-council/SKILL.md"
     local plugin_file="$PROJECT_ROOT/.claude-plugin/plugin.json"
 
     [[ -f "$command_file" ]] || { test_fail "Missing $command_file"; return 1; }
     [[ -f "$skill_file" ]] || { test_fail "Missing $skill_file"; return 1; }
 
-    if jq -e '.commands[] | select(. == "./.claude/commands/council.md")' "$plugin_file" >/dev/null &&
+    if jq -e '.commands[] | select(. == "./commands/council.md")' "$plugin_file" >/dev/null &&
        jq -e '.skills[] | select(. == "./skills/skill-council")' "$plugin_file" >/dev/null; then
         test_pass
     else
@@ -65,6 +71,64 @@ load_council_lib() {
     source "$lib"
 }
 
+council_run_with_snapshot_age() {
+    local snapshot_age_days="$1"
+    shift
+
+    local run_status=0
+    council_snapshot_age_days() { printf '%s\n' "$snapshot_age_days"; }
+    council_run "$@" || run_status=$?
+    # shellcheck disable=SC1090
+    source "$PROJECT_ROOT/scripts/lib/benchmark-routing.sh"
+    return "$run_status"
+}
+
+prepare_cached_quick_dry_run() {
+    [[ -f "$CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY" ]] && return 0
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-quick-cache.XXXXXX")"
+    council_run --dry-run --goal advice --depth quick --benchmark auto \
+        --output-dir "$tmp_dir" "Should we use Redis?"
+    CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -f "$CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY" ]]
+}
+
+prepare_cached_standard_fixture_run() {
+    [[ -f "$CACHED_COUNCIL_STANDARD_RUN_DIR/summary.json" ]] && return 0
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-standard-cache.XXXXXX")"
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
+        council_run --goal advice --depth standard --output-dir "$tmp_dir" "Should we use Redis?"
+    CACHED_COUNCIL_STANDARD_RUN_DIR="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -f "$CACHED_COUNCIL_STANDARD_RUN_DIR/summary.json" ]]
+}
+
+prepare_cached_chair_fallback_run() {
+    [[ -f "$CACHED_COUNCIL_CHAIR_FALLBACK_RUN_DIR/summary.json" ]] && return 0
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-chair-cache.XXXXXX")"
+    CACHED_COUNCIL_CHAIR_FALLBACK_OUTPUT="$TEST_TMP_DIR/council-chair-cache.out"
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_FAIL_PERSONAS='strategy-analyst' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
+        council_run --depth quick --output-dir "$tmp_dir" "Review auth" \
+        >"$CACHED_COUNCIL_CHAIR_FALLBACK_OUTPUT" 2>&1
+    CACHED_COUNCIL_CHAIR_FALLBACK_RUN_DIR="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -f "$CACHED_COUNCIL_CHAIR_FALLBACK_RUN_DIR/summary.json" ]]
+}
+
+prepare_cached_all_approve_run() {
+    [[ -f "$CACHED_COUNCIL_ALL_APPROVE_RUN_DIR/summary.json" ]] && return 0
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-approve-cache.XXXXXX")"
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='codex:available,agy:available' \
+        council_run --depth standard --output-dir "$tmp_dir" "Review X" >/dev/null 2>&1 || true
+    CACHED_COUNCIL_ALL_APPROVE_RUN_DIR="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -f "$CACHED_COUNCIL_ALL_APPROVE_RUN_DIR/summary.json" ]]
+}
+
 test_council_defaults_are_depth_aware() {
     test_case "Council defaults are depth aware"
     load_council_lib || return 1
@@ -96,14 +160,9 @@ test_council_rejects_non_usd_budget() {
 test_council_dry_run_writes_summary_json() {
     test_case "Council dry-run writes summary JSON"
     load_council_lib || return 1
+    prepare_cached_quick_dry_run || { test_fail "cached quick dry-run failed"; return 1; }
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council.XXXXXX")"
-
-    council_run --dry-run --goal advice --depth quick --output-dir "$tmp_dir" "Should we use Redis?"
-
-    local summary
-    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    local summary="$CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY"
     [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
 
     if jq -e '.command == "council" and .status == "dry-run" and .implementation.worktree == "auto"' "$summary" >/dev/null; then
@@ -149,14 +208,9 @@ test_council_dry_run_maps_implementation_and_worktree() {
 test_council_dry_run_has_multi_seat_recommendation_and_cost() {
     test_case "Council dry-run has multiple seats and positive cost estimate"
     load_council_lib || return 1
+    prepare_cached_quick_dry_run || { test_fail "cached quick dry-run failed"; return 1; }
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-cost.XXXXXX")"
-
-    council_run --dry-run --depth quick --output-dir "$tmp_dir" "Should we use Redis?"
-
-    local summary
-    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    local summary="$CACHED_COUNCIL_QUICK_DRY_RUN_SUMMARY"
     [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
 
     if jq -e '(.council | length) >= 2 and .budget.estimated_cost_usd > 0' "$summary" >/dev/null; then
@@ -196,7 +250,8 @@ test_council_dry_run_loads_fresh_benchmark_snapshot() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-benchmark.XXXXXX")"
 
-    council_run --dry-run --benchmark auto --output-dir "$tmp_dir" "Should we use Redis?"
+    council_run_with_snapshot_age 30 --dry-run --benchmark auto \
+        --output-dir "$tmp_dir" "Should we use Redis?"
 
     local summary
     summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
@@ -217,14 +272,14 @@ test_council_provider_fixture_records_status() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-providers.XXXXXX")"
 
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:missing' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:missing' \
         council_run --dry-run --providers auto --output-dir "$tmp_dir" "Review auth"
 
     local summary
     summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
     [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
 
-    if jq -e '.provider_status.claude == "available" and .provider_status.gemini == "missing"' "$summary" >/dev/null; then
+    if jq -e '.provider_status.claude == "available" and .provider_status.agy == "missing"' "$summary" >/dev/null; then
         test_pass
     else
         test_fail "provider status fixture not recorded"
@@ -254,7 +309,7 @@ test_council_roster_matches_resolved_members() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-roster.XXXXXX")"
 
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --dry-run --depth standard --output-dir "$tmp_dir" "Review auth"
 
     local summary
@@ -276,7 +331,7 @@ test_council_persona_pin_affects_roster() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-persona.XXXXXX")"
 
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --dry-run --members 3 --persona finance-analyst --output-dir "$tmp_dir" "Review pricing"
 
     local summary
@@ -298,7 +353,7 @@ test_council_enforces_provider_diversity_when_available() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-diversity.XXXXXX")"
 
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:missing,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:missing,codex:available,agy:available' \
         council_run --dry-run --depth standard --domain security --output-dir "$tmp_dir" "Review auth"
 
     local summary
@@ -324,8 +379,9 @@ test_council_scores_roster_with_benchmark_signal() {
     local tmp_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-score.XXXXXX")"
 
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
-        council_run --dry-run --depth quick --output-dir "$tmp_dir" "Review auth"
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
+        council_run_with_snapshot_age 30 --dry-run --depth quick \
+            --output-dir "$tmp_dir" "Review auth"
 
     local summary
     summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
@@ -414,7 +470,7 @@ test_council_skill_documents_gates() {
 test_council_command_requires_real_runner_by_default() {
     test_case "Council command requires real runner by default"
 
-    local command_file="$PROJECT_ROOT/.claude/commands/council.md"
+    local command_file="$PROJECT_ROOT/commands/council.md"
     local skill_file="$PROJECT_ROOT/skills/skill-council/SKILL.md"
 
     if grep -q 'scripts/orchestrate.sh" council' "$command_file" &&
@@ -431,7 +487,7 @@ test_council_command_requires_real_runner_by_default() {
 test_council_skill_requires_interactive_choices_for_clarification() {
     test_case "Council skill requires interactive choices for clarification"
 
-    local command_file="$PROJECT_ROOT/.claude/commands/council.md"
+    local command_file="$PROJECT_ROOT/commands/council.md"
     local cursor_command_file="$PROJECT_ROOT/.cursor-plugin/commands/octo-council.md"
     local skill_file="$PROJECT_ROOT/skills/skill-council/SKILL.md"
 
@@ -520,7 +576,7 @@ test_council_research_first_writes_artifact_and_prompt_context() {
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
     OCTOPUS_COUNCIL_CORPUS_ROOT="$corpus_root" \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --research-first --depth quick --output-dir "$tmp_dir" "Review queue options"
 
     local run_dir summary research prompt
@@ -553,7 +609,7 @@ test_council_corpus_append_writes_durable_entry() {
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
     OCTOPUS_COUNCIL_CORPUS_ROOT="$corpus_root" \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --research-first --corpus-mode append --goal implement --implement plan-only --depth quick --output-dir "$tmp_dir" "Plan auth cleanup"
 
     local summary entry
@@ -592,16 +648,9 @@ test_council_pass_parser_accepts_variants() {
 test_council_fixture_run_writes_phase_artifacts() {
     test_case "Council fixture run writes phase artifacts"
     load_council_lib || return 1
+    prepare_cached_standard_fixture_run || { test_fail "cached standard fixture run failed"; return 1; }
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-full.XXXXXX")"
-
-    OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
-        council_run --goal advice --depth standard --output-dir "$tmp_dir" "Should we use Redis?"
-
-    local run_dir summary
-    run_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    local run_dir="$CACHED_COUNCIL_STANDARD_RUN_DIR" summary
     summary="$run_dir/summary.json"
 
     [[ -f "$run_dir/config.json" ]] || { test_fail "config.json not written"; return 1; }
@@ -614,7 +663,12 @@ test_council_fixture_run_writes_phase_artifacts() {
 
     if [[ "$response_count" -eq 5 ]] &&
        [[ "$critique_count" -eq 5 ]] &&
-       jq -e '.status == "completed" and .quorum.met == true and .quorum.received_non_chair == 4' "$summary" >/dev/null; then
+       jq -e '
+           .status == "completed"
+           and .quorum.met == true
+           and .quorum.received_non_chair
+               == ([.seats[] | select(.seat != "chair" and .status == "responded")] | length)
+       ' "$summary" >/dev/null; then
         test_pass
     else
         test_fail "phase artifacts or quorum summary mismatch"
@@ -625,16 +679,9 @@ test_council_fixture_run_writes_phase_artifacts() {
 test_council_synthesis_is_chair_generated() {
     test_case "Council synthesis is generated by chair dispatch"
     load_council_lib || return 1
+    prepare_cached_standard_fixture_run || { test_fail "cached standard fixture run failed"; return 1; }
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-synthesis.XXXXXX")"
-
-    OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
-        council_run --goal advice --depth standard --output-dir "$tmp_dir" "Should we use Redis?"
-
-    local synthesis
-    synthesis="$(find "$tmp_dir" -name synthesis.md -type f | head -1)"
+    local synthesis="$CACHED_COUNCIL_STANDARD_RUN_DIR/synthesis.md"
     [[ -n "$synthesis" ]] || { test_fail "synthesis.md not written"; return 1; }
 
     if grep -q "Fixture response for chair-synthesis" "$synthesis" &&
@@ -654,7 +701,7 @@ test_council_plan_only_writes_implementation_plan_without_handoff() {
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-plan.XXXXXX")"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --goal implement --implement plan-only --depth standard --output-dir "$tmp_dir" "Refactor auth flow"
 
     local run_dir summary
@@ -679,7 +726,7 @@ test_council_after_approval_does_not_handoff_without_gate() {
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-gate.XXXXXX")"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --goal implement --implement after-approval --depth standard --output-dir "$tmp_dir" "Refactor auth flow"
 
     local summary
@@ -705,7 +752,7 @@ test_council_approved_gates_start_worktree_handoff() {
     OCTOPUS_COUNCIL_FIXTURE=full-success \
     OCTOPUS_COUNCIL_APPROVED_GATES='gate-a,gate-b' \
     OCTOPUS_COUNCIL_WORKTREE_ROOT="$worktree_root" \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --goal implement --implement after-approval --worktree on --depth quick --output-dir "$tmp_dir" "Refactor auth flow"
 
     local summary worktree_path
@@ -726,6 +773,165 @@ test_council_approved_gates_start_worktree_handoff() {
     fi
 }
 
+# PTY-backed helper shared by the gate-approval tests below. `script`'s
+# argument convention differs between Linux (util-linux: `-c "cmd" file`)
+# and macOS (BSD: `file cmd args...`, and no COMMAND_EXIT_CODE trailer in the
+# transcript) — see tests/unit/test-agy-provider.sh for the same split. To
+# stay portable we write the case to a real script file and have it record
+# its own exit status, instead of parsing either platform's transcript
+# format for it.
+_council_gate_pty_run() {
+    local env_prefix="$1" log_file="$2" status_file="$3" answer="$4"
+    local tmp_script
+    tmp_script="$(mktemp "$TEST_TMP_DIR/gate-pty.XXXXXX")"
+    cat > "$tmp_script" <<SCRIPT
+#!/usr/bin/env bash
+$env_prefix
+unset OCTOPUS_COUNCIL_APPROVED_GATES
+source "$PROJECT_ROOT/scripts/lib/council.sh"
+council_prompt_gate_approval gate-a "Gate A: accept council synthesis?"
+echo \$? > "$status_file"
+SCRIPT
+    chmod +x "$tmp_script"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        printf '%s\n' "$answer" | script -q "$log_file" bash "$tmp_script" >/dev/null 2>&1
+    else
+        printf '%s\n' "$answer" | script -q -c "bash \"$tmp_script\"" "$log_file" >/dev/null 2>&1
+    fi
+}
+
+test_council_gate_approval_suppresses_prompt_when_non_interactive() {
+    test_case "council_prompt_gate_approval stays closed without prompting when OCTOPUS_NON_INTERACTIVE is set, even under a PTY"
+    command -v script >/dev/null 2>&1 || { test_skip "script (PTY allocator) not available"; return 0; }
+
+    local log="$TEST_TMP_DIR/council-gate-non-interactive.log"
+    local status_file="$TEST_TMP_DIR/council-gate-non-interactive.status"
+    rm -f "$log" "$status_file"
+    # A 'y' is waiting on stdin: if the gate still prompted and read it, this
+    # would return approved (0) instead of the expected denied (1).
+    _council_gate_pty_run 'OCTOPUS_NON_INTERACTIVE=1' "$log" "$status_file" y
+    local status
+    status="$(cat "$status_file" 2>/dev/null)"
+
+    if [[ "$status" == "1" ]] && ! grep -q '\[y/N\]' "$log"; then
+        test_pass
+    else
+        test_fail "gate should deny (rc=1) and never print the prompt under OCTOPUS_NON_INTERACTIVE; got rc=${status:-?} log=$(tr '\n' '|' < "$log")"
+        return 1
+    fi
+}
+
+test_council_gate_approval_respects_remote_session_flag() {
+    test_case "council_prompt_gate_approval stays closed under CLAUDE_CODE_REMOTE without prompting"
+    command -v script >/dev/null 2>&1 || { test_skip "script (PTY allocator) not available"; return 0; }
+
+    local log="$TEST_TMP_DIR/council-gate-remote.log"
+    local status_file="$TEST_TMP_DIR/council-gate-remote.status"
+    rm -f "$log" "$status_file"
+    _council_gate_pty_run 'CLAUDE_CODE_REMOTE=true' "$log" "$status_file" y
+    local status
+    status="$(cat "$status_file" 2>/dev/null)"
+
+    if [[ "$status" == "1" ]] && ! grep -q '\[y/N\]' "$log"; then
+        test_pass
+    else
+        test_fail "gate should deny (rc=1) and never print the prompt under CLAUDE_CODE_REMOTE; got rc=${status:-?} log=$(tr '\n' '|' < "$log")"
+        return 1
+    fi
+}
+
+test_council_gate_approval_respects_remaining_non_interactive_signals() {
+    test_case "council_prompt_gate_approval suppresses the prompt for CI, CLAUDE_CODE_WEB, OCTOPUS_REMOTE_SESSION, and OCTOPUS_AUTONOMY=autonomous"
+    command -v script >/dev/null 2>&1 || { test_skip "script (PTY allocator) not available"; return 0; }
+
+    local signal safe_name log status_file status
+    for signal in 'CI=1' 'CLAUDE_CODE_WEB=true' 'OCTOPUS_REMOTE_SESSION=true' 'OCTOPUS_AUTONOMY=autonomous'; do
+        safe_name="$(printf '%s' "$signal" | tr -c 'A-Za-z0-9' '-')"
+        log="$TEST_TMP_DIR/council-gate-${safe_name}.log"
+        status_file="$TEST_TMP_DIR/council-gate-${safe_name}.status"
+        rm -f "$log" "$status_file"
+
+        _council_gate_pty_run "$signal" "$log" "$status_file" y
+        status="$(cat "$status_file" 2>/dev/null)"
+
+        if [[ "$status" != "1" ]] || grep -q '\[y/N\]' "$log"; then
+            test_fail "$signal did not suppress the gate prompt: rc=${status:-?} log=$(tr '\n' '|' < "$log")"
+            return 1
+        fi
+    done
+    test_pass
+}
+
+test_council_gate_approval_denies_when_no_tty_present() {
+    test_case "council_prompt_gate_approval denies without a controlling TTY even with no non-interactive env signal set"
+    load_council_lib || return 1
+
+    local out status
+    set +e
+    out="$(unset CI OCTOPUS_NON_INTERACTIVE CLAUDE_CODE_REMOTE CLAUDE_CODE_WEB OCTOPUS_REMOTE_SESSION OCTOPUS_AUTONOMY OCTOPUS_COUNCIL_APPROVED_GATES
+        council_prompt_gate_approval gate-a "Gate A: accept council synthesis?" </dev/null 2>&1)"
+    status=$?
+    set -e
+
+    if [[ $status -eq 1 ]] && [[ "$out" != *'[y/N]'* ]]; then
+        test_pass
+    else
+        test_fail "expected deny with no prompt when no TTY and no signal is present, got rc=$status out=[$out]"
+        return 1
+    fi
+}
+
+test_council_gate_approval_still_prompts_when_truly_interactive() {
+    test_case "council_prompt_gate_approval still prompts and honors the answer with no non-interactive signal present"
+    command -v script >/dev/null 2>&1 || { test_skip "script (PTY allocator) not available"; return 0; }
+    # A live capability probe was tried here and proved non-deterministic on a
+    # macOS GitHub Actions runner: it reported a real controlling TTY moments
+    # before the actual case below still saw [[ -t 0 && -t 1 ]] read false and
+    # denied both the yes and no cases. Rather than chase that intermittently,
+    # skip outright on Darwin — the four deny-path tests above already cover
+    # the fail-closed behavior this bug is about, on every platform.
+    if [[ "$(uname)" == "Darwin" ]]; then
+        test_skip "script(1) pty allocation for stdin/stdout has proven unreliable in CI on macOS; deny-path coverage above already exercises the fix"
+        return 0
+    fi
+
+    local log_yes="$TEST_TMP_DIR/council-gate-interactive-yes.log"
+    local log_no="$TEST_TMP_DIR/council-gate-interactive-no.log"
+    local status_file_yes="$TEST_TMP_DIR/council-gate-interactive-yes.status"
+    local status_file_no="$TEST_TMP_DIR/council-gate-interactive-no.status"
+    rm -f "$log_yes" "$log_no" "$status_file_yes" "$status_file_no"
+
+    local unset_env='unset CLAUDE_CODE_REMOTE CLAUDE_CODE_WEB OCTOPUS_REMOTE_SESSION OCTOPUS_AUTONOMY CI OCTOPUS_NON_INTERACTIVE'
+
+    _council_gate_pty_run "$unset_env" "$log_yes" "$status_file_yes" y
+    local status_yes
+    status_yes="$(cat "$status_file_yes" 2>/dev/null)"
+
+    _council_gate_pty_run "$unset_env" "$log_no" "$status_file_no" n
+    local status_no
+    status_no="$(cat "$status_file_no" 2>/dev/null)"
+
+    if [[ "$status_yes" == "0" ]] && grep -q '\[y/N\]' "$log_yes" &&
+       [[ "$status_no" == "1" ]] && grep -q '\[y/N\]' "$log_no"; then
+        test_pass
+    else
+        test_fail "interactive prompt/answer behavior regressed: yes-rc=${status_yes:-?} no-rc=${status_no:-?}"
+        return 1
+    fi
+}
+
+test_council_gate_approval_explicit_approval_needs_no_tty() {
+    test_case "OCTOPUS_COUNCIL_APPROVED_GATES approves without any TTY or interactivity check"
+    load_council_lib || return 1
+
+    OCTOPUS_COUNCIL_APPROVED_GATES='gate-a' council_prompt_gate_approval gate-a "Gate A: accept council synthesis?" </dev/null
+    local status=$?
+
+    [[ $status -eq 0 ]] || { test_fail "explicit approval should short-circuit to approved, got rc=$status"; return 1; }
+    test_pass
+}
+
 test_council_critical_veto_aborts_implementation_run() {
     test_case "Council critical veto aborts implementation run"
     load_council_lib || return 1
@@ -734,7 +940,7 @@ test_council_critical_veto_aborts_implementation_run() {
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-veto-run.XXXXXX")"
 
     OCTOPUS_COUNCIL_FIXTURE=critical-veto \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --goal implement --implement after-approval --depth standard --output-dir "$tmp_dir" "Ship this without tests"
 
     local summary
@@ -758,7 +964,7 @@ test_council_diversity_warning_prints_to_cli() {
     out_file="$TEST_TMP_DIR/council-diversity-output.out"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:missing,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:missing,codex:available,agy:available' \
         council_run --depth standard --domain security --output-dir "$tmp_dir" "Review auth" >"$out_file" 2>&1
 
     # The CLI warning only prints when the forced-replacement path fires. With
@@ -779,19 +985,33 @@ test_council_chair_fallback_preserves_quorum() {
     test_case "Council retries failed chair with synthesis-capable fallback"
     load_council_lib || return 1
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-chair-fallback.XXXXXX")"
+    prepare_cached_chair_fallback_run || { test_fail "cached chair fallback run failed"; return 1; }
 
-    OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_FAIL_PERSONAS='strategy-analyst' \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
-        council_run --depth quick --output-dir "$tmp_dir" "Review auth"
-
-    local summary
-    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    local summary="$CACHED_COUNCIL_CHAIR_FALLBACK_RUN_DIR/summary.json"
     [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
 
-    if jq -e '.status == "completed" and .quorum.met == true and .warnings.chair_fallback == true and (.quorum.chair_received == true)' "$summary" >/dev/null; then
+    if jq -e '
+        .status == "completed"
+        and .quorum.met == true
+        and .warnings.chair_fallback == true
+        and (.quorum.chair_received == true)
+        # The failed roster chair remains visible, and the successfully dispatched
+        # fallback is an additional, fully typed execution record.
+        and (.seats[0].seat == "chair" and .seats[0].status == "no-response")
+        and ((.seats | length) == ((.council | length) + 1))
+        and (.seats[-1] as $fallback
+             | $fallback.index == (.council | length)
+             and $fallback.persona == .warnings.chair_fallback_persona
+             and $fallback.seat == "chair"
+             and ([$fallback.agent_spec, $fallback.provider, $fallback.provider_org, $fallback.model,
+                   $fallback.model_family, $fallback.payload_kind, $fallback.status]
+                  | all(type == "string" and length > 0))
+             and $fallback.response_bytes > 0
+             and $fallback.verdict == "APPROVE"
+             and ($fallback | has("timeout_provenance"))
+             and $fallback.timeout_provenance == null
+             and ($fallback.counted_as_approver | type == "boolean"))
+    ' "$summary" >/dev/null; then
         test_pass
     else
         test_fail "chair fallback did not preserve quorum"
@@ -803,19 +1023,98 @@ test_council_chair_fallback_warning_prints_to_cli() {
     test_case "Council prints chair fallback warning to CLI"
     load_council_lib || return 1
 
-    local tmp_dir out_file
-    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-chair-output.XXXXXX")"
-    out_file="$TEST_TMP_DIR/council-chair-output.out"
-
-    OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_FAIL_PERSONAS='strategy-analyst' \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
-        council_run --depth quick --output-dir "$tmp_dir" "Review auth" >"$out_file" 2>&1
+    prepare_cached_chair_fallback_run || { test_fail "cached chair fallback run failed"; return 1; }
+    local out_file="$CACHED_COUNCIL_CHAIR_FALLBACK_OUTPUT"
 
     if grep -q "Council warning: chair fallback used" "$out_file"; then
         test_pass
     else
         test_fail "chair fallback warning not printed"
+        return 1
+    fi
+}
+
+test_council_contribution_record_failure_is_nonfatal() {
+    test_case "Council keeps advice and chair fallback seats when contribution records fail"
+    load_council_lib || return 1
+
+    local tmp_dir out_file count_file status summary
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-contribution-failure.XXXXXX")"
+    out_file="$TEST_TMP_DIR/council-contribution-failure.out"
+    count_file="$TEST_TMP_DIR/council-contribution-failure.count"
+    : > "$count_file"
+
+    set +e
+    (
+        set -e
+        council_contribution_record_json() {
+            printf 'attempt\n' >> "$count_file"
+            return 1
+        }
+        OCTOPUS_COUNCIL_FIXTURE=full-success \
+        OCTOPUS_COUNCIL_FAIL_PERSONAS='strategy-analyst' \
+        OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
+            council_run --depth quick --output-dir "$tmp_dir" "Review auth"
+    ) >"$out_file" 2>&1
+    status=$?
+    set -e
+
+    summary="$(find "$tmp_dir" -name summary.json -type f -print -quit)"
+    if [[ $status -eq 0 && -f "$summary" ]] \
+            && jq -e '
+                .status == "completed"
+                and .warnings.chair_fallback == true
+                and (.seats | length) == 4
+                and (.seats | all(
+                    .contribution.validation_result == "invalid-record"
+                    and .contribution.access_state == "unverified"
+                    and .contribution.evidence_paths == []
+                ))
+            ' "$summary" >/dev/null \
+            && [[ "$(wc -l < "$count_file" | tr -d '[:space:]')" -eq 4 ]]; then
+        test_pass
+    else
+        test_fail "contribution failure aborted or omitted a production caller: rc=$status attempts=$(wc -l < "$count_file" | tr -d '[:space:]')"
+        return 1
+    fi
+}
+
+test_council_chair_fallback_reuses_advice_digest() {
+    test_case "Council chair fallback reuses the advice workspace digest"
+    load_council_lib || return 1
+
+    local tmp_dir out_file count_file status summary
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-digest-reuse.XXXXXX")"
+    out_file="$TEST_TMP_DIR/council-digest-reuse.out"
+    count_file="$TEST_TMP_DIR/council-digest-reuse.count"
+    : > "$count_file"
+
+    set +e
+    (
+        set -e
+        council_artifact_digest() {
+            printf 'attempt\n' >> "$count_file"
+            printf '%s\n' 'sha256:test-workspace-digest'
+        }
+        OCTOPUS_COUNCIL_FIXTURE=full-success \
+        OCTOPUS_COUNCIL_FAIL_PERSONAS='strategy-analyst' \
+        OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
+            council_run --depth quick --output-dir "$tmp_dir" "Review auth"
+    ) >"$out_file" 2>&1
+    status=$?
+    set -e
+
+    summary="$(find "$tmp_dir" -name summary.json -type f -print -quit)"
+    if [[ $status -eq 0 && -f "$summary" ]] \
+            && jq -e '
+                .status == "completed"
+                and .warnings.chair_fallback == true
+                and (.seats | all(.contribution.workspace_digest == "sha256:test-workspace-digest"))
+            ' "$summary" >/dev/null \
+            && [[ "$(wc -l < "$count_file" | tr -d '[:space:]')" -eq 1 ]]; then
+        test_pass
+    else
+        test_fail "chair fallback rehashed the workspace: rc=$status attempts=$(wc -l < "$count_file" | tr -d '[:space:]')"
         return 1
     fi
 }
@@ -829,7 +1128,7 @@ test_council_fixture_critique_honors_failed_persona() {
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
     OCTOPUS_COUNCIL_FAIL_PERSONAS='security-auditor' \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --depth standard --output-dir "$tmp_dir" "Review auth"
 
     local run_dir summary security_critiques
@@ -854,7 +1153,7 @@ test_council_cost_cap_aborts_before_fanout() {
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-cost-cap.XXXXXX")"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --max-cost 0.00 --output-dir "$tmp_dir" "Should we use Redis?"
 
     local run_dir summary response_count
@@ -880,7 +1179,7 @@ test_council_cost_cap_aborts_before_critique() {
     task="$(printf '%0640d' 0 | tr '0' 'x')"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --depth standard --max-cost 0.02 --output-dir "$tmp_dir" "$task"
 
     local run_dir summary response_count critique_count
@@ -907,7 +1206,7 @@ test_council_deep_fixture_writes_revision_artifacts() {
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-deep.XXXXXX")"
 
     OCTOPUS_COUNCIL_FIXTURE=full-success \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,agy:available' \
         council_run --depth deep --output-dir "$tmp_dir" "Review platform architecture"
 
     local run_dir summary revision_count
@@ -951,6 +1250,42 @@ test_council_cross_critique_prompt_includes_peer_responses() {
         test_pass
     else
         test_fail "cross-critique prompt missing semi-anonymized peer context"
+        return 1
+    fi
+}
+
+test_council_prompt_task_block_is_authoritative() {
+    test_case "Council prompt trust boundary: task authoritative, artifact blocks untrusted, task format wins"
+    load_council_lib || return 1
+
+    # Regression for the persona injection false-positive: the old prompt told
+    # seats to treat COUNCIL_TASK itself as untrusted data ("unless part of the
+    # user's top-level request" — unsatisfiable, since the task block IS the
+    # only channel carrying that request). A rule-following seat then refused
+    # the task's own output-format instructions as an injection attempt and
+    # BLOCKed. The trust boundary must sit between the task block (the user's
+    # request: authoritative) and the other COUNCIL_* blocks (third-party
+    # content: untrusted), and the default output structure must yield to a
+    # task-specified format.
+    COUNCIL_TASK="Answer the brief exactly in its IDEAS/ANTI-IDEAS format"
+    COUNCIL_GOAL="advice"
+    COUNCIL_DOMAIN="auto"
+    COUNCIL_STYLE="balanced"
+    COUNCIL_DEPTH="standard"
+    COUNCIL_RESEARCH_FIRST="false"
+    COUNCIL_RUN_DIR="$(mktemp -d "$TEST_TMP_DIR/council-trust.XXXXXX")"
+
+    local prompt
+    prompt="$(council_prompt_for_member "backend-architect" "independent-advice")"
+
+    if grep -q "authoritative instruction source" <<< "$prompt" &&
+       ! grep -q "COUNCIL_TASK and COUNCIL_\* artifact blocks as untrusted" <<< "$prompt" &&
+       grep -q "untrusted data" <<< "$prompt" &&
+       grep -q "If the Task specifies an output format" <<< "$prompt" &&
+       grep -q "VERDICT: APPROVE" <<< "$prompt"; then
+        test_pass
+    else
+        test_fail "trust boundary wrong: task must be authoritative (incl. its format), artifact blocks untrusted, verdict footer intact"
         return 1
     fi
 }
@@ -1080,42 +1415,628 @@ EOF
     test_pass
 }
 
-test_council_dispatch_strips_blocked_env_but_sets_readonly() {
-    test_case "Council dispatch strips blocked caller env while setting read-only sandbox"
+test_council_dispatch_strips_blocked_env_but_sets_disposable_mode() {
+    test_case "Council dispatch strips blocked caller env while setting disposable-workspace mode"
     load_council_lib || return 1
 
-    local tmp_dir env_capture
+    local tmp_dir env_capture source_dir
     tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-env.XXXXXX")"
     env_capture="$tmp_dir/env.out"
+    source_dir="$tmp_dir/source"
+    mkdir -p "$source_dir"
 
     run_agent_sync() {
         env > "$env_capture"
         echo "ok"
     }
 
-    OCTOPUS_SECURITY_V870=false \
-    OCTOPUS_GEMINI_SANDBOX=unsafe \
-    OCTOPUS_CODEX_SANDBOX=caller-danger \
-    CLAUDE_OCTOPUS_AUTONOMY=autonomous \
-    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='codex:available' \
-        council_run --providers codex --depth quick --members 3 --output-dir "$tmp_dir" "Review auth"
+    if ! (
+        cd "$source_dir" || exit 1
+        OCTOPUS_SECURITY_V870=false \
+        OCTOPUS_AGY_SANDBOX=unsafe \
+        OCTOPUS_CODEX_SANDBOX=caller-danger \
+        CLAUDE_OCTOPUS_AUTONOMY=autonomous \
+        OCTOPUS_COUNCIL_PROVIDER_FIXTURE='codex:available' \
+            council_run --providers codex --depth quick --members 3 --output-dir "$tmp_dir/output" "Review auth"
+    ); then
+        unset -f run_agent_sync
+        test_fail "council env-isolation fixture failed"
+        return 1
+    fi
 
-    if grep -q '^OCTOPUS_CODEX_SANDBOX=read-only$' "$env_capture" &&
+    if grep -q '^OCTOPUS_CODEX_SANDBOX=danger-full-access$' "$env_capture" &&
        ! grep -q '^OCTOPUS_SECURITY_V870=' "$env_capture" &&
-       ! grep -q '^OCTOPUS_GEMINI_SANDBOX=' "$env_capture" &&
+       ! grep -q '^OCTOPUS_AGY_SANDBOX=' "$env_capture" &&
        ! grep -q '^CLAUDE_OCTOPUS_AUTONOMY=' "$env_capture"; then
         unset -f run_agent_sync
         test_pass
     else
         unset -f run_agent_sync
-        test_fail "blocked env forwarding or read-only sandbox mismatch"
+        test_fail "blocked env forwarding or disposable-workspace mode mismatch"
+        return 1
+    fi
+}
+
+test_council_run_emits_summary_when_body_leaves_none() {
+    test_case "council_run emits a fallback summary.json when the run body exits without one"
+    load_council_lib || return 1
+
+    # Simulate the killer signature: the run body reaches a real run directory
+    # (synthesis dispatched) then exits nonzero WITHOUT writing summary.json —
+    # e.g. the chair-synthesis seat is SIGKILLed at the timeout cap, or a late
+    # `|| return 1` fires after synthesis but before the completed-summary write.
+    # A caller polling for summary.json would otherwise wait forever.
+    local d
+    d="$(mktemp -d "$TEST_TMP_DIR/council-incomplete.XXXXXX")"
+
+    _council_run_impl() { COUNCIL_RUN_DIR="$d"; return 1; }
+    # Keep the writer/warnings deterministic and independent of the full summary
+    # generator (already covered by the dry-run / full-success tests).
+    council_write_summary_json() { printf '{"status":"%s"}\n' "$1" > "${COUNCIL_RUN_DIR}/summary.json"; }
+    council_print_run_warnings() { :; }
+
+    local rc=0
+    council_run "dummy task" >/dev/null 2>&1 || rc=$?
+
+    local status=""
+    [[ -f "$d/summary.json" ]] && status="$(jq -r '.status' "$d/summary.json" 2>/dev/null)"
+
+    unset -f _council_run_impl council_write_summary_json council_print_run_warnings
+
+    if [[ "$status" == "incomplete" && "$rc" -ne 0 ]]; then
+        test_pass
+    else
+        test_fail "expected fallback summary status=incomplete and nonzero rc; got status='$status' rc=$rc"
+        return 1
+    fi
+}
+
+test_council_run_does_not_clobber_healthy_summary() {
+    test_case "council_run leaves a body-written summary.json untouched on a healthy run"
+    load_council_lib || return 1
+
+    local d
+    d="$(mktemp -d "$TEST_TMP_DIR/council-healthy.XXXXXX")"
+
+    # Healthy body: writes its own summary and returns success. The wrapper must
+    # NOT re-invoke the writer or overwrite the status.
+    _council_run_impl() { COUNCIL_RUN_DIR="$d"; printf '{"status":"completed"}\n' > "$d/summary.json"; return 0; }
+    council_write_summary_json() { printf '{"status":"WRAPPER_CLOBBERED"}\n' > "${COUNCIL_RUN_DIR}/summary.json"; }
+    council_print_run_warnings() { :; }
+
+    local rc=0
+    council_run "dummy task" >/dev/null 2>&1 || rc=$?
+
+    local status
+    status="$(jq -r '.status' "$d/summary.json" 2>/dev/null)"
+
+    unset -f _council_run_impl council_write_summary_json council_print_run_warnings
+
+    if [[ "$status" == "completed" && "$rc" -eq 0 ]]; then
+        test_pass
+    else
+        test_fail "wrapper clobbered a healthy summary or changed rc; status='$status' rc=$rc"
+        return 1
+    fi
+}
+
+test_council_chair_is_host_native_detects_status() {
+    test_case "council_chair_is_host_native reflects the chair provider's host-native status"
+    load_council_lib || return 1
+    COUNCIL_ROSTER_JSON='[{"persona":"strategy-analyst","seat":"chair","provider":"claude","provider_org":"anthropic","model":"opus"}]'
+    COUNCIL_CHAIR_FALLBACK_USED="false"; COUNCIL_CHAIR_FALLBACK_PERSONA=""
+    local hostnative available
+    COUNCIL_PROVIDER_STATUS_JSON='{"claude":"host-native"}' council_chair_is_host_native && hostnative=yes || hostnative=no
+    COUNCIL_PROVIDER_STATUS_JSON='{"claude":"available"}' council_chair_is_host_native && available=yes || available=no
+    if [[ "$hostnative" == "yes" && "$available" == "no" ]]; then
+        test_pass
+    else
+        test_fail "expected host-native=yes available=no; got host-native=$hostnative available=$available"
+        return 1
+    fi
+}
+
+test_council_run_replaces_malformed_body_summary() {
+    test_case "council_run treats an empty/malformed body summary.json as missing and repairs it"
+    load_council_lib || return 1
+
+    local d
+    d="$(mktemp -d "$TEST_TMP_DIR/council-malformed.XXXXXX")"
+
+    # A jq failure mid-write can leave garbage that -f would accept. The wrapper
+    # must treat unparseable JSON as no summary and replace it with a valid one.
+    _council_run_impl() { COUNCIL_RUN_DIR="$d"; printf 'not json{' > "$d/summary.json"; return 0; }
+    council_write_summary_json() { printf '{"status":"%s"}\n' "$1" > "${COUNCIL_RUN_DIR}/summary.json"; }
+    council_print_run_warnings() { :; }
+
+    local rc=0
+    council_run "dummy task" >/dev/null 2>&1 || rc=$?
+
+    local status valid=1
+    jq -e . "$d/summary.json" >/dev/null 2>&1 || valid=0
+    status="$(jq -r '.status' "$d/summary.json" 2>/dev/null)"
+
+    unset -f _council_run_impl council_write_summary_json council_print_run_warnings
+
+    if [[ "$valid" -eq 1 && "$status" == "incomplete" && "$rc" -ne 0 ]]; then
+        test_pass
+    else
+        test_fail "expected repaired valid incomplete summary + nonzero rc; valid=$valid status='$status' rc=$rc"
+        return 1
+    fi
+}
+
+test_council_run_writes_minimal_summary_when_rich_writer_fails() {
+    test_case "council_run drops a minimal valid summary.json when the rich writer fails"
+    load_council_lib || return 1
+
+    local d
+    d="$(mktemp -d "$TEST_TMP_DIR/council-writerfail.XXXXXX")"
+
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_RUN_ID="writer-failure"
+    council_write_run_status "running"
+
+    # Body leaves no summary AND the rich writer itself fails (e.g. jq errors) —
+    # the wrapper must still guarantee a parseable, machine-detectable artifact.
+    _council_run_impl() { COUNCIL_RUN_DIR="$d"; return 1; }
+    council_write_summary_json() { return 1; }
+    council_print_run_warnings() { :; }
+
+    local rc=0
+    council_run "dummy task" >/dev/null 2>&1 || rc=$?
+
+    local status valid=1 beacon_state beacon_status
+    jq -e . "$d/summary.json" >/dev/null 2>&1 || valid=0
+    status="$(jq -r '.status' "$d/summary.json" 2>/dev/null)"
+    beacon_state="$(jq -r '.state' "$d/run-status.json" 2>/dev/null)"
+    beacon_status="$(jq -r '.status' "$d/run-status.json" 2>/dev/null)"
+
+    unset -f _council_run_impl council_write_summary_json council_print_run_warnings
+
+    if [[ "$valid" -eq 1 && "$status" == "incomplete" && "$rc" -ne 0 \
+          && "$beacon_state" == "finished" && "$beacon_status" == "incomplete" ]]; then
+        test_pass
+    else
+        test_fail "expected minimal valid incomplete summary + finished beacon + nonzero rc; valid=$valid status='$status' rc=$rc beacon=$beacon_state/$beacon_status"
+        return 1
+    fi
+}
+
+test_council_run_status_beacon_lifecycle() {
+    test_case "council writes a run-status.json beacon: running at run-dir creation, finished at summary"
+    load_council_lib || return 1
+
+    # create_run_dir runs in THIS process, so the staged beacon must record this
+    # shell's own pid — assert the exact value, not merely a positive integer.
+    local expected_pid_running="${BASHPID:-$$}"
+    # Unit: create_run_dir beacons "running" (with run_id + a live pid) BEFORE any
+    # summary.json exists — the signal a poller uses to tell in-progress from
+    # died-on-spawn. Surface a setup failure rather than masking it with `|| true`.
+    local tmp; tmp="$(mktemp -d "$TEST_TMP_DIR/council-runstatus.XXXXXX")"
+    if ! COUNCIL_OUTPUT_DIR="$tmp" council_create_run_dir >/dev/null 2>&1; then
+        test_fail "council_create_run_dir failed"; return 1
+    fi
+    local rs="${COUNCIL_RUN_DIR}/run-status.json" run_id_running="$COUNCIL_RUN_ID"
+    local state_running pid_running rid_running had_summary=no
+    state_running="$(jq -r '.state' "$rs" 2>/dev/null)"
+    pid_running="$(jq -r '.pid' "$rs" 2>/dev/null)"
+    rid_running="$(jq -r '.run_id' "$rs" 2>/dev/null)"
+    [[ -e "${COUNCIL_RUN_DIR}/summary.json" ]] && had_summary=yes
+
+    # #1: a beacon written from a subshell must record the writing process's own
+    # pid (BASHPID), not the parent shell — otherwise a poller watches the wrong
+    # process. Capture the writer's pid and the recorded pid in the SAME subshell
+    # (comparing across two subshells would compare two different pids). On bash
+    # 3.2 (BASHPID unset) both resolve to $$, so this holds on every bash.
+    local sub_result sub_expect sub_pid
+    sub_result="$( ( council_write_run_status "running" >/dev/null 2>&1
+                     printf '%s|%s' "${BASHPID:-$$}" "$(jq -r '.pid' "$rs" 2>/dev/null)" ) )"
+    sub_expect="${sub_result%%|*}"
+    sub_pid="${sub_result##*|}"
+
+    # Integration: a real dry-run flips the beacon to "finished" with the terminal
+    # status, through council_write_summary_json (one hook covers every exit).
+    local tmp2; tmp2="$(mktemp -d "$TEST_TMP_DIR/council-runstatus2.XXXXXX")"
+    if ! council_run --dry-run --goal advice --depth quick --benchmark auto \
+        --output-dir "$tmp2" "Should we cache?" >/dev/null 2>&1; then
+        test_fail "council_run --dry-run failed"; return 1
+    fi
+    local rs2 state_finished status_finished
+    rs2="$(find "$tmp2" -name run-status.json -type f | head -1)"
+    state_finished="$(jq -r '.state' "$rs2" 2>/dev/null)"
+    status_finished="$(jq -r '.status' "$rs2" 2>/dev/null)"
+
+    if [[ "$state_running" == "running" && "$pid_running" == "$expected_pid_running" \
+          && "$rid_running" == "$run_id_running" && "$had_summary" == "no" \
+          && "$sub_pid" == "$sub_expect" \
+          && "$state_finished" == "finished" && "$status_finished" == "dry-run" ]]; then
+        test_pass
+    else
+        test_fail "beacon lifecycle wrong: running(state=$state_running pid=$pid_running run_id=$rid_running/$run_id_running summary=$had_summary subpid=$sub_pid/$sub_expect) finished(state=$state_finished status=$status_finished)"
+        return 1
+    fi
+}
+
+test_council_quorum_met_with_host_native_chair() {
+    test_case "quorum.met reflects the vote before synthesis: host-native and absent chairs keep two vendor approvals without claiming synthesis"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-hnchair.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_DEPTH="standard"   # required_non_chair = 2
+    COUNCIL_FIXTURE=""
+    COUNCIL_CHAIR_FALLBACK_USED="false"; COUNCIL_CHAIR_FALLBACK_PERSONA=""
+    COUNCIL_ROSTER_JSON='[
+      {"persona":"strategy-analyst","seat":"chair","provider":"claude","provider_org":"anthropic","model":"opus"},
+      {"persona":"backend-architect","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"},
+      {"persona":"security-auditor","seat":"member","provider":"agy","provider_org":"google","model":"gemini"}
+    ]'
+    # Non-chair vendors approve; the host-native chair (claude) cannot self-dispatch
+    # (return 1, no substantive file) — mirrors the real host-agent path.
+    council_dispatch_member_detached() {
+        local mj="$1" out="$3" prov
+        prov="$(jq -r '.provider' <<< "$mj")"
+        case "$prov" in
+            codex|agy) printf '## Review by %s\n\nThe change is sound and well tested. No blocking concerns.\n\nVERDICT: APPROVE\n' "$prov" > "$out"; return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    council_run_chair_fallback() { :; }   # no dispatched fallback available
+
+    COUNCIL_PROVIDER_STATUS_JSON='{"claude":"host-native","codex":"available","agy":"available"}' \
+        council_run_advice_phase >/dev/null 2>&1 || true
+    local met_hn chair_recv_hn hostnative_hn synth_hn
+    met_hn="$COUNCIL_QUORUM_MET"; chair_recv_hn="$COUNCIL_CHAIR_RESPONSE_RECEIVED"
+    hostnative_hn="$COUNCIL_CHAIR_HOST_NATIVE"; synth_hn="$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE"
+
+    # Chair genuinely absent (provider merely "available", never responded, no
+    # fallback): the two vendor approvals still carry the VOTE, so met stays true
+    # (Finding 4 — a missing/degenerate chair must not corrupt the tally to
+    # met=false), but the missing synthesis is flagged chair_synthesis_available=false.
+    COUNCIL_PROVIDER_STATUS_JSON='{"claude":"available","codex":"available","agy":"available"}' \
+        council_run_advice_phase >/dev/null 2>&1 || true
+    local met_absent="$COUNCIL_QUORUM_MET" synth_absent="$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE"
+
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    if [[ "$met_hn" == "true" && "$chair_recv_hn" == "false" && "$hostnative_hn" == "true" && "$synth_hn" == "false" \
+          && "$met_absent" == "true" && "$synth_absent" == "false" ]]; then
+        test_pass
+    else
+        test_fail "host-native chair quorum wrong: met=$met_hn chair_received=$chair_recv_hn host_native=$hostnative_hn synth=$synth_hn ; absent-chair met=$met_absent synth=$synth_absent"
+        return 1
+    fi
+}
+
+test_council_reset_defaults_clears_chair_state() {
+    test_case "council_reset_defaults clears chair and blind-seat state from a prior run"
+    load_council_lib || return 1
+
+    COUNCIL_CHAIR_HOST_NATIVE="true"
+    COUNCIL_CHAIR_SYNTHESIS_AVAILABLE="true"
+    COUNCIL_BLIND_SEATS="codex agy"
+    council_reset_defaults
+
+    if [[ "$COUNCIL_CHAIR_HOST_NATIVE" == "false" \
+          && "$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE" == "false" \
+          && -z "$COUNCIL_BLIND_SEATS" ]]; then
+        test_pass
+    else
+        test_fail "per-run state survived reset: host_native=$COUNCIL_CHAIR_HOST_NATIVE synthesis=$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE blind=[$COUNCIL_BLIND_SEATS]"
+        return 1
+    fi
+}
+
+test_council_dry_run_does_not_reuse_blind_seats() {
+    test_case "a dry run does not report blind seats retained from a prior run"
+    load_council_lib || return 1
+    local d summary
+    d="$(mktemp -d "$TEST_TMP_DIR/council-blind-reset.XXXXXX")"
+
+    COUNCIL_BLIND_SEATS="codex agy"
+    council_run --dry-run --goal advice --depth quick --benchmark off \
+        --output-dir "$d" "Review the change" >/dev/null
+    summary="$(find "$d" -name summary.json -type f -print -quit)"
+
+    if [[ -f "$summary" ]] && jq -e \
+        '.status == "dry-run" and .quorum.blind_seats == []' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "dry-run retained blind seats: $(jq -c '.quorum.blind_seats' "$summary" 2>/dev/null || printf missing)"
+        return 1
+    fi
+}
+
+test_council_host_native_placeholder_completes_in_context() {
+    test_case "host-native synthesis placeholder remains completed and available in context"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-hnsynth.XXXXXX")"
+    mkdir -p "$d/responses" "$d/critiques" "$d/revisions"
+
+    council_parse_args() { council_reset_defaults; COUNCIL_TASK="Review the change"; }
+    council_create_run_dir() { COUNCIL_RUN_DIR="$d"; COUNCIL_RUN_ID="test-host-native-synthesis"; }
+    council_build_roster() {
+        COUNCIL_RESOLVED_MEMBERS="strategy-analyst,backend-architect,security-auditor"
+        COUNCIL_ROSTER_JSON='[{"persona":"strategy-analyst","seat":"chair","provider":"claude"}]'
+    }
+    council_write_config_json() { :; }
+    council_write_research_artifact() { :; }
+    council_check_cost_cap() { return 0; }
+    council_run_advice_phase() {
+        COUNCIL_QUORUM_MET="true"
+        COUNCIL_CHAIR_RESPONSE_RECEIVED="false"
+        COUNCIL_CHAIR_HOST_NATIVE="true"
+        COUNCIL_CHAIR_SYNTHESIS_AVAILABLE="false"
+    }
+    council_run_critique_phase() { :; }
+    council_run_revision_phase() { :; }
+    council_dispatch_member() { return 1; }
+    council_append_corpus_artifacts() { :; }
+    council_write_summary_json() { printf '%s' "$1" > "$d/summary-status"; }
+    council_print_run_warnings() { :; }
+    council_write_implementation_plan() { :; }
+    council_scan_veto_artifacts() { :; }
+    council_needs_implementation_plan() { return 1; }
+    council_process_implementation_gates() { :; }
+
+    local rc=0
+    _council_run_impl "Review the change" >/dev/null 2>&1 || rc=$?
+    local status=""
+    status="$(cat "$d/summary-status" 2>/dev/null)"
+
+    if [[ "$rc" -eq 0 && "$status" == "completed" \
+          && "$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE" == "true" \
+          && -s "$d/synthesis.md" ]]; then
+        test_pass
+    else
+        test_fail "host-native placeholder contract wrong: rc=$rc status=$status synthesis=$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE artifact=$([[ -s "$d/synthesis.md" ]] && printf yes || printf no)"
+        return 1
+    fi
+}
+
+test_council_failed_dispatched_synthesis_is_partial() {
+    test_case "a failed dispatched chair synthesis remains partial and unavailable"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-dispatched-synth.XXXXXX")"
+    mkdir -p "$d/responses" "$d/critiques" "$d/revisions"
+
+    council_parse_args() { council_reset_defaults; COUNCIL_TASK="Review the change"; }
+    council_create_run_dir() { COUNCIL_RUN_DIR="$d"; COUNCIL_RUN_ID="test-dispatched-synthesis"; }
+    council_build_roster() {
+        COUNCIL_RESOLVED_MEMBERS="strategy-analyst,backend-architect,security-auditor"
+        COUNCIL_ROSTER_JSON='[{"persona":"strategy-analyst","seat":"chair","provider":"codex"}]'
+    }
+    council_write_config_json() { :; }
+    council_write_research_artifact() { :; }
+    council_check_cost_cap() { return 0; }
+    council_run_advice_phase() {
+        COUNCIL_QUORUM_MET="true"
+        COUNCIL_CHAIR_RESPONSE_RECEIVED="true"
+        COUNCIL_CHAIR_HOST_NATIVE="false"
+        COUNCIL_CHAIR_SYNTHESIS_AVAILABLE="false"
+    }
+    council_run_critique_phase() { :; }
+    council_run_revision_phase() { :; }
+    council_dispatch_member() { return 1; }
+    council_append_corpus_artifacts() { :; }
+    council_write_summary_json() { printf '%s' "$1" > "$d/summary-status"; }
+    council_print_run_warnings() { :; }
+    council_write_implementation_plan() { :; }
+    council_scan_veto_artifacts() { :; }
+    council_needs_implementation_plan() { return 1; }
+    council_process_implementation_gates() { :; }
+
+    local rc=0
+    _council_run_impl "Review the change" >/dev/null 2>&1 || rc=$?
+    local status=""
+    status="$(cat "$d/summary-status" 2>/dev/null)"
+
+    if [[ "$rc" -ne 0 && "$status" == "partial" \
+          && "$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE" == "false" ]]; then
+        test_pass
+    else
+        test_fail "failed dispatched synthesis contract wrong: rc=$rc status=$status synthesis=$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE"
+        return 1
+    fi
+}
+
+test_council_synthesis_warning_uses_logger_and_stays_capturable() {
+    test_case "chair synthesis warning uses the project logger and remains capturable on stdout"
+    load_council_lib || return 1
+    local logged="$TEST_TMP_DIR/council-warning-log.txt"
+    local stderr="$TEST_TMP_DIR/council-warning-stderr.txt"
+    local message="Council warning: quorum met on independent vendor approvals, but chair synthesis was unavailable (no chair response / all chair seats degenerate). No synthesized recommendation was produced — read responses/*.md for the per-seat verdicts. See summary.json quorum.chair_synthesis_available."
+
+    log() {
+        printf '%s|%s\n' "$1" "$2" > "$logged"
+        printf 'LOGGER: %s\n' "$2" >&2
+    }
+    COUNCIL_QUORUM_MET="true"
+    COUNCIL_CHAIR_SYNTHESIS_AVAILABLE="false"
+
+    local output
+    output="$(council_print_run_warnings 2> "$stderr")"
+    unset -f log
+
+    if [[ "$(cat "$logged" 2>/dev/null)" == "WARN|$message" \
+          && "$output" == *"$message"* && ! -s "$stderr" ]]; then
+        test_pass
+    else
+        test_fail "warning logger contract wrong: logged=[$(cat "$logged" 2>/dev/null)] output=[$output] stderr=[$(cat "$stderr" 2>/dev/null)]"
+        return 1
+    fi
+}
+
+test_council_degenerate_chair_keeps_vote_and_flags_synthesis() {
+    test_case "a dispatched chair that returns a degenerate response keeps quorum.met=true on the two vendor approvals, flags chair_synthesis_available=false, and warns (Finding 4)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-degchair.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_DEPTH="standard"   # required_non_chair = 2
+    COUNCIL_FIXTURE=""
+    COUNCIL_CHAIR_FALLBACK_USED="false"; COUNCIL_CHAIR_FALLBACK_PERSONA=""
+    COUNCIL_ROSTER_JSON='[
+      {"persona":"strategy-analyst","seat":"chair","provider":"codex","provider_org":"openai","model":"gpt"},
+      {"persona":"backend-architect","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"},
+      {"persona":"security-auditor","seat":"member","provider":"agy","provider_org":"google","model":"gemini"}
+    ]'
+    # The two non-chair vendors cleanly APPROVE with grounded evidence; the chair
+    # seat is DISPATCHED but returns the host self-dispatch stub (non-substantive →
+    # degenerate). The chair provider is NOT host-native, and no fallback recovers
+    # it, so the chair synthesis is genuinely absent — but the vote still carries.
+    council_dispatch_member_detached() {
+        local mj="$1" out="$3" seat
+        seat="$(jq -r '.seat // "member"' <<< "$mj")"
+        if [[ "$seat" == "chair" ]]; then
+            printf 'Subprocess dispatch is unavailable in this environment.\n' > "$out"
+            return 0
+        fi
+        printf '## Review\n\nsrc/app.ts:42 correctly guards the nil case; tests cover it.\n\nVERDICT: APPROVE\n' > "$out"
+        return 0
+    }
+    council_run_chair_fallback() { :; }   # no dispatched fallback available
+
+    COUNCIL_PROVIDER_STATUS_JSON='{"codex":"available","agy":"available"}' \
+        council_run_advice_phase >/dev/null 2>&1 || true
+
+    local met synth chair_status approving warn
+    met="$COUNCIL_QUORUM_MET"
+    synth="$COUNCIL_CHAIR_SYNTHESIS_AVAILABLE"
+    chair_status="$(jq -r 'map(select(.seat == "chair"))[0].status // "none"' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    approving="$COUNCIL_DISTINCT_APPROVING_MODEL_FAMILIES"
+    warn="$(council_print_run_warnings)"
+
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    if [[ "$met" == "true" && "$synth" == "false" && "$chair_status" == "degenerate" \
+          && "$approving" == "2" && "$warn" == *"chair synthesis was unavailable"* ]]; then
+        test_pass
+    else
+        test_fail "degenerate-chair quorum wrong: met=$met synth=$synth chair_status=$chair_status approving_families=$approving warn=[$warn]"
+        return 1
+    fi
+}
+
+test_council_one_vote_per_vendor_opt_in() {
+    test_case "OCTOPUS_COUNCIL_ONE_VOTE_PER_VENDOR=1 keeps one voting seat per model family; default leaves the roster intact"
+    load_council_lib || return 1
+    local roster='[
+      {"persona":"strategy-analyst","seat":"chair","provider":"claude","provider_org":"anthropic","model_family":"anthropic","score":"0.9"},
+      {"persona":"backend-architect","seat":"member","provider":"codex","provider_org":"openai","model_family":"openai","score":"0.8"},
+      {"persona":"security-auditor","seat":"member","provider":"codex","provider_org":"openai","model_family":"openai","score":"0.6"},
+      {"persona":"research-synthesizer","seat":"member","provider":"agy","provider_org":"google","model_family":"google","score":"0.7"}
+    ]'
+
+    # Compare the WHOLE roster (normalized), not just seat counts, so a regression
+    # that swaps a seat or replaces the chair can't slip through.
+    local roster_norm; roster_norm="$(jq -Sc . <<< "$roster")"
+    # Enabled result: the lower-scored OpenAI-family seat (security-auditor) is dropped;
+    # chair + higher-scored OpenAI-family seat (backend-architect) + agy remain.
+    local expected_on; expected_on="$(jq -Sc . <<< '[
+      {"persona":"strategy-analyst","seat":"chair","provider":"claude","provider_org":"anthropic","model_family":"anthropic","score":"0.9"},
+      {"persona":"backend-architect","seat":"member","provider":"codex","provider_org":"openai","model_family":"openai","score":"0.8"},
+      {"persona":"research-synthesizer","seat":"member","provider":"agy","provider_org":"google","model_family":"google","score":"0.7"}
+    ]')"
+
+    # Default (flag unset): opt-in feature is off, roster is byte-for-byte untouched.
+    local default_norm
+    unset OCTOPUS_COUNCIL_ONE_VOTE_PER_VENDOR
+    COUNCIL_ROSTER_JSON="$roster"
+    council_dedup_vendor_seats
+    default_norm="$(jq -Sc . <<< "$COUNCIL_ROSTER_JSON")"
+
+    # Explicit disable: ONLY the exact value "1" enables the policy. A non-"1"
+    # value (e.g. "0") must leave the roster identical to unset — guards against a
+    # future nonempty-value predicate silently enabling it on "0"/"false".
+    local off_norm
+    COUNCIL_ROSTER_JSON="$roster"
+    OCTOPUS_COUNCIL_ONE_VOTE_PER_VENDOR=0 council_dedup_vendor_seats
+    off_norm="$(jq -Sc . <<< "$COUNCIL_ROSTER_JSON")"
+
+    # Enabled: roster reduced to exactly the expected one-vote-per-model-family set.
+    local on_norm
+    COUNCIL_ROSTER_JSON="$roster"
+    OCTOPUS_COUNCIL_ONE_VOTE_PER_VENDOR=1 council_dedup_vendor_seats
+    on_norm="$(jq -Sc . <<< "$COUNCIL_ROSTER_JSON")"
+
+    if [[ "$default_norm" == "$roster_norm" && "$off_norm" == "$roster_norm" \
+          && "$on_norm" == "$expected_on" ]]; then
+        test_pass
+    else
+        test_fail "dedup roster identity wrong: default==input?$([[ "$default_norm" == "$roster_norm" ]] && echo y || echo n) off==input?$([[ "$off_norm" == "$roster_norm" ]] && echo y || echo n) on=$on_norm"
+        return 1
+    fi
+}
+
+test_council_per_session_pool_isolation() {
+    test_case "council namespaces the default pool per session; --output-dir and opt-out are unaffected"
+    load_council_lib || return 1
+    local ws; ws="$(mktemp -d "$TEST_TMP_DIR/council-pool.XXXXXX")"
+
+    # slug is filesystem-safe and collision-resistant: two ids that sanitize to
+    # the same prefix ("sess/A b!" and "sess?A b!") must not collapse to one pool.
+    local slug1 slug2 codex_slug1 codex_slug2 codex_precedence_slug codex_task_slug claude_host_slug
+    slug1="$(OCTOPUS_HOST=claude CLAUDE_CODE_SESSION_ID='sess/A b!' council_session_slug)"
+    slug2="$(OCTOPUS_HOST=claude CLAUDE_CODE_SESSION_ID='sess?A b!' council_session_slug)"
+    codex_slug1="$(OCTOPUS_HOST=codex CODEX_SESSION_ID='codex/A' CODEX_TASK_ID= \
+        CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= council_session_slug)"
+    codex_slug2="$(OCTOPUS_HOST=codex CODEX_SESSION_ID='codex?A' CODEX_TASK_ID= \
+        CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= council_session_slug)"
+    codex_precedence_slug="$(OCTOPUS_HOST=codex CODEX_SESSION_ID='codex/A' CODEX_TASK_ID='task/B' \
+        CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= council_session_slug)"
+    codex_task_slug="$(
+        unset CODEX_SESSION_ID
+        OCTOPUS_HOST=codex CODEX_TASK_ID='task/A' \
+            CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= council_session_slug
+    )"
+    claude_host_slug="$(OCTOPUS_HOST=claude CODEX_SESSION_ID='codex/A' \
+        CLAUDE_CODE_SESSION_ID='claude/A' CLAUDE_SESSION_ID= council_session_slug)"
+
+    # Default pool is namespaced per session; two sessions get separate pools.
+    local dirA dirB shared explicit
+    OCTOPUS_HOST=claude COUNCIL_OUTPUT_DIR="" WORKSPACE_DIR="$ws" CLAUDE_CODE_SESSION_ID="sessA" council_create_run_dir >/dev/null 2>&1
+    dirA="$COUNCIL_RUN_DIR"
+    OCTOPUS_HOST=claude COUNCIL_OUTPUT_DIR="" WORKSPACE_DIR="$ws" CLAUDE_CODE_SESSION_ID="sessB" council_create_run_dir >/dev/null 2>&1
+    dirB="$COUNCIL_RUN_DIR"
+    # Opt-out restores the flat shared pool (no session- segment).
+    OCTOPUS_HOST=claude COUNCIL_OUTPUT_DIR="" WORKSPACE_DIR="$ws" CLAUDE_CODE_SESSION_ID="sessA" OCTOPUS_COUNCIL_SHARED_POOL=1 council_create_run_dir >/dev/null 2>&1
+    shared="$COUNCIL_RUN_DIR"
+    # An explicit --output-dir (COUNCIL_OUTPUT_DIR) must select $out DIRECTLY —
+    # the run dir's parent is $out, never $out/session-<slug>.
+    local out; out="$(mktemp -d "$TEST_TMP_DIR/council-explicit.XXXXXX")"
+    COUNCIL_OUTPUT_DIR="$out" council_create_run_dir >/dev/null 2>&1
+    explicit="$COUNCIL_RUN_DIR"
+
+    if [[ "$slug1" == "sess_A_b_-"* && "$slug2" == "sess_A_b_-"* && "$slug1" != "$slug2" \
+          && "$codex_slug1" == "codex_A-"* && "$codex_slug2" == "codex_A-"* \
+          && "$codex_slug1" != "$codex_slug2" && "$codex_precedence_slug" == "$codex_slug1" \
+          && "$codex_task_slug" == "task_A-"* && "$claude_host_slug" == "claude_A-"* \
+          && "$dirA" == "$ws/councils/session-sessA-"*/* \
+          && "$dirB" == "$ws/councils/session-sessB-"*/* \
+          && "$dirA" != "$dirB" \
+          && "$shared" == "$ws/councils/"* && "$shared" != *"/session-"* \
+          && "$(dirname "$explicit")" == "$out" ]]; then
+        test_pass
+    else
+        test_fail "pool isolation wrong: slug1=$slug1 slug2=$slug2 codex1=$codex_slug1 codex2=$codex_slug2 codex_precedence=$codex_precedence_slug codex_task=$codex_task_slug claude_host=$claude_host_slug A=$dirA B=$dirB shared=$shared explicit=$explicit"
         return 1
     fi
 }
 
 test_council_command_files_are_registered
 test_council_orchestrate_route_exists
+test_council_run_status_beacon_lifecycle
+test_council_per_session_pool_isolation
 test_council_benchmark_routing_lib_is_extracted
+test_council_chair_is_host_native_detects_status
+test_council_reset_defaults_clears_chair_state
+test_council_dry_run_does_not_reuse_blind_seats
+test_council_host_native_placeholder_completes_in_context
+test_council_failed_dispatched_synthesis_is_partial
+test_council_synthesis_warning_uses_logger_and_stays_capturable
+test_council_quorum_met_with_host_native_chair
+test_council_degenerate_chair_keeps_vote_and_flags_synthesis
+test_council_one_vote_per_vendor_opt_in
 test_council_defaults_are_depth_aware
 test_council_rejects_non_usd_budget
 test_council_dry_run_writes_summary_json
@@ -1147,27 +2068,40 @@ test_council_synthesis_is_chair_generated
 test_council_plan_only_writes_implementation_plan_without_handoff
 test_council_after_approval_does_not_handoff_without_gate
 test_council_approved_gates_start_worktree_handoff
+test_council_gate_approval_suppresses_prompt_when_non_interactive
+test_council_gate_approval_respects_remote_session_flag
+test_council_gate_approval_respects_remaining_non_interactive_signals
+test_council_gate_approval_denies_when_no_tty_present
+test_council_gate_approval_still_prompts_when_truly_interactive
+test_council_gate_approval_explicit_approval_needs_no_tty
 test_council_critical_veto_aborts_implementation_run
 test_council_chair_fallback_preserves_quorum
 test_council_diversity_warning_prints_to_cli
 test_council_chair_fallback_warning_prints_to_cli
+test_council_contribution_record_failure_is_nonfatal
+test_council_chair_fallback_reuses_advice_digest
 test_council_fixture_critique_honors_failed_persona
 test_council_cost_cap_aborts_before_fanout
 test_council_cost_cap_aborts_before_critique
 test_council_deep_fixture_writes_revision_artifacts
 test_council_cross_critique_prompt_includes_peer_responses
 test_council_revision_prompt_includes_prior_critiques
+test_council_prompt_task_block_is_authoritative
 test_council_scans_artifact_critical_veto
 test_council_structured_veto_requires_veto_role
 test_council_veto_scan_ignores_discussed_token
-test_council_dispatch_strips_blocked_env_but_sets_readonly
+test_council_dispatch_strips_blocked_env_but_sets_disposable_mode
+test_council_run_emits_summary_when_body_leaves_none
+test_council_run_does_not_clobber_healthy_summary
+test_council_run_replaces_malformed_body_summary
+test_council_run_writes_minimal_summary_when_rich_writer_fails
 
 test_council_host_native_detection() {
     test_case "council_detect_providers marks host provider as host-native (issue #444)"
     load_council_lib || return 1
 
     OCTOPUS_HOST="codex" \
-    COUNCIL_PROVIDERS="claude,codex,gemini" \
+    COUNCIL_PROVIDERS="claude,codex,agy" \
         council_detect_providers
 
     local codex_status claude_status
@@ -1225,7 +2159,1026 @@ test_council_live_response_host_native_fails_for_synthesis() {
     fi
 }
 
+test_council_split_double_seat_fails_quorum() {
+    test_case "Council quorum fails when a double-seated vendor splits (sail-cruisey #1992)"
+    load_council_lib || return 1
+    local tmp_dir rd
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-split.XXXXXX")"
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='codex:available,agy:available' \
+    OCTOPUS_COUNCIL_FIXTURE_REVISE_PERSONAS='code-reviewer' \
+        council_run --depth standard --output-dir "$tmp_dir" "Review X" >/dev/null 2>&1 || true
+    rd="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    # This run stops before synthesis (quorum not met), so synthesis.md is never
+    # written — summary.json must NOT advertise it (artifacts.synthesis == null).
+    if jq -e '.quorum.met == false and .quorum.distinct_approving_providers == 1 and .quorum.approving_providers == "agy" and .artifacts.synthesis == null' "$rd/summary.json" >/dev/null; then
+        test_pass
+    else
+        test_fail "split double-seat did not fail quorum or advertised a missing synthesis.md: quorum=$(jq -c .quorum "$rd/summary.json" 2>/dev/null) synthesis=$(jq -c .artifacts.synthesis "$rd/summary.json" 2>/dev/null)"
+        return 1
+    fi
+}
+
+test_council_all_approve_meets_quorum() {
+    test_case "Council quorum meets when >=2 distinct vendors cleanly APPROVE"
+    load_council_lib || return 1
+    prepare_cached_all_approve_run || { test_fail "cached all-approve run failed"; return 1; }
+    local rd="$CACHED_COUNCIL_ALL_APPROVE_RUN_DIR"
+    # This run completes through synthesis, so summary.json advertises synthesis.md.
+    if jq -e '.quorum.met == true and .quorum.distinct_approving_providers >= 2 and .artifacts.synthesis == "synthesis.md"' "$rd/summary.json" >/dev/null; then
+        test_pass
+    else
+        test_fail "clean all-approve did not meet quorum or failed to advertise synthesis.md: quorum=$(jq -c .quorum "$rd/summary.json" 2>/dev/null) synthesis=$(jq -c .artifacts.synthesis "$rd/summary.json" 2>/dev/null)"
+        return 1
+    fi
+}
+
+test_council_detached_dispatch_atomic_and_propagates_rc() {
+    test_case "council_dispatch_member_detached only publishes via atomic rename, propagates rc, leaves no temp files (#2077)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/detach.XXXXXX")"
+    local member='{"provider":"codex","persona":"code-reviewer","seat":"member"}'
+    local startedf="$d/started" relf="$d/release"
+    export OCTOPUS_COUNCIL_AGENT_TIMEOUT=30
+
+    # Happy path, observed MID-WRITE. The stub signals it has started, then blocks.
+    # While it is blocked the final path must NOT exist — a regression that writes
+    # straight to the final path (skipping .partial + atomic mv) would expose a
+    # partial/empty file here and fail. After release the complete output must appear.
+    council_dispatch_member() {
+        : > "$startedf"
+        local i=0; while [[ ! -f "$relf" && $i -lt 200 ]]; do sleep 0.1; i=$((i + 1)); done
+        printf 'full review\nVERDICT: APPROVE\n'
+        return 0
+    }
+    council_dispatch_member_detached "$member" "independent-advice" "$d/ok.md" & local helper=$!
+    local i=0; while [[ ! -f "$startedf" && $i -lt 100 ]]; do sleep 0.1; i=$((i + 1)); done
+    local midwrite_absent="no"; [[ ! -e "$d/ok.md" ]] && midwrite_absent="yes"
+    : > "$relf"
+    local ok_rc=0; wait "$helper" || ok_rc=$?
+
+    # Failing seat: the inner exit code propagates AND the (failing) output still
+    # reaches the final path through the same rename.
+    council_dispatch_member() { printf 'junk-but-final\n'; return 3; }
+    local fail_rc=0
+    council_dispatch_member_detached "$member" "independent-advice" "$d/bad.md" || fail_rc=$?
+
+    if [[ "$midwrite_absent" == "yes" ]] && [[ $ok_rc -eq 0 ]] &&
+       grep -q 'VERDICT: APPROVE' "$d/ok.md" &&
+       [[ ! -e "$d/ok.md.partial" && ! -e "$d/ok.md.done" && ! -e "$d/ok.md.done.tmp" ]] &&
+       [[ $fail_rc -eq 3 ]] && grep -q 'junk-but-final' "$d/bad.md" &&
+       [[ ! -e "$d/bad.md.partial" && ! -e "$d/bad.md.done" && ! -e "$d/bad.md.done.tmp" ]]; then
+        test_pass
+    else
+        test_fail "atomic dispatch wrong: midwrite_absent=$midwrite_absent ok_rc=$ok_rc fail_rc=$fail_rc ok=[$(tr '\n' '|' < "$d/ok.md" 2>/dev/null)] bad=[$(tr '\n' '|' < "$d/bad.md" 2>/dev/null)]"
+        return 1
+    fi
+}
+
+test_council_seat_timeout_precedence() {
+    test_case "council_seat_timeout resolves per-provider > flag > global env > default (#2077)"
+    load_council_lib || return 1
+    local d f p g pp invalid_provider invalid_flag invalid_global
+    # 4. built-in default when nothing set
+    d="$(OCTOPUS_COUNCIL_TIMEOUT_AGY='' OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT='' OCTOPUS_COUNCIL_AGENT_TIMEOUT='' council_seat_timeout agy)"
+    # 3. legacy global env
+    g="$(OCTOPUS_COUNCIL_TIMEOUT_AGY='' OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT='' OCTOPUS_COUNCIL_AGENT_TIMEOUT=200 council_seat_timeout agy)"
+    # 2. run-wide --seat-timeout flag beats the global env
+    f="$(OCTOPUS_COUNCIL_TIMEOUT_AGY='' OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT=300 OCTOPUS_COUNCIL_AGENT_TIMEOUT=200 council_seat_timeout agy)"
+    # 1. per-provider env beats everything, and only for that provider
+    p="$(OCTOPUS_COUNCIL_TIMEOUT_AGY=600 OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT=300 council_seat_timeout agy)"
+    pp="$(OCTOPUS_COUNCIL_TIMEOUT_AGY=600 OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT=300 council_seat_timeout codex)"
+    # Invalid higher-priority overrides fall through without disabling the cap.
+    invalid_provider="$(OCTOPUS_COUNCIL_TIMEOUT_AGY=0 COUNCIL_SEAT_TIMEOUT=300 OCTOPUS_COUNCIL_AGENT_TIMEOUT=200 council_seat_timeout agy)"
+    invalid_flag="$(OCTOPUS_COUNCIL_TIMEOUT_AGY='' COUNCIL_SEAT_TIMEOUT=abc OCTOPUS_COUNCIL_AGENT_TIMEOUT=200 council_seat_timeout agy)"
+    invalid_global="$(OCTOPUS_COUNCIL_TIMEOUT_AGY='' COUNCIL_SEAT_TIMEOUT='' OCTOPUS_COUNCIL_AGENT_TIMEOUT=-1 council_seat_timeout agy)"
+    if [[ "$d" == "120" ]] && [[ "$g" == "200" ]] && [[ "$f" == "300" ]] &&
+       [[ "$p" == "600" ]] && [[ "$pp" == "300" ]] &&
+       [[ "$invalid_provider" == "300" ]] && [[ "$invalid_flag" == "200" ]] &&
+       [[ "$invalid_global" == "120" ]]; then
+        test_pass
+    else
+        test_fail "timeout precedence wrong: default=$d global=$g flag=$f agy=$p codex=$pp invalid=$invalid_provider/$invalid_flag/$invalid_global"
+        return 1
+    fi
+}
+
+test_council_synthesis_timeout_overrides_seat_cap() {
+    test_case "council_synthesis_timeout: env override wins, else falls back to per-seat resolution"
+    load_council_lib || return 1
+    local override fallback per_provider invalid
+    # Explicit synthesis override wins over the seat cap for the chair phase.
+    override="$(OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT=900 COUNCIL_SEAT_TIMEOUT=300 council_synthesis_timeout codex)"
+    # No override -> chair provider's normal per-seat resolution (default 120).
+    fallback="$(OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT='' OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT='' OCTOPUS_COUNCIL_AGENT_TIMEOUT='' council_synthesis_timeout codex)"
+    # No override -> existing per-provider tuning still applies through the fallback.
+    per_provider="$(OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT='' OCTOPUS_COUNCIL_TIMEOUT_CODEX=600 council_synthesis_timeout codex)"
+    # Invalid override falls through to seat resolution rather than disabling the cap.
+    invalid="$(OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT=0 OCTOPUS_COUNCIL_TIMEOUT_CODEX='' COUNCIL_SEAT_TIMEOUT=300 council_synthesis_timeout codex)"
+    if [[ "$override" == "900" ]] && [[ "$fallback" == "120" ]] &&
+       [[ "$per_provider" == "600" ]] && [[ "$invalid" == "300" ]]; then
+        test_pass
+    else
+        test_fail "synthesis timeout wrong: override=$override fallback=$fallback per_provider=$per_provider invalid=$invalid"
+        return 1
+    fi
+}
+
+test_council_live_response_uses_synthesis_timeout_for_chair() {
+    test_case "council_live_response applies the synthesis timeout only to chair-synthesis"
+    load_council_lib || return 1
+    local captured_advice captured_synth
+    # run_agent_sync_consultative receives the resolved timeout as arg 3; capture it.
+    run_agent_sync_consultative() { printf '%s' "$3" > "$TEST_TMP_DIR/council-synth-cap.txt"; printf 'ok\n'; }
+    council_provider_is_available() { return 0; }
+    COUNCIL_PROVIDER_STATUS_JSON='{"codex":"available"}'
+
+    OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT=900 OCTOPUS_COUNCIL_TIMEOUT_CODEX=300 \
+        council_live_response codex strategy-analyst "dummy prompt" chair-synthesis >/dev/null 2>&1
+    captured_synth="$(cat "$TEST_TMP_DIR/council-synth-cap.txt" 2>/dev/null)"
+
+    OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT=900 OCTOPUS_COUNCIL_TIMEOUT_CODEX=300 \
+        council_live_response codex code-reviewer "dummy prompt" independent-advice >/dev/null 2>&1
+    captured_advice="$(cat "$TEST_TMP_DIR/council-synth-cap.txt" 2>/dev/null)"
+
+    unset -f run_agent_sync_consultative council_provider_is_available
+
+    if [[ "$captured_synth" == "900" ]] && [[ "$captured_advice" == "300" ]]; then
+        test_pass
+    else
+        test_fail "expected synthesis=900 advice=300; got synthesis=$captured_synth advice=$captured_advice"
+        return 1
+    fi
+}
+
+test_council_rc_is_timeout_requires_watchdog_provenance() {
+    test_case "council_rc_is_timeout requires internal-watchdog provenance for kill-style codes"
+    load_council_lib || return 1
+    local ok="" bad=""
+    local c
+    for c in 124 137 143; do
+        council_rc_is_timeout "$c" "" && bad="${bad}${c}!GENERIC " || ok="${ok}generic$c "
+        council_rc_is_timeout "$c" "internal-watchdog" && ok="${ok}watchdog$c " || bad="${bad}${c}!WATCHDOG "
+    done
+    for c in 0 1 2 126 127; do
+        council_rc_is_timeout "$c" "internal-watchdog" && bad="${bad}${c}!NONTIMEOUT " || ok="${ok}skip$c "
+    done
+    if [[ -z "$bad" ]]; then
+        test_pass
+    else
+        test_fail "misclassified: $bad"
+        return 1
+    fi
+}
+
+test_council_advice_marks_timed_out_seat() {
+    test_case "advice phase classifies a seat killed at its cap as timed-out with a knob hint"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-timeout.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_ROSTER_JSON='[{"persona":"code-reviewer","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"}]'
+    COUNCIL_FIXTURE=""
+    COUNCIL_TIMEOUT_WARNINGS=""
+    # Simulate the reported codex-137 case: dispatch killed at the cap, no response file.
+    council_dispatch_member_detached() { COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE="internal-watchdog"; return 137; }
+    council_run_chair_fallback() { :; }
+
+    OCTOPUS_COUNCIL_TIMEOUT_CODEX=300 council_run_advice_phase >/dev/null 2>&1 || true
+
+    local status provenance warns output
+    status="$(jq -r '.[0].status' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    provenance="$(jq -r '.[0].timeout_provenance' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    warns="$COUNCIL_TIMEOUT_WARNINGS"
+    # Also assert the end-of-run renderer actually prints it, so a regression in
+    # council_print_run_warnings can't pass while the warning silently disappears.
+    output="$(council_print_run_warnings)"
+
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    if [[ "$status" == "timed-out" && "$provenance" == "internal-watchdog" ]] &&
+       [[ "$warns" == *"OCTOPUS_COUNCIL_TIMEOUT_CODEX"* ]] && [[ "$warns" == *"300s"* ]] &&
+       [[ "$output" == *"rc=137"* ]] && [[ "$output" == *"OCTOPUS_COUNCIL_TIMEOUT_CODEX"* ]]; then
+        test_pass
+    else
+        test_fail "expected timed-out status + watchdog provenance + printed knob hint; status='$status' provenance='$provenance' warns=[$warns] output=[$output]"
+        return 1
+    fi
+}
+
+test_council_advice_marks_blind_seat() {
+    test_case "advice phase flags a seat that verdicts without reading the artifact as blind, excludes it from quorum, and surfaces it"
+    load_council_lib || return 1
+
+    # Unit: the read-failure signature is blind; a grounded review is not.
+    local bd; bd="$(mktemp -d "$TEST_TMP_DIR/council-blindunit.XXXXXX")"
+    printf 'I cannot read the files due to a permission restriction.\n\nVERDICT: REVISE\n' > "$bd/blind.md"
+    printf '## Review\n\nsrc/app.ts:42 is missing the guard; otherwise sound.\n\nVERDICT: APPROVE\n' > "$bd/real.md"
+    # The CodeRabbit fixture: a permission-only refusal that never names the
+    # artifact. It matches is_blind (permission-denied shape) but slips past the
+    # narrower is_substantive read-failure pattern — so the SHARED gate must
+    # still reject it, or it counts toward quorum as a responder (Finding 1).
+    printf 'Permission denied. VERDICT: REVISE\n' > "$bd/perm.md"
+    printf 'Access denied. VERDICT: REVISE\n' > "$bd/access.md"
+    printf 'Permission is denied. VERDICT: REVISE\n' > "$bd/perm-is.md"
+    printf 'Access is denied. VERDICT: REVISE\n' > "$bd/access-is.md"
+    local blind_yes=n blind_no=n perm_blind=n perm_not_substantive=n access_blind=n access_not_substantive=n perm_is_blind=n access_is_blind=n
+    council_response_is_blind "$bd/blind.md" && blind_yes=y
+    council_response_is_blind "$bd/real.md" || blind_no=y
+    council_response_is_blind "$bd/perm.md" && perm_blind=y
+    council_response_is_substantive "$bd/perm.md" || perm_not_substantive=y
+    council_response_is_blind "$bd/access.md" && access_blind=y
+    council_response_is_substantive "$bd/access.md" || access_not_substantive=y
+    council_response_is_blind "$bd/perm-is.md" && perm_is_blind=y
+    council_response_is_blind "$bd/access-is.md" && access_is_blind=y
+
+    # Integration: a permission-only refusal (the Finding-1 case) is classified
+    # "blind", excluded from the responder/quorum set, recorded in
+    # COUNCIL_BLIND_SEATS, and warned about — NOT scored as a responder.
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-blind.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_ROSTER_JSON='[{"persona":"security-auditor","seat":"member","provider":"agy","provider_org":"google","model":"gemini"}]'
+    COUNCIL_FIXTURE=""
+    COUNCIL_BLIND_SEATS=""
+    council_dispatch_member_detached() { printf 'Access is denied. VERDICT: REVISE\n' > "$3"; return 0; }
+    council_run_chair_fallback() { :; }
+
+    council_run_advice_phase >/dev/null 2>&1 || true
+    council_note_blind_seat agy
+    council_note_blind_seat agy
+
+    local status blind responding output
+    status="$(jq -r '.[0].status' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    blind="$COUNCIL_BLIND_SEATS"
+    responding="$COUNCIL_RESPONDING_PROVIDERS"
+    output="$(council_print_run_warnings)"
+
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    if [[ "$blind_yes" == "y" && "$blind_no" == "y" \
+          && "$perm_blind" == "y" && "$perm_not_substantive" == "y" \
+          && "$access_blind" == "y" && "$access_not_substantive" == "y" \
+          && "$perm_is_blind" == "y" && "$access_is_blind" == "y" && "$blind" == "agy" \
+          && "$status" == "blind" && "$blind" == *"agy"* && "$responding" != *"agy"* \
+          && "$output" == *"blind seat"* && "$output" == *"agy"* ]]; then
+        test_pass
+    else
+        test_fail "blind detection wrong: unit(blind=$blind_yes real_not_blind=$blind_no perm_blind=$perm_blind perm_not_substantive=$perm_not_substantive access_blind=$access_blind access_not_substantive=$access_not_substantive) status='$status' blind=[$blind] responding=[$responding] output=[$output]"
+        return 1
+    fi
+}
+
+test_council_blind_fabricated_narrative() {
+    test_case "a long first-person access failure is blind regardless of length or citation prose; grounded long reviews and plan reviews are not"
+    load_council_lib || return 1
+
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-fabricated.XXXXXX")"
+
+    # (a) Fabricated narrative: LONG (>1600 non-ws chars, clears the brevity gate),
+    # admits "direct file access is restricted by the output rules", cites zero
+    # path.ext:line references, still emits VERDICT: APPROVE. This is the exact
+    # shape of the agy seat in the #2459 council that recorded met:true wrongly.
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Based on the provided summary of the changes, the approach is architecturally sound and the described refactor preserves the existing data contract between the frontend and the backend API surface while keeping the component boundaries intact."
+        done
+        echo
+        echo "I am assuming the described changes accurately reflect the contents of the diff, as direct file access is restricted by the output rules."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/fabricated.md"
+
+    # (b) Grounded long review: same length class, but carries real file:line
+    # evidence — must NOT be flagged even though it also references "the summary".
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Based on the provided summary and the diff, the guard added in src/WatcherDashboard.tsx:142 correctly handles the nil price point and the fixture wiring is consistent across the affected suite."
+        done
+        echo
+        echo "src/WatcherDashboard.test.tsx:88 asserts the success case; src/api/types.ts:53 defines the contract."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/grounded.md"
+
+    # (c) Plan/design review control: LONG, references "based on the provided
+    # summary", cites zero code lines (there is no code to cite in a plan review),
+    # but makes NO could-not-read-the-artifact admission. Must NOT be flagged —
+    # this is the #2527 false-positive guard.
+    {
+        echo "## Recommendation"
+        echo
+        for _i in $(seq 1 24); do
+            echo "Approve the plan. Solving the contrast issue at the design-token architecture level and enforcing it with an automated end-to-end assertion is aligned with robust, systemic engineering practice and prevents future regressions."
+        done
+        echo
+        echo "Confidence: High (based on the provided summary of the plan's methodology)."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/planreview.md"
+
+    # (d) Substantive third-person review that discusses an access restriction as
+    # implementation behavior. The phrase alone is not a personal admission that
+    # the reviewer could not inspect the artifact, even without source citations.
+    {
+        echo "## Review"
+        for _i in $(seq 1 24); do
+            echo "The implementation correctly documents that file access is restricted by the output rules while preserving the review workflow and its existing operator-facing behavior."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/third-person-restriction.md"
+
+    # First-person prose in one clause must not attach to another reviewer's
+    # access failure in a later semicolon-delimited clause.
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment; another reviewer could not access the files. The implementation remains sound."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/mixed-person.md"
+
+    # First-person analysis and another reviewer's access failure can also share
+    # one clause; the explicit third-party subject keeps it from becoming a
+    # personal admission.
+    {
+        for _i in $(seq 1 24); do
+            echo "I confirmed that another reviewer could not access the files, but their limitation does not change my substantive assessment."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/same-clause-third-party.md"
+
+    # A third-party report must not mask an explicit first-person admission in
+    # that same clause.
+    {
+        for _i in $(seq 1 24); do
+            echo "I cannot access the files, and another reviewer could not access them either."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/same-clause-self-and-third-party.md"
+
+    # Ordinary Markdown wrapping must not hide the reviewer's own admission.
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        printf '%s\n' "I cannot" "access the files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/wrapped-admission.md"
+
+    # Equivalent explicit first-person admissions must not evade the long-form
+    # check merely by avoiding the words "cannot" and "unable".
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I did not have access to the repository files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/did-not-have-access.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I was not able to read the diff in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/was-not-able.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "The proposed implementation appears internally consistent and preserves the documented workflow contract."
+        done
+        echo "I lack direct access to the source files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/lack-access.md"
+
+    # A URL port is not a repository source citation.
+    {
+        for _i in $(seq 1 24); do
+            echo "The service health endpoint is documented at https://example.com:443/status and the overall approach appears sound."
+        done
+        echo "I cannot access the files in this environment."
+        echo "VERDICT: APPROVE"
+    } > "$d/url-port.md"
+
+    # Removing a URL must preserve a following sentence/clause boundary so a
+    # first-person assessment does not attach to a third-person access report.
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment at https://example.com/status. Another reviewer could not access the files."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/url-period-boundary.md"
+    {
+        for _i in $(seq 1 24); do
+            echo "I completed an independent assessment at https://example.com/status; another reviewer could not access the files."
+        done
+        echo "VERDICT: APPROVE"
+    } > "$d/url-semicolon-boundary.md"
+
+    # (e) Plan review that uses the conditional "assuming the described changes"
+    # with no code cites and NO access-failure admission — must NOT be flagged.
+    # "assuming the described changes" is a normal conditional, not an admission
+    # of blindness, so it is not a standalone trigger (CodeRabbit #1000).
+    {
+        echo "## Recommendation"
+        echo "Approve. Assuming the described changes land as specified, the token architecture is sound and the rollout sequencing is reasonable."
+        echo "VERDICT: APPROVE"
+    } > "$d/assuming.md"
+
+    # (f) Citation-shaped text cannot override the seat's explicit first-person
+    # access failure. Evidence is validated separately against the project root.
+    {
+        echo "## Review"
+        for _i in $(seq 1 24); do
+            echo "The implementation follows the documented control flow and preserves the existing safety boundary."
+        done
+        echo "I cannot access files in this sandbox, but the guard at [scripts/lib/council.sh:1946] correctly bounds the case; helpers/run.py:12 is consistent."
+        echo "VERDICT: APPROVE"
+    } > "$d/shellcite.md"
+
+    # (g) Long, citation-free response whose access admission names a NON-"file"
+    # artifact noun ("cannot access the diff") — must still be flagged. The access
+    # clause uses the same artifact nouns as the short-response branch, not just
+    # file/files (CodeRabbit #1000).
+    {
+        echo "## Review"
+        echo
+        for _i in $(seq 1 24); do
+            echo "The refactor keeps the data contract intact and the component boundaries look reasonable given the described behavior of the affected modules and their call sites."
+        done
+        echo
+        echo "I cannot access the diff directly, so this is based on the described behavior."
+        echo
+        echo "VERDICT: APPROVE"
+    } > "$d/cantdiff.md"
+
+    local fab_len fab=n grounded_ok=n plan_ok=n third_person_ok=n mixed_person_ok=n
+    local same_clause_third_party_ok=n same_clause_self_and_third_party=n
+    local wrapped=n did_not_have=n was_not_able=n lack_access=n url_port=n
+    local url_period_ok=n url_semicolon_ok=n assuming_ok=n shellcite_blind=n cantdiff=n
+    council_response_is_blind "$d/cantdiff.md" && cantdiff=y
+    council_response_is_blind "$d/wrapped-admission.md" && wrapped=y
+    council_response_is_blind "$d/did-not-have-access.md" && did_not_have=y
+    council_response_is_blind "$d/was-not-able.md" && was_not_able=y
+    council_response_is_blind "$d/lack-access.md" && lack_access=y
+    council_response_is_blind "$d/url-port.md" && url_port=y
+    council_response_is_blind "$d/url-period-boundary.md" || url_period_ok=y
+    council_response_is_blind "$d/url-semicolon-boundary.md" || url_semicolon_ok=y
+    fab_len="$(tr -d '[:space:]' < "$d/fabricated.md" | wc -c | tr -d '[:space:]')"
+    council_response_is_blind "$d/assuming.md" || assuming_ok=y
+    council_response_is_blind "$d/shellcite.md" && shellcite_blind=y
+    council_response_is_blind "$d/fabricated.md" && fab=y
+    council_response_is_blind "$d/grounded.md" || grounded_ok=y
+    council_response_is_blind "$d/planreview.md" || plan_ok=y
+    council_response_is_blind "$d/third-person-restriction.md" || third_person_ok=y
+    council_response_is_blind "$d/mixed-person.md" || mixed_person_ok=y
+    council_response_is_blind "$d/same-clause-third-party.md" || same_clause_third_party_ok=y
+    council_response_is_blind "$d/same-clause-self-and-third-party.md" && same_clause_self_and_third_party=y
+
+    # Integration: a fabricated-narrative agy seat alongside a grounded codex seat
+    # in a standard (required=2) council. agy must be classified blind and dropped
+    # from the approving set, leaving a single grounded model family (openai) — so
+    # the vote fails and quorum.met recomputes to false (the #2459 miss).
+    local r; r="$(mktemp -d "$TEST_TMP_DIR/council-fab-int.XXXXXX")"; mkdir -p "$r/responses"
+    COUNCIL_RUN_DIR="$r"
+    COUNCIL_DEPTH="standard"
+    COUNCIL_FIXTURE=""
+    COUNCIL_BLIND_SEATS=""
+    COUNCIL_ROSTER_JSON='[
+      {"persona":"backend-architect","seat":"member","provider":"agy","provider_org":"google","model":"gemini"},
+      {"persona":"security-auditor","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"}
+    ]'
+    council_dispatch_member_detached() {
+        local mj="$1" out="$3" prov
+        prov="$(jq -r '.provider' <<< "$mj")"
+        if [[ "$prov" == "agy" ]]; then
+            cp "$d/fabricated.md" "$out"
+        else
+            printf '## Review\n\nsrc/app.tsx:42 guards the nil case; src/api/types.ts:9 matches.\n\nVERDICT: APPROVE\n' > "$out"
+        fi
+        return 0
+    }
+    council_run_chair_fallback() { :; }
+    # This is an assignment word before a function call. Quote the value, not
+    # the complete KEY=value token, which the shell would treat as a command.
+    COUNCIL_PROVIDER_STATUS_JSON='{"agy":"available","codex":"available"}' \
+        council_run_advice_phase >/dev/null 2>&1 || true
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    local agy_status codex_prov blind met approving_fams
+    agy_status="$(jq -r 'map(select(.provider=="agy"))[0].status // "none"' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    blind="$COUNCIL_BLIND_SEATS"
+    met="$COUNCIL_QUORUM_MET"
+    approving_fams="$COUNCIL_DISTINCT_APPROVING_MODEL_FAMILIES"
+    codex_prov="$COUNCIL_RESPONDING_PROVIDERS"
+
+    if [[ "$fab" == "y" && "$fab_len" -gt 1600 && "$grounded_ok" == "y" && "$plan_ok" == "y" \
+          && "$third_person_ok" == "y" && "$mixed_person_ok" == "y" \
+          && "$same_clause_third_party_ok" == "y" \
+          && "$same_clause_self_and_third_party" == "y" \
+          && "$wrapped" == "y" && "$did_not_have" == "y" \
+          && "$was_not_able" == "y" && "$lack_access" == "y" && "$url_port" == "y" \
+          && "$url_period_ok" == "y" && "$url_semicolon_ok" == "y" \
+          && "$assuming_ok" == "y" && "$shellcite_blind" == "y" && "$cantdiff" == "y" \
+          && "$agy_status" == "blind" && "$blind" == *"agy"* \
+          && "$codex_prov" == *"codex"* && "$codex_prov" != *"agy"* \
+          && "$approving_fams" == "1" && "$met" == "false" ]]; then
+        test_pass
+    else
+        test_fail "fabricated-narrative blind detection wrong: fab=$fab fab_len=$fab_len grounded_ok=$grounded_ok plan_ok=$plan_ok third_person_ok=$third_person_ok mixed_person_ok=$mixed_person_ok wrapped=$wrapped did_not_have=$did_not_have was_not_able=$was_not_able lack_access=$lack_access url_port=$url_port url_period_ok=$url_period_ok url_semicolon_ok=$url_semicolon_ok assuming_ok=$assuming_ok shellcite_blind=$shellcite_blind cantdiff=$cantdiff agy_status='$agy_status' blind=[$blind] responders=[$codex_prov] approving_families=$approving_fams met=$met"
+        return 1
+    fi
+}
+
+test_council_permission_denied_finding_is_substantive() {
+    test_case "a short grounded review may mention permission denied without being blind"
+    load_council_lib || return 1
+
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-permission-finding.XXXXXX")"
+    printf 'The permission denied branch in src/auth.sh:42 returns the wrong status code.\n\nVERDICT: REVISE\n' > "$d/review.md"
+
+    if ! council_response_is_blind "$d/review.md" &&
+       council_response_is_substantive "$d/review.md"; then
+        test_pass
+    else
+        test_fail "grounded permission-denied finding was misclassified as blind"
+        return 1
+    fi
+}
+
+test_council_advice_does_not_infer_timeout_from_provider_rc() {
+    test_case "advice phase keeps provider-returned 137 as no-response without a timeout hint"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-provider137.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_ROSTER_JSON='[{"persona":"code-reviewer","seat":"member","provider":"codex","provider_org":"openai","model":"gpt"}]'
+    COUNCIL_FIXTURE=""
+    COUNCIL_TIMEOUT_WARNINGS=""
+    council_dispatch_member_detached() { COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE=""; return 137; }
+    council_run_chair_fallback() { :; }
+
+    council_run_advice_phase >/dev/null 2>&1 || true
+
+    local status provenance warns
+    status="$(jq -r '.[0].status' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    provenance="$(jq -r '.[0].timeout_provenance' <<< "$COUNCIL_SEAT_RECORDS_JSON" 2>/dev/null)"
+    warns="$COUNCIL_TIMEOUT_WARNINGS"
+    unset -f council_dispatch_member_detached council_run_chair_fallback
+
+    if [[ "$status" == "no-response" && "$provenance" == "null" && -z "$warns" ]]; then
+        test_pass
+    else
+        test_fail "provider rc was misclassified as an internal timeout: status='$status' provenance='$provenance' warns=[$warns]"
+        return 1
+    fi
+}
+
+test_council_detach_escape_hatch_uses_inline() {
+    test_case "OCTOPUS_COUNCIL_DETACH=0 falls back to inline dispatch (no sentinel)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/detach-off.XXXXXX")"
+    local member='{"provider":"codex","persona":"code-reviewer","seat":"member"}'
+    council_dispatch_member() { printf 'inline\nVERDICT: REVISE\n'; return 0; }
+    local rc=0
+    OCTOPUS_COUNCIL_DETACH=0 council_dispatch_member_detached "$member" "independent-advice" "$d/x.md" || rc=$?
+    # The inline path never creates a .done sentinel; output must still be correct.
+    if [[ $rc -eq 0 ]] && grep -q 'VERDICT: REVISE' "$d/x.md" && [[ ! -e "$d/x.md.done" ]]; then
+        test_pass
+    else
+        test_fail "escape hatch wrong: rc=$rc content=[$(tr '\n' '|' < "$d/x.md" 2>/dev/null)]"
+        return 1
+    fi
+}
+
+test_council_fixture_dispatch_uses_inline_transport() {
+    test_case "Council fixtures bypass detached transport already covered separately"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/fixture-inline.XXXXXX")"
+    local member='{"provider":"codex","persona":"code-reviewer","seat":"member"}'
+    local dispatch_context="parent"
+
+    COUNCIL_FIXTURE="full-success"
+    : > "$d/x.md.partial"
+    : > "$d/x.md.done"
+    : > "$d/x.md.done.tmp"
+    council_dispatch_member() {
+        dispatch_context="inline"
+        printf 'fixture response\nVERDICT: APPROVE\n'
+        return 0
+    }
+
+    local rc=0
+    council_dispatch_member_detached "$member" "independent-advice" "$d/x.md" || rc=$?
+    local success_ok="false"
+    if [[ $rc -eq 0 ]] && [[ "$dispatch_context" == "inline" ]] &&
+       grep -q 'VERDICT: APPROVE' "$d/x.md" &&
+       [[ ! -e "$d/x.md.partial" && ! -e "$d/x.md.done" && ! -e "$d/x.md.done.tmp" ]]; then
+        success_ok="true"
+    fi
+
+    dispatch_context="parent"
+    council_dispatch_member() {
+        dispatch_context="inline"
+        printf 'fixture failure body\n'
+        return 3
+    }
+    rc=0
+    council_dispatch_member_detached "$member" "independent-advice" "$d/fail.md" || rc=$?
+
+    if [[ "$success_ok" == "true" ]] && [[ $rc -eq 3 ]] &&
+       [[ "$dispatch_context" == "inline" ]] &&
+       grep -q 'fixture failure body' "$d/fail.md" &&
+       [[ ! -e "$d/fail.md.partial" && ! -e "$d/fail.md.done" && ! -e "$d/fail.md.done.tmp" ]]; then
+        test_pass
+    else
+        test_fail "fixture dispatch still paid detached transport overhead: success=$success_ok rc=$rc context=$dispatch_context"
+        return 1
+    fi
+}
+
+_council_run_advice_with_roster() {
+    # Drive council_run_advice_phase against a hand-crafted roster in fixture mode.
+    # Provider assignment per seat can't be pinned through the public council_run path
+    # (diversity is auto-enforced among non-chair seats), so inject the roster directly.
+    local roster="$1" depth="${2:-standard}" failed_persona="${3:-}"
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/advice.XXXXXX")"; mkdir -p "$d/responses"
+    COUNCIL_RUN_DIR="$d"; COUNCIL_DEPTH="$depth"; COUNCIL_FIXTURE="full-success"
+    COUNCIL_EXECUTION_MODE=""; COUNCIL_TASK="x"; COUNCIL_GOAL="advice"
+    COUNCIL_DOMAIN="auto"; COUNCIL_STYLE="balanced"
+    COUNCIL_ROSTER_JSON="$roster"
+    # The prompt builder and fail-check need deep state that's irrelevant in fixture
+    # mode; stub them. load_council_lib re-sources the lib for the next test, restoring them.
+    council_prompt_for_member() { echo "prompt"; }
+    council_persona_should_fail() { [[ -n "$failed_persona" && "$1" == "$failed_persona" ]]; }
+    council_run_advice_phase >/dev/null 2>&1 || true
+}
+
+test_council_chair_only_vendor_excluded_from_quorum() {
+    test_case "A chair-only vendor is excluded from the approving-provider quorum tally (#670)"
+    load_council_lib || return 1
+
+    # agy sits ONLY on the chair; the two independent (non-chair) reviewers are both
+    # codex. The chair is the synthesizer, not a cross-lab vote, so agy must NOT count
+    # as a distinct approving vendor — leaving a single non-chair approver (codex) that
+    # can't satisfy the 2-vendor standard quorum. Before the fix, agy leaked in and the
+    # council falsely reported a 2-vendor consensus.
+    _council_run_advice_with_roster '[
+      {"persona":"strategy-analyst","provider":"agy","seat":"chair"},
+      {"persona":"code-reviewer","provider":"codex","seat":"member"},
+      {"persona":"backend-architect","provider":"codex","seat":"member"}
+    ]'
+    local chair_only_ok="no"
+    if [[ "$COUNCIL_DISTINCT_APPROVING_PROVIDERS" == "1" ]] &&
+       [[ "$COUNCIL_APPROVING_PROVIDERS" == *codex* ]] &&
+       [[ "$COUNCIL_APPROVING_PROVIDERS" != *agy* ]] &&
+       [[ "$COUNCIL_QUORUM_MET" == "false" ]] &&
+       jq -e '
+         .[0].seat == "chair"
+         and .[0].status == "responded"
+         and .[0].verdict == "APPROVE"
+         and .[0].counted_as_approver == false
+         and ([.[] | select(.counted_as_approver) | .provider] | unique) == ["codex"]
+       ' <<< "$COUNCIL_SEAT_RECORDS_JSON" >/dev/null; then
+        chair_only_ok="yes"
+    fi
+
+    # Complement: the SAME vendor on the chair AND an independent seat still counts via
+    # its non-chair seat — proving the exclusion is seat-scoped, not vendor-scoped.
+    _council_run_advice_with_roster '[
+      {"persona":"strategy-analyst","provider":"agy","seat":"chair"},
+      {"persona":"code-reviewer","provider":"codex","seat":"member"},
+      {"persona":"backend-architect","provider":"agy","seat":"member"}
+    ]'
+    local also_member_ok="no"
+    if [[ "$COUNCIL_DISTINCT_APPROVING_PROVIDERS" == "2" ]] &&
+       [[ "$COUNCIL_APPROVING_PROVIDERS" == *codex* ]] &&
+       [[ "$COUNCIL_APPROVING_PROVIDERS" == *agy* ]] &&
+       [[ "$COUNCIL_QUORUM_MET" == "true" ]] &&
+       jq -e '
+         .[0].seat == "chair"
+         and .[0].status == "responded"
+         and .[0].counted_as_approver == false
+         and .[2].seat == "member"
+         and .[2].provider == "agy"
+         and .[2].counted_as_approver == true
+       ' <<< "$COUNCIL_SEAT_RECORDS_JSON" >/dev/null; then
+        also_member_ok="yes"
+    fi
+
+    if [[ "$chair_only_ok" == "yes" && "$also_member_ok" == "yes" ]]; then
+        test_pass
+    else
+        test_fail "chair exclusion wrong: chair_only_ok=$chair_only_ok also_member_ok=$also_member_ok (last: approving=[$COUNCIL_APPROVING_PROVIDERS] distinct=$COUNCIL_DISTINCT_APPROVING_PROVIDERS met=$COUNCIL_QUORUM_MET)"
+        return 1
+    fi
+}
+
+test_council_detached_seat_survives_interrupt() {
+    test_case "A detached seat survives SIGINT/SIGHUP/SIGTERM to its process and still lands its result (#2077)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/detach-sig.XXXXXX")"
+    local member='{"provider":"codex","persona":"code-reviewer","seat":"member"}'
+    local pidf="$d/seat.pid" relf="$d/release" out="$d/sig.md"
+    export OCTOPUS_COUNCIL_AGENT_TIMEOUT=30
+
+    # PPID of the `sh -c` child is the seat subshell's pid — portable to bash 3.2
+    # (macOS), where $BASHPID does not exist. The stub blocks until released so the
+    # test can deliver signals while the seat is provably mid-run. TERM is included
+    # because a timeout-style tool/orchestrator kill sends SIGTERM first.
+    council_dispatch_member() {
+        sh -c 'echo $PPID' > "$pidf"
+        local i=0
+        while [[ ! -f "$relf" && $i -lt 200 ]]; do sleep 0.1; i=$((i + 1)); done
+        printf 'survived interrupt\nVERDICT: APPROVE\n'
+        return 0
+    }
+
+    council_dispatch_member_detached "$member" "independent-advice" "$out" & local helper=$!
+    local i=0
+    while [[ ! -f "$pidf" && $i -lt 100 ]]; do sleep 0.1; i=$((i + 1)); done
+    local seat; seat="$(cat "$pidf" 2>/dev/null)"
+    kill -INT "$seat" 2>/dev/null || true
+    kill -HUP "$seat" 2>/dev/null || true
+    # Record TERM delivery. A successful kill -TERM proves the seat was still ALIVE
+    # (it had already ignored INT+HUP) AND that TERM was actually delivered — without
+    # this the test could green even if the signal never reached a live process.
+    local term_delivered="no"
+    kill -TERM "$seat" 2>/dev/null && term_delivered="yes"
+    local premature="no"; [[ -f "$out" ]] && premature="yes"
+    : > "$relf"
+    local rc=0; wait "$helper" || rc=$?
+
+    if [[ -n "$seat" ]] && [[ "$term_delivered" == "yes" ]] && [[ "$premature" == "no" ]] &&
+       [[ $rc -eq 0 ]] && [[ -f "$out" ]] && grep -q 'survived interrupt' "$out"; then
+        test_pass
+    else
+        test_fail "detached seat did not survive interrupt: seat=$seat term_delivered=$term_delivered premature=$premature rc=$rc out=[$(tr '\n' '|' < "$out" 2>/dev/null)]"
+        return 1
+    fi
+}
+
+test_council_chair_fallback_rejects_incomplete_responses() {
+    test_case "Chair fallback rejects timed-out partial and empty-success responses"
+    load_council_lib || return 1
+    local d rc=0
+    d="$(mktemp -d "$TEST_TMP_DIR/chair-partial.XXXXXX")"
+    mkdir -p "$d/responses"
+    printf 'review was cut off before its verdict\n' > "$d/responses/00-strategy-analyst.md"
+    COUNCIL_RUN_DIR="$d"
+    COUNCIL_SEAT_RECORDS_JSON='[{"persona":"strategy-analyst","status":"no-response"}]'
+    COUNCIL_CHAIR_RESPONSE_RECEIVED="false"
+    COUNCIL_CHAIR_FALLBACK_USED="false"
+    COUNCIL_CHAIR_FALLBACK_PERSONA=""
+    council_pick_provider() { printf 'codex'; }
+    council_provider_is_available() { return 1; }
+
+    council_run_chair_fallback || rc=$?
+    local partial_ok="no"
+    if [[ $rc -ne 0 ]] &&
+       [[ "$COUNCIL_CHAIR_RESPONSE_RECEIVED" == "false" ]] &&
+       [[ "$COUNCIL_CHAIR_FALLBACK_USED" == "false" ]]; then
+        partial_ok="yes"
+    fi
+
+    rm -f "$d/responses/"*.md
+    COUNCIL_SEAT_RECORDS_JSON='[]'
+    COUNCIL_CHAIR_RESPONSE_RECEIVED="false"
+    COUNCIL_CHAIR_FALLBACK_USED="false"
+    council_provider_is_available() { return 0; }
+    council_roster_entry_json() {
+        jq -cn --arg persona "$1" --arg provider "$2" \
+            '{persona:$persona,provider:$provider,provider_org:$provider,model:"fixture",seat:"member"}'
+    }
+    council_dispatch_member() { return 0; }
+    rc=0
+    council_run_chair_fallback || rc=$?
+    local empty_ok="no"
+    if [[ $rc -ne 0 ]] &&
+       [[ "$COUNCIL_CHAIR_RESPONSE_RECEIVED" == "false" ]] &&
+       [[ "$COUNCIL_CHAIR_FALLBACK_USED" == "false" ]]; then
+        empty_ok="yes"
+    fi
+
+    if [[ "$partial_ok" == "yes" && "$empty_ok" == "yes" ]]; then
+        test_pass
+    else
+        test_fail "incomplete chair accepted: partial_ok=$partial_ok empty_ok=$empty_ok rc=$rc received=$COUNCIL_CHAIR_RESPONSE_RECEIVED fallback=$COUNCIL_CHAIR_FALLBACK_USED"
+        return 1
+    fi
+}
+
+test_council_reused_member_chair_fallback_preserves_quorum() {
+    test_case "A reused member chair fallback preserves the non-chair quorum count"
+    load_council_lib || return 1
+
+    # The original chair fails, but the synthesis-capable member already returned a
+    # complete review. The fallback reuses that member instead of adding a chair seat.
+    # Its one non-chair response must remain counted for quick-mode quorum.
+    _council_run_advice_with_roster '[
+      {"persona":"strategy-analyst","provider":"agy","seat":"chair"},
+      {"persona":"research-synthesizer","provider":"codex","seat":"member"}
+    ]' quick strategy-analyst
+
+    if [[ "$COUNCIL_CHAIR_FALLBACK_USED" == "true" ]] &&
+       [[ "$COUNCIL_CHAIR_FALLBACK_PERSONA" == "research-synthesizer" ]] &&
+       [[ "$COUNCIL_QUORUM_MET" == "true" ]] &&
+       [[ "$(council_received_non_chair)" == "1" ]] &&
+       [[ "$(jq 'length' <<< "$COUNCIL_SEAT_RECORDS_JSON")" == "2" ]]; then
+        test_pass
+    else
+        test_fail "reused fallback lost quorum: fallback=$COUNCIL_CHAIR_FALLBACK_USED persona=$COUNCIL_CHAIR_FALLBACK_PERSONA quorum=$COUNCIL_QUORUM_MET non_chair=$(council_received_non_chair) seats=$COUNCIL_SEAT_RECORDS_JSON"
+        return 1
+    fi
+}
+
+test_council_seat_timeout_rejects_zero_and_nonnumeric() {
+    test_case "--seat-timeout records a positive integer but rejects 0 and non-numeric"
+    load_council_lib || return 1
+    local out_file="$TEST_TMP_DIR/council-seat-timeout.out"
+
+    # A positive integer is accepted and recorded.
+    council_parse_args --seat-timeout 450 --dry-run "Review auth"
+    [[ "$COUNCIL_SEAT_TIMEOUT" == "450" ]] || { test_fail "positive value not recorded: [$COUNCIL_SEAT_TIMEOUT]"; return 1; }
+
+    # 0 must be rejected: run_with_timeout treats 0 as unbounded, so it would defeat
+    # the very cap the flag sets. Non-numeric must also fail with the usage error.
+    # Capture each expected failure with an if-guard rather than `set +e`, so the
+    # runner's errexit stays on for the rest of the test.
+    local z_status=0 nn_status=0
+    if council_parse_args --seat-timeout 0 "Review auth" >"$out_file" 2>&1; then z_status=0; else z_status=$?; fi
+    if council_parse_args --seat-timeout abc "Review auth" >"$out_file" 2>&1; then nn_status=0; else nn_status=$?; fi
+    if [[ $z_status -eq 2 ]] && [[ $nn_status -eq 2 ]] && [[ -z "$COUNCIL_SEAT_TIMEOUT" ]]; then
+        test_pass
+    else
+        test_fail "expected exit 2 and reset timeout: zero=$z_status nonnumeric=$nn_status timeout=[$COUNCIL_SEAT_TIMEOUT]"
+        return 1
+    fi
+}
+
+test_council_detached_seat_timeout_is_cancelled() {
+    test_case "A seat that outlives the reap window is cancelled — no late response is published (#2077)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/detach-timeout.XXXXXX")"
+    local member='{"provider":"codex","persona":"code-reviewer","seat":"member"}'
+    local pidf="$d/seat.pid" out="$d/late.md"
+    local childpidf="$d/child.pid" childmark="$d/child.mark"
+    # Force a ~1s reap window (provider timeout 1 + grace 0) against a seat that
+    # would take ~3s. The legacy global remains high so this also proves the detached
+    # reaper uses the same per-provider precedence as the inner dispatch.
+    export OCTOPUS_COUNCIL_TIMEOUT_CODEX=1
+    export COUNCIL_SEAT_TIMEOUT=""
+    export OCTOPUS_COUNCIL_AGENT_TIMEOUT=30
+    export OCTOPUS_COUNCIL_REAP_GRACE_SECS=0
+
+    # The seat spawns a REAL descendant that would touch a marker after 3s. If only the
+    # wrapper were killed, that grandchild would survive and create the marker; a proper
+    # tree-kill takes it down too. The stub itself also sleeps and would publish late.
+    council_dispatch_member() {
+        sh -c 'echo $PPID' > "$pidf"
+        ( sleep 3; : > "$childmark" ) &
+        echo "$!" > "$childpidf"
+        sleep 3
+        printf 'late publish\nVERDICT: APPROVE\n'
+        return 0
+    }
+
+    local rc=0
+    council_dispatch_member_detached "$member" "independent-advice" "$out" || rc=$?
+    local timeout_provenance="$COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE"
+    local seat child; seat="$(cat "$pidf" 2>/dev/null)"; child="$(cat "$childpidf" 2>/dev/null)"
+    # Wait PAST the stub's natural 3s completion so a late publish / surviving child
+    # would have materialized by the time we assert.
+    sleep 4
+
+    unset OCTOPUS_COUNCIL_TIMEOUT_CODEX COUNCIL_SEAT_TIMEOUT
+    unset OCTOPUS_COUNCIL_AGENT_TIMEOUT OCTOPUS_COUNCIL_REAP_GRACE_SECS
+    if [[ $rc -ne 0 ]] && council_rc_is_timeout "$rc" "$timeout_provenance" &&
+       [[ "$timeout_provenance" == "internal-watchdog" ]] && [[ ! -e "$out" ]] && [[ ! -e "$childmark" ]] &&
+       [[ ! -e "$out.partial" && ! -e "$out.done" && ! -e "$out.done.tmp" ]] &&
+       [[ -n "$seat" ]] && ! kill -0 "$seat" 2>/dev/null &&
+       [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then
+        test_pass
+    else
+        test_fail "timed-out seat/tree not cancelled: rc=$rc provenance=$timeout_provenance late_file=$([[ -e "$out" ]] && echo yes || echo no) child_marker=$([[ -e "$childmark" ]] && echo yes || echo no) seat_alive=$(kill -0 "$seat" 2>/dev/null && echo yes || echo no) child_alive=$(kill -0 "$child" 2>/dev/null && echo yes || echo no)"
+        return 1
+    fi
+}
+
+test_council_response_has_verdict_salvage() {
+    test_case "council_response_has_verdict distinguishes a finished seat from a truncated one (#2077)"
+    load_council_lib || return 1
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/hasverdict.XXXXXX")"
+    printf 'full review body\nVERDICT: APPROVE\n'        > "$d/complete.md"
+    printf '  verdict: revise\n'                         > "$d/lower.md"
+    printf 'review got cut off mid-sen'                  > "$d/partial.md"
+    printf ''                                            > "$d/empty.md"
+    if council_response_has_verdict "$d/complete.md" &&
+       council_response_has_verdict "$d/lower.md" &&
+       ! council_response_has_verdict "$d/partial.md" &&
+       ! council_response_has_verdict "$d/empty.md" &&
+       ! council_response_has_verdict "$d/missing.md"; then
+        test_pass
+    else
+        test_fail "has_verdict salvage detection wrong"
+        return 1
+    fi
+}
+
+test_council_seats_array_makes_quorum_inspectable() {
+    test_case "summary.json seats[] records per-seat state and quorum is recomputable from it"
+    load_council_lib || return 1
+    prepare_cached_all_approve_run || { test_fail "cached all-approve run failed"; return 1; }
+    local rd="$CACHED_COUNCIL_ALL_APPROVE_RUN_DIR" s
+    s="$rd/summary.json"
+    # Every seat carries the FULL documented contract (incl. provider_org, model,
+    # verdict), the fields are well-typed, the counted_as_approver invariant holds,
+    # and distinct_approving_providers is recomputable from seats[] alone (no reading
+    # responses/* by hand).
+    if jq -e '
+        . as $summary
+        | ($summary.seats | type == "array" and length >= 2)
+        and ($summary.council | type == "array")
+        and (($summary.seats | length) >= ($summary.council | length))
+        and (.seats | all(has("index") and has("persona")
+                          and has("seat") and has("provider") and has("provider_org")
+                          and has("model") and has("status") and has("verdict")
+                          and has("response_bytes") and has("payload_kind")
+                          and has("counted_as_approver") and has("contribution")))
+        and (.seats | all(
+            (.index | type == "number" and floor == .)
+            and ([.seat, .persona, .provider, .provider_org, .model, .status, .payload_kind]
+                 | all(type == "string" and length >= 1))
+        ))
+        # The seat list is a one-for-one, ordered execution record for the resolved
+        # council roster; a missing, duplicate, or invented seat must fail the contract.
+        and (all(range(0; ($summary.council | length)); . as $i
+            | ($summary.seats[$i].index == $i)
+            and ($summary.seats[$i].persona == $summary.council[$i].persona)
+            and ($summary.seats[$i].seat == $summary.council[$i].seat)
+            and ($summary.seats[$i].provider == $summary.council[$i].provider)
+            and ($summary.seats[$i].provider_org == $summary.council[$i].provider_org)
+            and ($summary.seats[$i].model == $summary.council[$i].model)))
+        # Any records beyond the roster must be the explicitly reported chair
+        # fallback dispatch; no unrelated extra seats are accepted.
+        and (if (($summary.seats | length) == ($summary.council | length))
+             then true
+             else ($summary.warnings.chair_fallback == true)
+                  and ($summary.seats[($summary.council | length):]
+                       | all(.seat == "chair"
+                             and .persona == $summary.warnings.chair_fallback_persona))
+             end)
+        # counted_as_approver drives quorum, so it must be a real boolean, not a
+        # truthy string that jq would still `select`.
+        and (.seats | all(.counted_as_approver | type == "boolean"))
+        and (.seats | all(.response_bytes | type == "number" and . >= 0))
+        and (.seats | all(
+            .contribution.artifact_digest | type == "string" and length >= 1
+        ))
+        and (.seats | all(
+            .contribution.access_state | test("^(failed|unverified|evidence-validated)$")
+        ))
+        and (.seats | all(.contribution.evidence_paths | type == "array"))
+        and (.seats | all(.contribution.comprehension_verified == false))
+        # verdict is null (no substantive verdict) or a known token — never garbage.
+        and (.seats | all((.verdict == null) or (.verdict | test("^(APPROVE|REVISE|BLOCK)$"))))
+        # a counted approver is, by construction, a responded APPROVE seat.
+        and (.seats | all((.counted_as_approver | not)
+                          or (.status == "responded" and .verdict == "APPROVE")))
+        and (.quorum.distinct_approving_providers
+             == ([.seats[] | select(.counted_as_approver) | .provider] | unique | length))
+        and (.quorum.blind_seats | type == "array")
+    ' "$s" >/dev/null; then
+        test_pass
+    else
+        test_fail "seats[] missing/!recomputable: $(jq -c '{q:.quorum.distinct_approving_providers, seats:.seats}' "$s" 2>/dev/null)"
+        return 1
+    fi
+}
+
 test_council_host_native_detection
 test_council_live_response_host_native_skips_subprocess
 test_council_live_response_host_native_fails_for_synthesis
+# Pure parser and approver-set contracts run in the fast contribution suite.
+test_council_split_double_seat_fails_quorum
+test_council_all_approve_meets_quorum
+test_council_detached_dispatch_atomic_and_propagates_rc
+test_council_detach_escape_hatch_uses_inline
+test_council_fixture_dispatch_uses_inline_transport
+test_council_detached_seat_survives_interrupt
+test_council_detached_seat_timeout_is_cancelled
+test_council_seat_timeout_precedence
+test_council_synthesis_timeout_overrides_seat_cap
+test_council_live_response_uses_synthesis_timeout_for_chair
+test_council_rc_is_timeout_requires_watchdog_provenance
+test_council_advice_marks_timed_out_seat
+test_council_advice_marks_blind_seat
+test_council_blind_fabricated_narrative
+test_council_permission_denied_finding_is_substantive
+test_council_advice_does_not_infer_timeout_from_provider_rc
+test_council_seat_timeout_rejects_zero_and_nonnumeric
+test_council_response_has_verdict_salvage
+test_council_chair_only_vendor_excluded_from_quorum
+test_council_chair_fallback_rejects_incomplete_responses
+test_council_reused_member_chair_fallback_preserves_quorum
+test_council_seats_array_makes_quorum_inspectable
 test_summary

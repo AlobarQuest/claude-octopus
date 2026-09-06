@@ -120,10 +120,7 @@ generate_mcp_config() {
       "command": "npx",
       "args": ["tsx", "$mcp_server_path"],
       "env": {
-        "OCTO_CLAW_ENABLED": "true",
         "OPENAI_API_KEY": "\${env:OPENAI_API_KEY}",
-        "GEMINI_API_KEY": "\${env:GEMINI_API_KEY}",
-        "GOOGLE_API_KEY": "\${env:GOOGLE_API_KEY}",
         "OPENROUTER_API_KEY": "\${env:OPENROUTER_API_KEY}",
         "PERPLEXITY_API_KEY": "\${env:PERPLEXITY_API_KEY}"
       }
@@ -144,10 +141,7 @@ generate_zed_config() {
         "path": "npx",
         "args": ["tsx", "$mcp_server_path"],
         "env": {
-          "OCTO_CLAW_ENABLED": "true",
           "OPENAI_API_KEY": "\${env:OPENAI_API_KEY}",
-          "GEMINI_API_KEY": "\${env:GEMINI_API_KEY}",
-          "GOOGLE_API_KEY": "\${env:GOOGLE_API_KEY}",
           "OPENROUTER_API_KEY": "\${env:OPENROUTER_API_KEY}",
           "PERPLEXITY_API_KEY": "\${env:PERPLEXITY_API_KEY}"
         }
@@ -247,7 +241,7 @@ remove_config() {
 
   # If octopus is the only server, remove the file
   local server_count
-  server_count=$(grep -c '"command"' "$config_path" 2>/dev/null || echo "0")
+  server_count=$(grep -c '"command"' "$config_path" 2>/dev/null) || server_count=0
   if [[ "$server_count" -le 1 ]]; then
     rm "$config_path"
     log_ok "Removed $config_path"
@@ -350,7 +344,7 @@ main() {
     echo ""
     echo -e "${GREEN}Setup complete!${NC} Available MCP tools in your IDE:"
     echo ""
-    echo "  octopus_discover  — Multi-provider research (Codex + Gemini)"
+    echo "  octopus_discover  — Multi-provider research (Codex + Antigravity)"
     echo "  octopus_define    — Consensus building on requirements"
     echo "  octopus_develop   — Implementation with quality gates"
     echo "  octopus_deliver   — Final validation and review"

@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 test_suite "Research fanout safeguards"
 
 test_case "research command supports breadth routing"
-research_cmd="$(<"$PROJECT_ROOT/.claude/commands/research.md")"
+research_cmd="$(<"$PROJECT_ROOT/commands/research.md")"
 if [[ "$research_cmd" == *"--breadth=light|standard|exhaustive"* && "$research_cmd" == *"[breadth=exhaustive]"* ]]; then
     test_pass
 else
@@ -17,15 +17,16 @@ else
 fi
 
 test_case "research command routes to dedicated research skill"
-if [[ "$research_cmd" == *'Skill(skill: "octopus-research"'* && "$research_cmd" != *'Skill(skill: "octo:discover"'* ]]; then
+if [[ "$research_cmd" == *'.claude/skills/skill-deep-research/SKILL.md'* \
+   && "$research_cmd" != *'Read `${HOME}/.claude-octopus/plugin/.claude/skills/flow-discover/'* ]]; then
     test_pass
 else
-    test_fail "expected /octo:research to invoke octopus-research, not octo:discover"
+    test_fail "expected /octo:research to load its dedicated source, not discover"
 fi
 
 test_case "discover skill requires dynamic multi-provider fleet"
 discover_skill="$(<"$(resolve_claude_skill_path "flow-discover")")"
-if [[ "$discover_skill" == *"build-fleet.sh"* && "$discover_skill" == *"codex, gemini, agy, copilot, qwen, opencode"* ]]; then
+if [[ "$discover_skill" == *"build-fleet.sh"* && "$discover_skill" == *"codex, agy, copilot, qwen, opencode"* ]]; then
     test_pass
 else
     test_fail "expected dynamic provider fleet instructions"

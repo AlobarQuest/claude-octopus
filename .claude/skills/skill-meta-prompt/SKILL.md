@@ -1,5 +1,6 @@
 ---
 name: skill-meta-prompt
+disable-model-invocation: true
 aliases:
   - meta-prompt
   - prompt-generator
@@ -7,7 +8,7 @@ aliases:
   - prompt-engineering
 description: "Craft better prompts using proven optimization techniques — use when your prompt needs refinement"
 trigger: |
-  Use PROACTIVELY when user wants to:
+  Invoke explicitly when the user wants to:
   - "create a prompt for", "write a prompt for"
   - "optimize this prompt", "improve this prompt"
   - "generate a meta-prompt", "help me write a prompt"
@@ -337,6 +338,16 @@ Before considering complete:
 ## Examples (if provided)
 [Context or examples from user]
 ```
+
+### Model-Specific Adjustments
+
+Tune the assembled prompt to the model that will execute it:
+
+- **Current frontier roster**: apply `skills/blocks/frontier-model-routing.md` when choosing between Opus 5, GPT-5.6, Sonnet 5, Fable 5.1, Astra, or cheaper seats.
+- **Claude Fable 5.1 or 5**: apply `skills/blocks/fable5-prompting.md` to either model ID. In short: never instruct the model to reveal or transcribe its reasoning; replace step-by-step micromanagement with a boundary plus checkable acceptance criteria; drop "CRITICAL"/"MUST" emphasis unless strict compliance is required; add grounded-progress and act-when-ready language for long runs.
+- **GPT-6 Astra**: reserve it for a bounded pass after GPT-5.6 Sol fails a hard acceptance test. Do not treat Astra plus GPT-5.6 as independent review.
+- **Codex / GPT-5.6**: apply `docs/GPT-5.6-PROMPTING.md`; give it a concrete outcome, scoped repository constraints, checkable acceptance criteria, non-goals, and the required verification.
+- **Older Claude models**: the fuller template below applies as written.
 
 ---
 

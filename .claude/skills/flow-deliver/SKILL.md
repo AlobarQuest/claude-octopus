@@ -1,5 +1,6 @@
 ---
 name: flow-deliver
+disable-model-invocation: true
 aliases:
   - deliver
   - deliver-workflow
@@ -21,7 +22,7 @@ validation_gates:
   - orchestrate_sh_executed
   - validation_file_exists
 trigger: |
-  AUTOMATICALLY ACTIVATE when user requests validation, scoring, or review:
+  EXPLICITLY USE when user requests validation, scoring, or review:
   - "review X" or "validate Y" or "test Z"
   - "score this", "quality check", "validate before shipping"
   - "check if X works correctly"
@@ -130,7 +131,7 @@ If `OCTO_ALLOWED_PROVIDERS` is set, treat it as the source of truth for which pr
 
 Provider Availability:
 🔴 Codex CLI: [Available ✓ / Not installed ✗] - Code quality analysis
-🟡 Gemini CLI: [Available ✓ / Not installed ✗] - Security and edge cases
+🟡 Antigravity CLI: [Available ✓ / Not installed ✗] - Security and edge cases
 🧭 Antigravity CLI: [Available ✓ / Not installed ✗] - Additional external-model challenge
 🔵 Claude: Available ✓ - Synthesis and recommendations
 
@@ -145,7 +146,7 @@ Provider Availability:
 
 Provider Availability:
 🔴 Codex CLI: [Available ✓ / Not installed ✗] - Structure and logic analysis
-🟡 Gemini CLI: [Available ✓ / Not installed ✗] - Content quality and completeness
+🟡 Antigravity CLI: [Available ✓ / Not installed ✗] - Content quality and completeness
 🧭 Antigravity CLI: [Available ✓ / Not installed ✗] - Additional external-model challenge
 🔵 Claude: Available ✓ - Synthesis and recommendations
 
@@ -217,7 +218,7 @@ ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh deliver "<user's validatio
 ```
 
 **CRITICAL: You are PROHIBITED from:**
-- ❌ Reviewing directly without calling orchestrate.sh — adversarial multi-AI review catches blind spots that a single reviewer misses; Codex finds code quality issues while Gemini catches security and edge cases
+- ❌ Reviewing directly without calling orchestrate.sh — adversarial multi-AI review catches blind spots that a single reviewer misses; Codex finds code quality issues while Antigravity catches security and edge cases
 - ❌ Doing single-perspective analysis instead of multi-provider
 - ❌ Claiming you're "simulating" the workflow
 - ❌ Proceeding to Step 4 without running this command
@@ -230,7 +231,7 @@ If running in Claude Code v2.1.16+, users will see **real-time progress indicato
 
 **Phase 1 - External Provider Execution (Parallel):**
 - 🔴 Analyzing code quality and patterns (Codex)...
-- 🟡 Validating security and edge cases (Gemini)...
+- 🟡 Validating security and edge cases (Antigravity)...
 
 **Phase 2 - Synthesis (Sequential):**
 - 🔵 Synthesizing validation results...
@@ -331,13 +332,20 @@ if [[ -n "$PR_NUM" ]]; then
     # Extract summary section from validation file for PR comment
     REVIEW_SUMMARY=$(head -60 "$VALIDATION_FILE")
 
-    gh pr comment "$PR_NUM" --body "## Deliver Phase — Validation Report
+    REPO_SLUG=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+    COMMENT_BODY="## Deliver Phase — Validation Report
 
 ${REVIEW_SUMMARY}
 
----
+___
 *Multi-AI validation by Claude Octopus (/octo:deliver)*
 *Providers: available external providers + 🔵 Claude*"
+    if ! "${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude-octopus/plugin}/scripts/safe-gh-comment.sh" \
+            --repo "$REPO_SLUG" pr-comment "$PR_NUM" - <<< "$COMMENT_BODY"; then
+        echo "GitHub write state is unknown; check for the validation report before retrying:" >&2
+        gh pr view "$PR_NUM" --repo "$REPO_SLUG" --comments || true
+        return 1 2>/dev/null || exit 1
+    fi
 
     echo "Validation report posted to PR #${PR_NUM}"
 
@@ -393,7 +401,7 @@ Analyze the user's prompt and project to determine context:
 
 Providers:
 🔴 Codex CLI - Code quality analysis
-🟡 Gemini CLI - Security and edge cases
+🟡 Antigravity CLI - Security and edge cases
 🔵 Claude - Synthesis and recommendations
 ```
 
@@ -405,7 +413,7 @@ Providers:
 
 Providers:
 🔴 Codex CLI - Structure and logic analysis
-🟡 Gemini CLI - Content quality and completeness
+🟡 Antigravity CLI - Content quality and completeness
 🔵 Claude - Synthesis and recommendations
 ```
 
@@ -433,7 +441,7 @@ Providers:
 The **deliver** phase validates and reviews implementations using external CLI providers:
 
 1. **🔴 Codex CLI** - Code quality, best practices, technical correctness
-2. **🟡 Gemini CLI** - Security audit, edge cases, user experience
+2. **🟡 Antigravity CLI** - Security audit, edge cases, user experience
 3. **🔵 Claude (You)** - Synthesis and final validation report
 
 This is the **convergent** phase for delivery - we ensure quality before shipping.
@@ -476,7 +484,7 @@ Before execution, you'll see:
 
 Providers:
 🔴 Codex CLI - Code quality and best practices
-🟡 Gemini CLI - Security and edge cases
+🟡 Antigravity CLI - Security and edge cases
 🔵 Claude - Synthesis and validation report
 ```
 
@@ -494,7 +502,7 @@ ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh deliver "<user's validatio
 
 The orchestrate.sh script will:
 1. Call **Codex CLI** for code quality analysis
-2. Call **Gemini CLI** for security and edge case review
+2. Call **Antigravity CLI** for security and edge case review
 3. You (Claude) synthesize findings into validation report
 4. Generate quality scores and recommendations
 
@@ -593,7 +601,7 @@ After successful execution, present validation report with:
    - [Best practice violations]
    - [Improvement suggestions]
 
-   ### Security Audit (Gemini Analysis)
+   ### Security Audit (Antigravity Analysis)
    **Score**: XX/100
    - [Security vulnerabilities found]
    - [Authentication/authorization issues]
@@ -689,7 +697,7 @@ try {
 const JWT_SECRET = 'my-secret-key-123'; // Should be process.env.JWT_SECRET
 \`\`\`
 
-### Security Audit (Gemini Analysis)
+### Security Audit (Antigravity Analysis)
 **Score**: 68/100
 
 **Critical Vulnerabilities**:
@@ -833,7 +841,7 @@ Before marking validation complete, ensure:
 
 **External API Usage:**
 - 🔴 Codex CLI uses your OPENAI_API_KEY (costs apply)
-- 🟡 Gemini CLI uses your GEMINI_API_KEY (costs apply)
+- 🟡 Antigravity CLI uses your AGY_AUTH_TOKEN (costs apply)
 - 🔵 Claude analysis included with Claude Code
 
 Ink workflows typically cost $0.02-0.08 per validation depending on codebase size and complexity.
@@ -844,9 +852,9 @@ Ink workflows typically cost $0.02-0.08 per validation depending on codebase siz
 
 After validation passes (go decision), run documentation synchronization to keep project docs current with shipped code. This step is **automatic** when running as part of `/octo:embrace` and **offered** when running standalone.
 
-**Invoke the doc-sync skill:**
+**Load the doc-sync source after delivery has been explicitly requested:**
 ```
-Skill(skill: "octo:auto", args: "sync docs for the changes on this branch")
+Read ${HOME}/.claude-octopus/plugin/.claude/skills/skill-doc-sync/SKILL.md and execute it for "sync docs for the changes on this branch"
 ```
 
 The doc-sync skill will:
@@ -866,14 +874,18 @@ The doc-sync skill will:
 
 ## Post-Delivery: Route to Ship
 
-After delivery validation and doc-sync complete:
-1. Update `.octo/STATE.md`:
-   - status: "complete"
-   - Add history entry: "All phases complete, ready to ship"
-2. Suggest: "Project ready! Run `/octo:ship` to finalize and archive."
+After delivery validation and doc-sync complete, route according to the user's explicit
+request:
+
+- **Ship requested:** update `.octo/STATE.md`, then read and follow
+  `.claude/skills/skill-ship/SKILL.md` from the stable plugin root.
+- **Branch wrap-up requested:** read and follow
+  `.claude/skills/skill-finish-branch/SKILL.md` from the stable plugin root.
+- **Review only:** deliver the synthesized findings and stop. Do not update the project
+  to a ready-to-ship state or display a shipping instruction.
 
 ```bash
-# Update state after Delivery completion
+# Run this block only when the user explicitly requested shipping.
 "${HOME}/.claude-octopus/plugin/scripts/octo-state.sh" update_state \
   --status "complete" \
   --history "All phases complete, ready to ship"
@@ -891,6 +903,23 @@ echo ""
 echo "📦 **Project ready! Run \`/octo:ship\` to finalize and archive.**"
 ```
 
+After that block succeeds, perform the requested finalization immediately:
+
+```text
+Read ${HOME}/.claude-octopus/plugin/.claude/skills/skill-ship/SKILL.md and execute it for "finalize and archive the validated project"
+```
+
+Do not stop after displaying the command. The ship-requested branch is incomplete until
+the explicit ship workflow has actually been executed.
+
 ---
 
-**Ready to validate!** This skill activates automatically when users request code review, validation, or quality checks.
+## Terminal State
+
+The Deliver phase is complete ONLY when validation findings are synthesized and
+must-fix items are resolved or explicitly accepted by the user. If the user asked to
+ship or wrap the branch, then read and execute `skill-ship` (or `skill-finish-branch` for tests,
+PR, and merge). For review-only requests, deliver the findings and stop; do NOT expand
+the request into shipping work without user authorization.
+
+**Ready to validate!** This skill runs only after explicit invocation.

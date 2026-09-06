@@ -13,7 +13,6 @@ RESULTS_DIR="$TEST_TMP_DIR/tangle-worktree-evidence-results"
 REPO_DIR="$TEST_TMP_DIR/tangle-worktree-evidence-repo"
 rm -rf "$RESULTS_DIR" "$REPO_DIR"
 mkdir -p "$RESULTS_DIR" "$REPO_DIR"
-trap 'rm -rf "$TEST_TMP_DIR"' EXIT INT TERM
 
 GREEN=""
 RED=""
@@ -36,6 +35,14 @@ run_agent_sync() { echo "GENUINELY_CLEAN_TEST"; }
 get_gate_threshold() { echo 70; }
 
 source "$PROJECT_ROOT/scripts/lib/testing.sh"
+
+test_case "Supabase migration consistency helper is available"
+if declare -F tangle_check_supabase_migration_history >/dev/null 2>&1; then
+    test_pass
+else
+    test_fail "tangle_check_supabase_migration_history is missing"
+    tangle_check_supabase_migration_history() { return 127; }
+fi
 
 write_success_result() {
     local path="$1"
@@ -118,6 +125,45 @@ else
     test_fail "snapshot_tangle_worktree_paths used cwd repo despite explicit non-git PROJECT_ROOT"
 fi
 
+test_case "committed changes remain visible against the immutable start HEAD"
+if (
+    cd "$REPO_DIR"
+    export PROJECT_ROOT="$REPO_DIR"
+    before="$RESULTS_DIR/before-committed.txt"
+    snapshot_tangle_worktree_paths > "$before"
+    baseline_head=$(git rev-parse HEAD)
+    printf 'out of scope\n' > committed-out-of-scope.txt
+    git add committed-out-of-scope.txt
+    git commit -qm "worker commit"
+    changes=$(check_tangle_worktree_changes "$before" "$baseline_head")
+    [[ "$changes" == *"committed-out-of-scope.txt"* ]]
+); then
+    test_pass
+else
+    test_fail "committed changes disappeared from final worktree evidence"
+fi
+
+test_case "staged symlink replacement remains visible after the path was in the baseline snapshot"
+if (
+    cd "$REPO_DIR"
+    export PROJECT_ROOT="$REPO_DIR"
+    printf '%s\n' 'outside' > staged-target.txt
+    ln -s staged-target.txt staged-link
+    git add staged-target.txt staged-link
+    before_paths="$RESULTS_DIR/before-staged-link-paths.txt"
+    before_state="$RESULTS_DIR/before-staged-link-state.txt"
+    snapshot_tangle_worktree_paths > "$before_paths"
+    snapshot_tangle_worktree_state > "$before_state"
+    rm staged-link
+    printf '%s\n' 'replacement' > staged-link
+    changes=$(check_tangle_worktree_changes "$before_paths" "" "$before_state")
+    [[ "$changes" == *"staged-link"* ]]
+); then
+    test_pass
+else
+    test_fail "staged symlink replacement disappeared from final worktree evidence"
+fi
+
 test_case "implementation prompt with no worktree change fails validation"
 if (
     cd "$REPO_DIR"
@@ -132,6 +178,46 @@ if (
     test_pass
 else
     test_fail "validation passed despite no worktree changes"
+fi
+
+test_case "runtime-only .claude-octopus changes do not satisfy implementation evidence"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    rm -f "$RESULTS_DIR"/codex-tangle-evidence-*.md "$RESULTS_DIR"/tangle-validation-evidence-*.md
+    snapshot_tangle_worktree_paths > "$RESULTS_DIR/before-runtime-only.txt"
+    mkdir -p .claude-octopus
+    printf 'runtime\n' > .claude-octopus/state.json
+    write_success_result "$RESULTS_DIR/codex-tangle-evidence-runtime-only.md" \
+        "Implemented src/app/page.tsx conceptually; runtime metadata changed."
+    if RESULTS_DIR="$RESULTS_DIR" validate_tangle_results "evidence-runtime-only" "Implement the app change in src/app/page.tsx" "$RESULTS_DIR/before-runtime-only.txt" >/dev/null 2>&1; then
+        exit 1
+    fi
+    grep -q "Missing Worktree Changes" "$RESULTS_DIR/tangle-validation-evidence-runtime-only.md"
+); then
+    test_pass
+else
+    test_fail "runtime-only .claude-octopus change satisfied implementation worktree evidence"
+fi
+
+test_case "blocker output with SUCCESS status fails validation"
+if (
+    cd "$REPO_DIR"
+    rm -f "$RESULTS_DIR"/codex-tangle-evidence-*.md "$RESULTS_DIR"/tangle-validation-evidence-*.md
+    snapshot_tangle_worktree_paths > "$RESULTS_DIR/before-blocker.txt"
+    write_success_result "$RESULTS_DIR/codex-tangle-evidence-blocker.md" \
+        "## Blocker Report
+Cannot complete the assigned subtask because all shell commands are blocked by Landlock sandbox and no write tools are available."
+    if RESULTS_DIR="$RESULTS_DIR" validate_tangle_results "evidence-blocker" "Implement the app change in src/app/page.tsx" "$RESULTS_DIR/before-blocker.txt" >/dev/null 2>&1; then
+        exit 1
+    fi
+    grep -q "Quality Gate: FAILED" "$RESULTS_DIR/tangle-validation-evidence-blocker.md" && \
+    grep -q "Failed: 1/1 result files" "$RESULTS_DIR/tangle-validation-evidence-blocker.md"
+); then
+    test_pass
+else
+    test_fail "blocker output marked SUCCESS passed validation"
 fi
 
 test_case "implementation prompt with new worktree path passes validation"
@@ -149,6 +235,130 @@ if (
     test_pass
 else
     test_fail "validation failed despite a new worktree path"
+fi
+
+test_case "applied Supabase migration missing from disk fails validation"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    rm -f "$RESULTS_DIR"/codex-tangle-evidence-*.md "$RESULTS_DIR"/tangle-validation-evidence-*.md
+    mkdir -p supabase/migrations "$TEST_TMP_DIR/supabase-bin"
+    snapshot_tangle_worktree_paths > "$RESULTS_DIR/before-migration-mismatch.txt"
+    printf '%s\n' '-- replacement migration' > supabase/migrations/20260813130000_replacement.sql
+    cat > "$TEST_TMP_DIR/supabase-bin/supabase" <<'MOCK_SUPABASE'
+#!/usr/bin/env bash
+if [[ "$*" == "migration list --local" ]]; then
+    case "${SUPABASE_LIST_FIXTURE:-mismatch}" in
+        aligned)
+            printf '%s\n' \
+                '        LOCAL      │     REMOTE     │     TIME (UTC)' \
+                '  20260813130000   │ 20260813130000 │ 2026-08-13 13:00:00'
+            ;;
+        empty) : ;;
+        *)
+            printf '%s\n' \
+                '        LOCAL      │     REMOTE     │     TIME (UTC)' \
+                '                   │ 20260813120500 │ 2026-08-13 12:05:00' \
+                '  20260813130000   │                │ 2026-08-13 13:00:00'
+            ;;
+    esac
+fi
+MOCK_SUPABASE
+    chmod +x "$TEST_TMP_DIR/supabase-bin/supabase"
+    write_success_result "$RESULTS_DIR/codex-tangle-evidence-migration.md" \
+        "Added supabase/migrations/20260813130000_replacement.sql and verified the schema."
+    if PATH="$TEST_TMP_DIR/supabase-bin:$PATH" RESULTS_DIR="$RESULTS_DIR" \
+        validate_tangle_results "evidence-migration" \
+        "Implement the database migration" \
+        "$RESULTS_DIR/before-migration-mismatch.txt" >/dev/null 2>&1; then
+        exit 1
+    fi
+    grep -q "Migration History: FAILED" "$RESULTS_DIR/tangle-validation-evidence-migration.md" && \
+    grep -q "20260813120500" "$RESULTS_DIR/tangle-validation-evidence-migration.md"
+); then
+    test_pass
+else
+    test_fail "validation accepted migration history that no longer exists on disk"
+fi
+
+test_case "aligned Supabase migration history passes the read-only gate"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    PATH="$TEST_TMP_DIR/supabase-bin:$PATH"
+    SUPABASE_LIST_FIXTURE=aligned
+    export PATH SUPABASE_LIST_FIXTURE
+    tangle_check_supabase_migration_history \
+        "supabase/migrations/20260813130000_replacement.sql" >/dev/null
+); then
+    test_pass
+else
+    test_fail "matching local migration history was rejected"
+fi
+
+test_case "empty Supabase migration output is not accepted as proof"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    PATH="$TEST_TMP_DIR/supabase-bin:$PATH"
+    SUPABASE_LIST_FIXTURE=empty
+    export PATH SUPABASE_LIST_FIXTURE
+    ! tangle_check_supabase_migration_history \
+        "supabase/migrations/20260813130000_replacement.sql" >/dev/null
+); then
+    test_pass
+else
+    test_fail "empty migration history was treated as consistent"
+fi
+
+test_case "changed migrations are checked regardless of prompt classification"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    rm -f "$RESULTS_DIR"/codex-tangle-evidence-*.md "$RESULTS_DIR"/tangle-validation-evidence-*.md
+    snapshot_tangle_worktree_paths > "$RESULTS_DIR/before-unclassified-migration.txt"
+    printf '%s\n' '-- migration from an unclassified prompt' > supabase/migrations/20260813140000_unclassified.sql
+    write_success_result "$RESULTS_DIR/codex-tangle-evidence-unclassified-migration.md" \
+        "Assessed database integrity and left a migration artifact."
+    if PATH="$TEST_TMP_DIR/supabase-bin:$PATH" RESULTS_DIR="$RESULTS_DIR" \
+        validate_tangle_results "evidence-unclassified-migration" \
+        "Assess database integrity" \
+        "$RESULTS_DIR/before-unclassified-migration.txt" >/dev/null 2>&1; then
+        exit 1
+    fi
+    grep -q "Migration History: FAILED" \
+        "$RESULTS_DIR/tangle-validation-evidence-unclassified-migration.md"
+); then
+    test_pass
+else
+    test_fail "migration history gate depended on prompt classification instead of the diff"
+fi
+
+test_case "explicit unverified-migration override records the skipped gate"
+if (
+    cd "$REPO_DIR"
+    PROJECT_ROOT="$REPO_DIR"
+    export PROJECT_ROOT
+    rm -f "$RESULTS_DIR"/codex-tangle-evidence-*.md "$RESULTS_DIR"/tangle-validation-evidence-*.md
+    snapshot_tangle_worktree_paths > "$RESULTS_DIR/before-unverified-override.txt"
+    printf '%s\n' '-- explicitly unverified migration' > supabase/migrations/20260813150000_unverified.sql
+    write_success_result "$RESULTS_DIR/codex-tangle-evidence-unverified-override.md" \
+        "Added supabase/migrations/20260813150000_unverified.sql."
+    PATH="$TEST_TMP_DIR/supabase-bin:$PATH" SUPABASE_LIST_FIXTURE=empty \
+        OCTOPUS_TANGLE_ALLOW_UNVERIFIED_MIGRATIONS=true RESULTS_DIR="$RESULTS_DIR" \
+        validate_tangle_results "evidence-unverified-override" \
+        "Implement supabase/migrations/20260813150000_unverified.sql" \
+        "$RESULTS_DIR/before-unverified-override.txt" >/dev/null 2>&1
+    grep -q "Migration History: SKIPPED BY EXPLICIT OVERRIDE" \
+        "$RESULTS_DIR/tangle-validation-evidence-unverified-override.md"
+); then
+    test_pass
+else
+    test_fail "explicit unverified migration override did not bypass and record the unavailable history gate"
 fi
 
 test_case "analysis prompt does not require worktree changes"
@@ -185,6 +395,34 @@ if (
     test_pass
 else
     test_fail "abort path did not leave a useful validation report"
+fi
+
+
+test_case "state manifest diff reports changed path instead of ENTRY token"
+before_manifest="$RESULTS_DIR/state-before-manifest.txt"
+after_manifest="$RESULTS_DIR/state-after-manifest.txt"
+printf '%s\n' '## manifest' $'ENTRY\tsrc/app/state.ts\t100644 old\tfile:old' > "$before_manifest"
+printf '%s\n' '## manifest' $'ENTRY\tsrc/app/state.ts\t100644 old\tfile:new' > "$after_manifest"
+manifest_delta=$(tangle_state_manifest_paths_changed "$before_manifest" "$after_manifest")
+if [[ "$manifest_delta" == "src/app/state.ts" ]] && [[ "$manifest_delta" != *"ENTRY"* ]]; then
+    test_pass
+else
+    test_fail "manifest delta returned wrong path token: [$manifest_delta]"
+fi
+
+test_case "worktree evidence fails closed when temp file allocation fails"
+if TMPDIR=/dev/null check_tangle_worktree_changes "$RESULTS_DIR/before-empty.txt" "" >/dev/null 2>&1; then
+    test_fail "worktree evidence failed open after mktemp failure"
+else
+    test_pass
+fi
+
+test_case "validate_tangle_results forwards parent-owned state snapshot"
+validate_source=$(declare -f validate_tangle_results)
+if grep -Fq 'check_tangle_worktree_changes "$worktree_before_file" "$baseline_head" "$worktree_before_state_file"' <<< "$validate_source"; then
+    test_pass
+else
+    test_fail "validate_tangle_results dropped the worktree state snapshot argument"
 fi
 
 test_summary

@@ -1,5 +1,6 @@
 ---
 name: octopus-research
+disable-model-invocation: true
 effort: high
 aliases:
   - research
@@ -18,7 +19,6 @@ pre_execution_contract:
 validation_gates:
   - orchestrate_sh_executed
   - synthesis_file_exists
-invocation: human_only
 trigger: |
   Use this skill when the user wants to "research this topic", "investigate how X works",
   "analyze the architecture", "explore different approaches to Y", or "what are the options for Z".
@@ -99,7 +99,6 @@ AskUserQuestion({
 ```bash
 provider_status="$(bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh")"
 [[ $'\n'"$provider_status"$'\n' == *$'\ncodex:available\n'* ]] && codex_status="Available ✓" || codex_status="Not installed ✗"
-[[ $'\n'"$provider_status"$'\n' == *$'\ngemini:available\n'* ]] && gemini_status="Available ✓" || gemini_status="Not installed ✗"
 [[ $'\n'"$provider_status"$'\n' == *$'\nagy:available\n'* ]] && agy_status="Available ✓" || agy_status="Not installed ✗"
 ```
 
@@ -111,7 +110,7 @@ provider_status="$(bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-pr
 
 Provider Availability:
 🔴 Codex CLI: ${codex_status}
-🟡 Gemini CLI: ${gemini_status}
+🟡 Antigravity CLI: ${agy_status}
 🧭 Antigravity CLI: ${agy_status}
 🔵 Claude: Available ✓ (Strategic synthesis)
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+_agent_spec_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_agent_spec_lib_dir}/agent-spec.sh" 2>/dev/null || true
 # session.sh — Session management and progress tracking
 # Contains: init_progress_tracking, display_progress_summary, cleanup_old_progress_files,
 #           display_rich_progress, generate_session_name, init_session,
@@ -30,6 +32,10 @@ init_progress_tracking() {
   "started_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "total_agents": $total_agents,
   "completed_agents": 0,
+  "successful_agents": 0,
+  "failed_agents": 0,
+  "timeout_agents": 0,
+  "skipped_agents": 0,
   "total_cost": 0.0,
   "total_time_ms": 0,
   "agents": []
@@ -38,6 +44,29 @@ EOF
     mv "${PROGRESS_FILE}.tmp.$$" "$PROGRESS_FILE"
 
     log DEBUG "Progress tracking initialized for phase: $phase ($total_agents agents)"
+}
+
+# Advance the workflow phase without resetting the task ledger accumulated by
+# earlier phases. Standalone phase commands initialize the ledger on demand.
+begin_progress_phase() {
+    local phase="$1"
+
+    if [[ "$PROGRESS_TRACKING_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    if [[ ! -f "$PROGRESS_FILE" ]]; then
+        init_progress_tracking "$phase" 0
+        return
+    fi
+
+    atomic_json_update "$PROGRESS_FILE" \
+        --arg phase "$phase" \
+        --arg updated "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        '.phase = $phase | .updated_at = $updated' || {
+        log WARN "Failed to advance progress phase to $phase"
+        return 1
+    }
+    log DEBUG "Progress tracking advanced to phase: $phase"
 }
 
 # Update agent status in progress file
@@ -70,7 +99,7 @@ display_progress_summary() {
 
     # Read agents and format status with timeout info (v7.16.0 Feature 3)
     jq -r '.agents[] |
-        if .status == "completed" then
+        if (["completed", "ok", "degraded"] | index(.status)) != null then
             "✅ \(.name): Completed (\(.elapsed_ms / 1000)s) - $\(.cost)"
         elif .status == "running" then
             if .timeout_warning then
@@ -78,12 +107,16 @@ display_progress_summary() {
             else
                 "⏳ \(.name): Running... (\(.elapsed_ms / 1000)s / \(.timeout_ms / 1000)s timeout)"
             end
+        elif .status == "timeout" then
+            "⏱️  \(.name): Timed out with partial results (\(.elapsed_ms / 1000)s)"
         elif .status == "failed" then
             "❌ \(.name): Failed"
+        elif .status == "skipped" then
+            "⏭️  \(.name): Skipped"
         else
             "⏸️  \(.name): Waiting"
         end
-    ' "$PROGRESS_FILE" 2>/dev/null | sed 's/codex/🔴 Codex CLI/; s/gemini/🟡 Gemini CLI/; s/claude/🔵 Claude/' || echo "  (No agent data available)"
+    ' "$PROGRESS_FILE" 2>/dev/null | sed 's/codex/🔴 Codex CLI/; s/gemini/🧭 Antigravity CLI/; s/agy/🧭 Antigravity CLI/; s/claude/🔵 Claude/' || echo "  (No agent data available)"
 
     echo ""
 
@@ -106,8 +139,8 @@ display_progress_summary() {
     fi
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf "Progress: %s/%s providers completed\n" "$completed" "$total"
-    printf "💰 Total Cost: \$%s\n" "$total_cost"
+    printf "Progress: %s/%s agent tasks finished\n" "$completed" "$total"
+    printf "💰 Estimated API Cost: \$%s (subscription seats excluded)\n" "$total_cost"
     printf "⏱️  Total Time: %ss\n" "$total_time"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
@@ -156,7 +189,7 @@ display_rich_progress() {
             agent="${OCTO_PROGRESS_AGENT_TYPES[$i]:-}"
         fi
         if [[ -z "$agent" ]]; then
-            agent="gemini"
+            agent="agy"
             [[ $((i % 2)) -eq 0 ]] && agent="codex"
         fi
         agent_types+=("$agent")
@@ -214,7 +247,8 @@ display_rich_progress() {
             local task_id="probe-${task_group}-${i}"
             local agent_type="${agent_types[$i]}"
             local agent_name="${agent_names[$i]}"
-            local result_file="${RESULTS_DIR}/${agent_type}-${task_id}.md"
+            local result_file
+            result_file="${RESULTS_DIR}/$(octo_agent_spec_slug "$agent_type")-${task_id}.md"
             local pid="${pids[$i]}"
 
             # Check if agent is still running
@@ -279,7 +313,7 @@ display_rich_progress() {
             # Display row with emoji for agent type
             local agent_emoji="🔴"
             case "$agent_type" in
-                gemini*) agent_emoji="🟡" ;;
+                gemini*|agy*|antigravity) agent_emoji="🧭" ;;
                 claude*) agent_emoji="🔵" ;;
                 perplexity*) agent_emoji="🟣" ;;
                 copilot*) agent_emoji="🟢" ;;
@@ -306,7 +340,7 @@ display_rich_progress() {
 
         echo -e "${MAGENTA}${_DASH}${NC}"
         # v9.2.0: ETA based on provider-specific benchmarks (OctoBench data)
-        # Codex ~150s, Gemini ~90s, Sonnet ~45s — parallel = max(providers)
+        # Provider timing varies; parallel ETA is governed by the slowest seat.
         local eta_secs=120  # default estimate
         if [[ $completed -gt 0 && $completed -lt $total_agents ]]; then
             local avg_per_agent=$(( elapsed / completed ))
@@ -328,10 +362,18 @@ display_rich_progress() {
     echo ""
 }
 
-# v7.19.0 P2.3: Result caching for probe workflows
-# Cache directory
-CACHE_DIR="${WORKSPACE_DIR}/.cache/probe-results"
-CACHE_TTL=3600  # 1 hour in seconds
+# v7.19.0 P2.3: Result caching for probe workflows. Resolve at call time so
+# sourcing this library before WORKSPACE_DIR exists can never target /.cache.
+octo_probe_cache_dir() {
+    local workspace="${WORKSPACE_DIR:-}"
+    if [[ -z "$workspace" ]] && type resolve_octopus_workspace >/dev/null 2>&1; then
+        workspace="$(resolve_octopus_workspace 2>/dev/null || true)"
+    fi
+    [[ -n "$workspace" ]] || workspace="${HOME:-${TMPDIR:-/tmp}}/.claude-octopus"
+    printf '%s/.cache/probe-results\n' "${workspace%/}"
+}
+
+CACHE_TTL="${CACHE_TTL:-3600}"  # 1 hour in seconds
 
 # v7.19.0 P2.4: Progressive synthesis flag
 ENABLE_PROGRESSIVE_SYNTHESIS="${OCTOPUS_PROGRESSIVE_SYNTHESIS:-true}"
@@ -401,19 +443,35 @@ init_session() {
 
     mkdir -p "$(dirname "$SESSION_FILE")"
 
-    cat > "$SESSION_FILE" << EOF
-{
-  "session_id": "$session_id",
-  "session_name": $(printf '%s' "$session_name" | jq -Rs .),
-  "workflow": "$workflow",
-  "status": "in_progress",
-  "current_phase": null,
-  "started_at": "$(date -Iseconds 2>/dev/null || date +%Y-%m-%dT%H:%M:%S)",
-  "last_checkpoint": null,
-  "prompt": $(printf '%s' "$prompt" | jq -Rs .),
-  "phases": {}
-}
-EOF
+    # Render beside the destination and rename only after jq has produced a
+    # complete object. Readers then see either the previous valid state or the
+    # complete new state, never a partially truncated session file (#894).
+    local started_at session_tmp
+    started_at=$(date -Iseconds 2>/dev/null || date +%Y-%m-%dT%H:%M:%S)
+    session_tmp=$(mktemp "${SESSION_FILE}.tmp.XXXXXX") || {
+        log ERROR "Could not allocate temporary session state"
+        return 1
+    }
+    if ! jq -n \
+        --arg session_id "$session_id" \
+        --arg host_session_id "${CLAUDE_CODE_SESSION:-}" \
+        --arg session_name "$session_name" \
+        --arg workflow "$workflow" \
+        --arg started_at "$started_at" \
+        --arg prompt "$prompt" \
+        '{session_id: $session_id, host_session_id: $host_session_id, session_name: $session_name,
+          workflow: $workflow, status: "in_progress", current_phase: null,
+          started_at: $started_at, last_checkpoint: null,
+          prompt: $prompt, phases: {}}' > "$session_tmp" 2>/dev/null; then
+        rm -f "$session_tmp"
+        log ERROR "Could not render session state"
+        return 1
+    fi
+    if ! mv "$session_tmp" "$SESSION_FILE"; then
+        rm -f "$session_tmp"
+        log ERROR "Could not publish session state"
+        return 1
+    fi
     log INFO "Session initialized: $session_id (name: $session_name)"
 
     # v8.14.0: Initialize persistent state tracking
@@ -434,12 +492,17 @@ save_session_checkpoint() {
     local timestamp
     timestamp=$(date -Iseconds 2>/dev/null || date +%Y-%m-%dT%H:%M:%S)
 
-    jq --arg phase "$phase" \
+    local session_tmp=""
+    session_tmp=$(mktemp "${SESSION_FILE}.tmp.XXXXXX") || return 1
+    if ! jq --arg phase "$phase" \
        --arg status "$status" \
        --arg output "$output_file" \
        --arg time "$timestamp" \
        '.phases[$phase] = {status: $status, output: $output, timestamp: $time} | .last_checkpoint = $time | .current_phase = $phase' \
-       "$SESSION_FILE" > "${SESSION_FILE}.tmp" && mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+       "$SESSION_FILE" > "$session_tmp" || ! mv "$session_tmp" "$SESSION_FILE"; then
+        rm -f "$session_tmp"
+        return 1
+    fi
 
     # v8.14.0: Sync to persistent state
     set_current_workflow "$(jq -r '.workflow // ""' "$SESSION_FILE" 2>/dev/null)" "$phase" 2>/dev/null || true
@@ -506,15 +569,91 @@ get_resume_phase() {
 get_phase_output() {
     local phase="$1"
     if [[ -f "$SESSION_FILE" ]] && command -v jq &> /dev/null; then
-        jq -r ".phases.$phase.output // \"\"" "$SESSION_FILE"
+        # Bind the phase as data, not as filter text. The previous form,
+        # `jq -r ".phases.$phase.output"`, parsed a hyphenated name as
+        # subtraction — `debate-probe` failed with `probe/0 is not defined` — so
+        # every checkpoint written by workflows.sh's `save_session_checkpoint
+        # "debate-${gate_slug}"` was unreadable. Splicing a phase name into a jq
+        # program is also an injection vector; the writer already used --arg.
+        jq -r --arg phase "$phase" '.phases[$phase].output // ""' "$SESSION_FILE"
+    fi
+}
+
+# --- Phase context slots (#724) -------------------------------------------
+#
+# Phases used to hand off by interpolating a prior phase's prose into the next
+# prompt: research.sh built phase 2 from "Based on this research synthesis:
+# $synthesis". Whatever the receiving agent needed and the sending agent held
+# but did not write into that string was gone at the boundary, with nothing
+# recording that it was lost.
+#
+# These slots give a phase somewhere to deposit a named finding that a later
+# phase reads by key. They sit alongside the existing .phases registry rather
+# than replacing it: that registry records status/output/timestamp per phase,
+# and slots record the phase's *content* under .phases[<phase>].slots.
+#
+# Deliberate choices:
+#   - Slots are additive within a phase and overwritten per key, so re-running a
+#     phase replaces its own findings without disturbing another phase's.
+#   - A slot that is never filled reads as empty rather than erroring. A missing
+#     handoff should degrade to the current free-text behaviour, not abort a
+#     workflow mid-run.
+#   - Both key and phase are bound with --arg. A phase name like `debate-probe`
+#     parses as subtraction if spliced into a jq filter (see get_phase_output),
+#     and slot keys come from workflow code, so the same rule applies.
+
+save_phase_slot() {
+    local phase="$1"
+    local key="$2"
+    local value="$3"
+
+    [[ -n "$phase" && -n "$key" ]] || return 0
+    if [[ ! -f "$SESSION_FILE" ]] || ! command -v jq &> /dev/null; then
+        return 0
+    fi
+
+    local session_tmp=""
+    session_tmp=$(mktemp "${SESSION_FILE}.tmp.XXXXXX") || return 1
+    if ! jq --arg phase "$phase" --arg key "$key" --arg value "$value" \
+       '.phases[$phase] //= {} | .phases[$phase].slots //= {} | .phases[$phase].slots[$key] = $value' \
+       "$SESSION_FILE" > "$session_tmp" || ! mv "$session_tmp" "$SESSION_FILE"; then
+        rm -f "$session_tmp"
+        return 1
+    fi
+}
+
+get_phase_slot() {
+    local phase="$1"
+    local key="$2"
+
+    [[ -n "$phase" && -n "$key" ]] || return 0
+    if [[ -f "$SESSION_FILE" ]] && command -v jq &> /dev/null; then
+        jq -r --arg phase "$phase" --arg key "$key" \
+           '.phases[$phase].slots[$key] // ""' "$SESSION_FILE"
+    fi
+}
+
+# Names the slots a phase actually filled, so a caller can tell "not recorded"
+# from "recorded empty" without guessing at key names.
+list_phase_slots() {
+    local phase="$1"
+    [[ -n "$phase" ]] || return 0
+    if [[ -f "$SESSION_FILE" ]] && command -v jq &> /dev/null; then
+        jq -r --arg phase "$phase" \
+           '(.phases[$phase].slots // {}) | keys[]?' "$SESSION_FILE"
     fi
 }
 
 # Mark session as complete
 complete_session() {
     if [[ -f "$SESSION_FILE" ]] && command -v jq &> /dev/null; then
-        jq '.status = "completed"' "$SESSION_FILE" > "${SESSION_FILE}.tmp" && \
-            mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+        local session_tmp=""
+        session_tmp=$(mktemp "${SESSION_FILE}.tmp.XXXXXX") || return 1
+        if ! jq '.status = "completed"' "$SESSION_FILE" > "$session_tmp" ||
+           ! mv "$session_tmp" "$SESSION_FILE"; then
+            rm -f "$session_tmp"
+            return 1
+        fi
         log INFO "Session marked complete"
     fi
 

@@ -10,17 +10,25 @@ command -v agy
 
 ## Dispatch
 
-Prompts are delivered through stdin and executed with Antigravity print mode:
+Callers deliver prompts through stdin (the provider-uniform contract);
+`agy-exec.sh` caches the stdin prompt and passes it to Antigravity print mode
+as `--print`'s argument. `--print` is a value-consuming string flag — agy does
+NOT read a prompt from stdin, and a bare `agy --print --sandbox` invocation
+makes the literal string `--sandbox` the prompt:
 
 ```bash
-agy --print --sandbox --print-timeout "${OCTOPUS_AGY_PRINT_TIMEOUT:-5m0s}"
+agy --sandbox --print-timeout "${OCTOPUS_AGY_PRINT_TIMEOUT:-5m0s}" --print "$PROMPT"
 ```
 
+Prompts larger than 100KB (Linux caps one argv string at 128KB) stay in the
+cached temp file; agy is pointed at it with `--add-dir` and a read-this-file
+`--print` instruction.
+
 When `OCTOPUS_AGY_MODEL` is set to a non-empty value other than `default`,
-Octopus adds the model override:
+Octopus adds the model override before the prompt:
 
 ```bash
-agy --print --sandbox --print-timeout "${OCTOPUS_AGY_PRINT_TIMEOUT:-5m0s}" --model "$OCTOPUS_AGY_MODEL"
+agy --sandbox --print-timeout "${OCTOPUS_AGY_PRINT_TIMEOUT:-5m0s}" --model "$OCTOPUS_AGY_MODEL" --print "$PROMPT"
 ```
 
 Octopus dispatches through `scripts/helpers/agy-exec.sh`, which is the command
@@ -39,10 +47,17 @@ When `OCTOPUS_AGY_MODEL` is non-empty and not `default`, Octopus adds:
 ```
 
 The helper builds the command as a Bash argv array, preserving spaces in
-`--model "$model"`. Prompt content is piped to the provider via stdin with
-`printf '%s' ... | "${cmd_array[@]}"` in `scripts/lib/agent-sync.sh`.
+`--model "$model"`. Callers pipe prompt content via stdin with
+`printf '%s' ... | "${cmd_array[@]}"` in `scripts/lib/agent-sync.sh`;
+`agy-exec.sh` converts that into the `--print` argument.
 Antigravity also uses `agy --print-timeout`; Octopus enforces its own
 orchestration timeout as a fallback around the provider command.
+
+## Legacy Google-seat IDs
+
+Legacy `gemini`, `gemini-fast`, and `gemini-image` agent IDs are unconditional
+aliases for AGY. They resolve to `agy-exec.sh`, use `OCTOPUS_AGY_MODEL`, and
+health-check the `agy` binary. No Gemini CLI executable or credential is read.
 
 ## Security Note
 

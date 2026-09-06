@@ -5,7 +5,7 @@
 # survival issue but tool-triggered).
 #
 # Hook type: PreToolUse (matcher: EnterPlanMode)
-# Returns: {"decision":"continue","additionalContext":"<PLAN-MODE-RULES>...</PLAN-MODE-RULES>"}
+# Returns: {"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"<PLAN-MODE-RULES>...</PLAN-MODE-RULES>"}
 
 set -euo pipefail
 # EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
@@ -23,6 +23,29 @@ else
     INPUT=$(cat 2>/dev/null || true)
 fi
 [[ -z "$INPUT" ]] && INPUT='{}'
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude-octopus/plugin}"
+PLAN_STORAGE="${PLUGIN_ROOT}/scripts/plan-storage.sh"
+PLAN_DIR=""
+INTENT_FILE=""
+INTENT_CONTEXT=""
+HOOK_CWD="$PWD"
+payload_cwd=""
+if command -v jq >/dev/null 2>&1; then
+    payload_cwd="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
+elif command -v python3 >/dev/null 2>&1; then
+    payload_cwd="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; value=json.load(sys.stdin).get("cwd", ""); print(value if isinstance(value, str) else "")' 2>/dev/null || true)"
+fi
+if [[ -n "$payload_cwd" && -d "$payload_cwd" ]]; then
+    HOOK_CWD="$(cd "$payload_cwd" && pwd -P)"
+fi
+if [[ -x "$PLAN_STORAGE" ]]; then
+    PLAN_DIR="$("$PLAN_STORAGE" current "$HOOK_CWD" "$INPUT" 2>/dev/null || true)"
+fi
+if [[ -n "$PLAN_DIR" && -f "$PLAN_DIR/session-intent.md" ]]; then
+    INTENT_FILE="$PLAN_DIR/session-intent.md"
+    INTENT_CONTEXT="$(head -c 32768 "$INTENT_FILE" 2>/dev/null || true)"
+fi
 
 # Build planning-relevant enforcement context
 read -r -d '' CONTEXT <<'RULES' || true
@@ -43,8 +66,10 @@ Plans must include test creation before implementation steps. If the plan
 has "implement X" without a preceding "write failing test for X", revise it.
 
 ### 3. Intent Contract
-If a session intent contract exists at .claude/session-intent.md, read it
-before finalizing the plan. The plan must align with:
+If a session intent contract exists at the resolved plan directory's
+session-intent.md (see /octo:plan's Resolve Plan Storage Location step —
+never assume a bare .claude/session-intent.md outside a real project), read
+it before finalizing the plan. The plan must align with:
 - Success criteria defined in the contract
 - Boundaries and constraints
 - Stakeholder requirements
@@ -55,13 +80,51 @@ Plans that contradict the intent contract are invalid.
 Do NOT plan to auto-invoke these skills — they require explicit user invocation:
 - skill-factory, skill-deep-research, skill-adversarial-security
 - flow-parallel, skill-ship
+
+### 5. Octo Plan Artifact Conflict — MANDATORY WARNING
+If the user invoked `/octo:plan` (or any octo planning workflow such as
+`/octo:embrace`) while plan mode is active, plan mode's write restriction
+BLOCKS octo from saving its planning artifacts:
+  - session-intent.md  (intent contract)
+  - session-plan.md    (weighted-phase plan)
+  - provider block and phase visualization files
+
+DO NOT silently fall through to generic native planning. You MUST:
+
+1. Emit this exact warning as the very first output:
+
+   ⚠️  OCTO PLAN DEGRADED — Plan Mode Write Conflict
+
+   Native plan mode is active. Octo cannot save its planning artifacts
+   (session-intent.md, session-plan.md) while plan mode
+   restricts writes. You are getting display-only output — this is NOT
+   a full octo multi-provider plan.
+
+   To get the full octo plan:
+     1. Exit or cancel native plan mode
+     2. Re-run /octo:plan
+
+   Continuing with plan visualization only (no artifacts saved)…
+
+2. Skip Step 2 (Create Intent Contract) and Step 5 (Save the Plan) entirely.
+   Do not attempt these writes — they will silently fail.
+3. Complete Steps 1, 3, 4, and 6 so the user sees the visualization.
+4. Repeat the re-run reminder at the end of Step 6.
 </PLAN-MODE-RULES>
 RULES
+
+if [[ -n "$INTENT_FILE" ]]; then
+    CONTEXT="${CONTEXT}
+
+<INTENT-CONTRACT path=\"${INTENT_FILE}\">
+${INTENT_CONTEXT}
+</INTENT-CONTRACT>"
+fi
 
 # Escape the context for JSON output
 ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//')
 
 # Return the hook response
 cat <<EOF
-{"decision":"continue","additionalContext":"${ESCAPED_CONTEXT}"}
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"${ESCAPED_CONTEXT}"}}
 EOF

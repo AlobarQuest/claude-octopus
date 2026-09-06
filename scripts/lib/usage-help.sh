@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 # Usage help functions extracted from orchestrate.sh
 # Part of the lib/ decomposition wave
+_usage_help_registry_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_usage_help_registry_dir}/provider-registry.sh" || { echo "usage-help: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "${_usage_help_registry_dir}/provider-policy.sh" || { echo "usage-help: failed to load provider-policy.sh" >&2; return 1 2>/dev/null || exit 1; }
+
+# Override the legacy cost.sh renderer after it is sourced by orchestrate.sh.
+# All interactive cost and usage reports now use one parser and pricing table.
+generate_usage_report() {
+    local format="${1:-table}"
+    local helper="${_usage_help_registry_dir}/../helpers/usage-report.sh"
+    if [[ ! -x "$helper" ]]; then
+        if declare -f log >/dev/null 2>&1; then
+            log ERROR "usage-report helper is unavailable: $helper"
+        else
+            printf '[ERROR] usage-report helper is unavailable: %s\n' "$helper" >&2
+        fi
+        return 1
+    fi
+    bash "$helper" --view costs --format "$format"
+}
 
 generate_zsh_completion() {
     cat << 'ZSH_COMPLETION'
@@ -30,7 +49,11 @@ _claude_octopus() {
         'optimize:Auto-detect and route optimization tasks'
         'setup:Interactive configuration wizard'
         'init:Initialize workspace'
-        'status:Show running agents'
+        'status:Show running agents or inspect a durable run'
+        'explain:Explain a durable run without rerunning providers'
+        'doctor:Run local environment and update diagnostics'
+        'update-plugin:Explicitly update Octopus through the host plugin manager'
+        'update-clis:Update external provider CLIs'
         'kill:Stop agents'
         'clean:Clean workspace'
         'aggregate:Combine results'
@@ -46,14 +69,13 @@ _claude_octopus() {
     )
 
     agents=(
-        'codex:GPT-5.3-Codex (premium, high-capability)'
-        'codex-standard:GPT-5.2-Codex'
-        'codex-max:GPT-5.3-Codex'
-        'codex-mini:GPT-5.1-Codex-Mini (fast)'
-        'codex-general:GPT-5.2'
-        'gemini:Gemini-3-Pro'
-        'gemini-fast:Gemini-3-Flash'
-        'gemini-image:Gemini-3-Pro-Image'
+        'codex:GPT-5.6 Sol (frontier)'
+        'codex-standard:GPT-5.6 Terra (balanced)'
+        'codex-max:GPT-5.6 Sol (frontier)'
+        'codex-mini:GPT-5.6 Luna (fast)'
+        'codex-general:GPT-5.6 Terra (balanced)'
+        'agy:Antigravity (Google seat)'
+        'agy-research:Antigravity research mode'
         'codex-review:Code review mode'
     )
 
@@ -137,6 +159,22 @@ ${YELLOW}Options:${NC}
   -v, --verbose     Show detailed progress
 EOF
             ;;
+        update-plugin)
+            cat << EOF
+${YELLOW}update-plugin${NC} - Explicitly update Claude Octopus through the active host
+
+${YELLOW}Usage:${NC} $(basename "$0") update-plugin
+
+Refreshes nyldn-plugins and Octopus through the supported Claude Code or Codex
+plugin manager. This command performs network and package-manager work, so it
+only runs when explicitly requested; SessionStart hooks and doctor diagnostics
+never invoke it.
+
+After Claude Code updates, run /reload-plugins or restart. For Codex, exit the
+active session first, run this command from a separate terminal, and then start
+Codex again. The updater refuses to replace files used by its own Codex session.
+EOF
+            ;;
         embrace)
             cat << EOF
 ${YELLOW}embrace${NC} - Full Double Diamond workflow
@@ -210,12 +248,24 @@ ${YELLOW}develop${NC} (alias: tangle) - Implementation phase
 ${YELLOW}Usage:${NC} $(basename "$0") develop <prompt> [define-file]
 
 Implements the solution with built-in quality validation.
-Uses a map-reduce pattern: decompose → parallel implement → synthesize.
+Uses a map-reduce pattern: decompose → parallel implement → validate → contextual code review.
 
 ${YELLOW}Quality Gates:${NC}
-  • ≥90%: ${GREEN}PASSED${NC} - proceed to delivery
-  • 75-89%: ${YELLOW}WARNING${NC} - proceed with caution
-  • <75%: ${RED}FAILED${NC} - needs review
+  • Tangle validation report checks subtask status and worktree evidence
+  • Contextual code review compares the diff against the task contract/decomposition
+  • severity=normal findings trigger a progress-supervised correction loop before delivery
+
+${YELLOW}Environment:${NC}
+  OCTOPUS_TANGLE_CODE_REVIEW=false              Skip contextual code review
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=unbounded Progress-supervised loop (default)
+  OCTOPUS_TANGLE_TIMEOUT=1200                    Minimum positive implementer budget; TIMEOUT=0 stays unlimited
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=bounded   Opt into explicit round cap
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_ROUNDS=3       Bound count when mode=bounded
+  OCTOPUS_TANGLE_CORRECTION_STALL_WINDOW=1800     Stop only after silence/no progress
+  OCTOPUS_TANGLE_CORRECTION_HARD_CAP=10           Absolute round ceiling, both modes (0 disables)
+  OCTOPUS_TANGLE_CORRECTION_POLL_SECS=30          Progress check cadence
+  OCTOPUS_TANGLE_REVIEW_TARGET=working-tree     Review target passed to code-review
+  OCTOPUS_TANGLE_INK=true                       Run optional ink/deliver after review passes
 
 ${YELLOW}Examples:${NC}
   $(basename "$0") develop "build the user authentication API"
@@ -249,8 +299,8 @@ ${YELLOW}octopus-configure${NC} - Interactive configuration wizard
 ${YELLOW}Usage:${NC} $(basename "$0") octopus-configure
 
 Guides you through:
-  1. Checking/installing dependencies (Codex CLI, Gemini CLI)
-  2. Configuring API keys
+  1. Checking/installing dependencies (Codex CLI and supported tools)
+  2. Configuring provider authentication, including Antigravity when available
   3. Setting up workspace
   4. Running a test command
 
@@ -352,7 +402,7 @@ ${YELLOW}Options:${NC}
 
 ${YELLOW}Interactive Wizard Features:${NC}
   • Step-by-step API key configuration with validation
-  • CLI tools verification (Codex, Gemini)
+  • CLI tools verification (Codex, Antigravity)
   • Workspace location customization
   • Shell completion installation
   • Issue detection with fix instructions
@@ -453,11 +503,11 @@ EOF
             ;;
         grapple)
             cat << EOF
-${YELLOW}grapple${NC} - Adversarial debate between Codex and Gemini
+${YELLOW}grapple${NC} - Adversarial debate between Codex and Antigravity
 
 ${YELLOW}Usage:${NC} $(basename "$0") grapple [--principles TYPE] <prompt>
 
-Multi-round debate where Codex proposes, Gemini critiques, and they
+Multi-round debate where Codex proposes, Antigravity critiques, and they
 iterate until reaching consensus. Uses critique principles to guide
 the review (security, performance, maintainability, etc.).
 
@@ -474,7 +524,7 @@ ${YELLOW}Examples:${NC}
 
 ${YELLOW}Workflow:${NC}
   Round 1: Codex proposes solution
-  Round 2: Gemini critiques with principles
+  Round 2: Antigravity critiques with principles
   Round 3: Codex refines based on critique
   Synthesis: Both agents converge on final solution
 
@@ -498,7 +548,7 @@ ${YELLOW}Options:${NC}
   --implement never|after-approval|plan-only
   --worktree auto|on|off
   --benchmark auto|on|off
-  --providers auto|claude,codex,gemini,qwen,opencode,openrouter
+  --providers auto|$(octo_council_default_providers)
   --max-cost <usd>
   --dry-run
   --json
@@ -633,11 +683,15 @@ ${MAGENTA}═══════════════════════�
   init --interactive      Full guided setup (7 steps)
   config                  Update preferences (v4.5)
   status                  Show running agents
+  status --run ID --json  Read a durable v10 run manifest
+  explain --run ID        Explain terminal seat decisions offline
   agent-summary           Show current run provider status table
   kill [id|all]           Stop agents
   clean                   Clean workspace
   aggregate               Combine all results
   preflight               Validate dependencies
+  doctor [updates]        Run local diagnostics (use 'doctor updates' for plugin freshness)
+  update-plugin           Explicitly update Octopus through the active host
 
 ${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}
 ${BLUE}COST & USAGE REPORTING${NC} (v4.1)
@@ -657,11 +711,11 @@ ${RED}════════════════════════�
   audit [count] [filter]  View audit trail (decisions log)
 
 ${YELLOW}Available Agents:${NC}
-  codex           GPT-5.3-Codex       ${GREEN}Premium${NC} (high-capability coding)
-  codex-standard  GPT-5.2-Codex       Standard tier
-  codex-mini      GPT-5.1-Codex-Mini  Quick/cheap tasks
-  gemini          Gemini-3-Pro        Deep analysis
-  gemini-fast     Gemini-3-Flash      Speed-critical
+  codex           GPT-5.6 Sol          ${GREEN}Premium${NC} (frontier coding)
+  codex-standard  GPT-5.6 Terra        Standard tier
+  codex-mini      GPT-5.6 Luna         Quick/cheap tasks
+  agy             Antigravity         Google research and design seat
+  agy-research    Antigravity         Research-focused routing
 
 ${YELLOW}Common Options:${NC}
   -v, --verbose           Detailed output
@@ -696,8 +750,11 @@ ${YELLOW}Examples:${NC}
 
 ${YELLOW}Environment:${NC}
   CLAUDE_OCTOPUS_WORKSPACE  Override workspace (default: ~/.claude-octopus)
+  OCTOPUS_WORKFLOW_STATE_DIR Override project workflow state location (default: workspace/projects/<project-id>)
+  OCTOPUS_PROJECT_PERSISTENCE Set true to opt into project-local .octo/ lifecycle files
   OPENAI_API_KEY            Codex CLI (or 'codex login' OAuth)
-  GEMINI_API_KEY            Gemini CLI (or 'gemini' OAuth; GOOGLE_API_KEY also accepted)
+  COMMAND_CODE_API_KEY       Command Code CLI (or authenticated CLI session)
+  AGY_AUTH_TOKEN            Antigravity CLI auth token (optional; launch plain 'agy' for browser sign-in)
   PERPLEXITY_API_KEY        Perplexity Sonar web search
   OPENROUTER_API_KEY        OpenRouter models
   QWEN_API_KEY              Qwen CLI (Coding-Plan: OPENAI_API_KEY + OPENAI_BASE_URL also works;

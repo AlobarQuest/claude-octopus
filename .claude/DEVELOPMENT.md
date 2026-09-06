@@ -7,10 +7,10 @@ This document is for **developers working on the Claude Octopus plugin itself**.
 **IMPORTANT:** Before adding files, read `../FILE-ORGANIZATION.md` for the complete file placement guide.
 
 Quick reference:
-- **Commands**: `.claude/commands/` (sys-, flow-, skill- prefixes)
+- **Commands**: `commands/` (sys-, flow-, skill- prefixes)
 - **Skills**: `.claude/skills/` (registered in plugin.json)
 - **Agents**: `agents/personas/`, `agents/principles/`, `agents/skills/`
-- **Hooks**: `hooks/` (configured in `.claude-plugin/hooks.json`)
+- **Hooks**: `hooks/` (configured in `hooks/hooks.json`)
 - **Tests**: `tests/` (smoke, unit, integration, e2e)
 - **Dev files**: `../` (NEVER committed - gitignored)
 
@@ -27,7 +27,7 @@ Quick reference:
 ### Core Components
 
 #### 1. Commands (Slash Commands)
-Located in `.claude/commands/`, invoked as `/namespace:command` or `/command`.
+Located in `commands/`, invoked as `/namespace:command` or `/command`.
 
 **Naming convention:**
 - `sys-*.md` - System commands (setup, update)
@@ -90,7 +90,7 @@ tools:
 ```
 
 #### 4. Hooks
-Event-driven automation configured in `.claude-plugin/hooks.json`.
+Event-driven automation configured in `hooks/hooks.json`.
 
 **Hook Types:**
 - `PreToolUse` - Before tool execution
@@ -178,7 +178,7 @@ echo "✓ PASS: my-feature"
 
 ### New Command
 
-1. Create `.claude/commands/category-name.md`:
+1. Create `commands/category-name.md`:
 ```markdown
 ---
 command: my-command
@@ -191,7 +191,7 @@ category: system
 Command prompt and instructions...
 ```
 
-2. No registration needed - auto-discovered from `.claude/commands/`
+2. No registration needed - auto-discovered from `commands/`
 
 3. Test: `/namespace:my-command` or `/my-command`
 
@@ -220,7 +220,7 @@ Skill instructions and examples...
 }
 ```
 
-3. Create shortcut command in `.claude/commands/skill-name.md`:
+3. Create shortcut command in `commands/skill-name.md`:
 ```markdown
 ---
 command: name
@@ -265,7 +265,7 @@ Agent's system instructions...
 echo "Hook executed"
 ```
 
-2. Configure in `.claude-plugin/hooks.json`:
+2. Configure in `hooks/hooks.json`:
 ```json
 {
   "PreToolUse": [
@@ -292,7 +292,7 @@ echo "Hook executed"
 ### Common Issues
 
 **Command not found:**
-- Check file exists in `.claude/commands/`
+- Check file exists in `commands/`
 - Verify YAML frontmatter has `command:` field
 - Try `/namespace:command` instead of `/command`
 
@@ -321,7 +321,7 @@ claude --verbose
 claude --list-plugins
 
 # Test hook patterns
-grep -r "pattern-text" .claude-plugin/hooks.json
+grep -r "pattern-text" hooks/hooks.json
 ```
 
 ## 📦 Version Management

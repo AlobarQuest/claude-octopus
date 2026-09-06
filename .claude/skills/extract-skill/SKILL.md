@@ -1,5 +1,6 @@
 ---
 name: skill-extract
+disable-model-invocation: true
 description: "Reverse-engineer design systems, tokens, and components from live products or screenshots"
 ---
 
@@ -75,7 +76,7 @@ When enabled, the extract feature uses multiple AI providers for higher accuracy
 **Provider Roles**:
 - **Claude**: Synthesis, conflict resolution, documentation
 - **Codex**: Code-level analysis, type extraction, architecture
-- **Gemini**: Pattern recognition, alternative interpretations, UX insights
+- **Antigravity**: Pattern recognition, alternative interpretations, UX insights
 
 **Consensus Mechanism**:
 - Threshold: extraction quality gates require the configured consensus threshold (default 67%); when no numeric vote data exists, the quorum resolver selects the strongest matching proposal from up to 3 provider perspectives and logs disagreements.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: v8.2.0 Sonnet 4.6 Agent in Multi-Agent Workflows
+# Test: Sonnet 5 Agent in Multi-Agent Workflows (historical v8.2.0 suite)
 # Validates that claude-sonnet is wired into:
 #   - grapple_debate() as a 3rd participant (with gemini)
 #   - probe_discover() as a 5th perspective
@@ -14,7 +14,7 @@ set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$SCRIPT_DIR/helpers/test-framework.sh"
-test_suite "v8.2.0 Sonnet 4.6 Agent in Multi-Agent Workflows"
+test_suite "Sonnet 5 Agent in Multi-Agent Workflows"
 
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$PLUGIN_DIR"
@@ -50,7 +50,7 @@ assert_fail() {
 
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║  🐙 v8.2.0 Sonnet 4.6 in Multi-Agent Workflows            ║${NC}"
+echo -e "${BLUE}║  🐙 Sonnet 5 in Multi-Agent Workflows                     ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -70,11 +70,11 @@ else
     assert_fail "1.1 grapple_debate references claude-sonnet agent"
 fi
 
-# 1.2: grapple_debate defaults the second debate slot to gemini
-if echo "$GRAPPLE_FN" | grep -q 'agent_b="gemini"'; then
-    assert_pass "1.2 grapple_debate defaults slot B to gemini"
+# 1.2: grapple_debate defaults the second debate slot to Antigravity
+if echo "$GRAPPLE_FN" | grep -q 'agent_b="agy"'; then
+    assert_pass "1.2 grapple_debate defaults slot B to agy"
 else
-    assert_fail "1.2 grapple_debate defaults slot B to gemini"
+    assert_fail "1.2 grapple_debate defaults slot B to agy"
 fi
 
 # 1.3: grapple_debate dispatches the third proposal through the resolved Sonnet slot
@@ -84,18 +84,18 @@ else
     assert_fail "1.3 grapple_debate generates resolved Sonnet-slot proposal"
 fi
 
-# 1.4: grapple_debate has 3-way critique (codex critiques gemini+sonnet)
+# 1.4: grapple_debate has 3-way critique (Codex critiques AGY + Sonnet)
 if echo "$GRAPPLE_FN" | grep -q 'codex_critique=$(run_agent_sync "$agent_a"'; then
     assert_pass "1.4 grapple_debate has codex_critique"
 else
     assert_fail "1.4 grapple_debate has codex_critique"
 fi
 
-# 1.5: grapple_debate has gemini critique
-if echo "$GRAPPLE_FN" | grep -q 'gemini_critique=$(run_agent_sync "$agent_b"'; then
-    assert_pass "1.5 grapple_debate has gemini_critique"
+# 1.5: grapple_debate has Antigravity critique
+if echo "$GRAPPLE_FN" | grep -q 'agy_critique=$(run_agent_sync "$agent_b"'; then
+    assert_pass "1.5 grapple_debate has agy_critique"
 else
-    assert_fail "1.5 grapple_debate has gemini_critique"
+    assert_fail "1.5 grapple_debate has agy_critique"
 fi
 
 # 1.6: grapple_debate has sonnet critique
@@ -238,11 +238,11 @@ echo ""
 echo -e "${BLUE}Test Group 5: skill-debate.md Updates${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 5.1: skill-debate.md mentions Sonnet 4.6
-if grep -q 'Sonnet 4.6' "$SKILL_DEBATE"; then
-    assert_pass "5.1 skill-debate.md mentions Sonnet 4.6"
+# 5.1: skill-debate.md mentions Sonnet 5
+if grep -q 'Sonnet 5' "$SKILL_DEBATE"; then
+    assert_pass "5.1 skill-debate.md mentions Sonnet 5"
 else
-    assert_fail "5.1 skill-debate.md mentions Sonnet 4.6"
+    assert_fail "5.1 skill-debate.md mentions Sonnet 5"
 fi
 
 # 5.2: skill-debate.md shows 4 participants (Codex, Gemini, Sonnet, Claude)
@@ -259,5 +259,5 @@ echo ""
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "${BLUE}Test Summary - v8.2.0 Sonnet 4.6 in Multi-Agent Workflows${NC}"
+echo -e "${BLUE}Test Summary - Sonnet 5 in Multi-Agent Workflows${NC}"
 test_summary

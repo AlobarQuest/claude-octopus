@@ -12,16 +12,16 @@
 _PERSONA_LOADER_LOADED=1
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FAST OPUS MODE SELECTION (v8.5)
+# LEGACY FAST OPUS REQUEST HANDLING
 #
-# IMPORTANT: Fast Opus is more expensive than standard:
-#   Opus 4.8 standard: $5/$25 per MTok (input/output)
-#   Opus 4.8 fast: $10/$50 per MTok (input/output)
-#   Legacy Opus 4.6 fast: $30/$150 per MTok (input/output)
-#
-# Fast mode trades cost for speed. Default is STANDARD (cost-efficient).
-# Only use fast when user explicitly requests it or for interactive single-shot tasks.
+# Claude's spawned --print CLI does not expose a supported --fast flag. Keep
+# recognizing legacy fast preferences so users receive a truthful compatibility
+# warning, but execute those requests through the standard command contract.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+log_opus_fast_pricing_warning() {
+    log "WARN" "Legacy Opus Fast request uses standard Claude CLI dispatch; no supported --fast subprocess flag is available"
+}
 
 select_opus_mode() {
     local phase="${1:-}"
@@ -64,12 +64,7 @@ select_opus_mode() {
                 ;;
             *)
                 # Single-shot task with /fast: honor user preference
-                log "INFO" "/fast mode active - using fast Opus for single-shot task"
-                if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" && "${OCTOPUS_OPUS_MODEL:-}" != "claude-opus-4.6" ]]; then
-                    log "WARN" "Opus 4.8 fast is 2x standard: \$10/\$50 per MTok vs \$5/\$25 standard"
-                else
-                    log "WARN" "Legacy Opus 4.6 fast is 6x standard: \$30/\$150 per MTok vs \$5/\$25 standard"
-                fi
+                log "INFO" "/fast mode active - using the supported standard Opus subprocess"
                 echo "fast"
                 ;;
         esac

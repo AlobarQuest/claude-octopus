@@ -85,7 +85,7 @@ done
 
 # ── 6. Smart router claude-mem hint ──────────────────────────────────
 
-if grep -c 'claude-mem' "$PROJECT_ROOT/.claude/commands/auto.md" >/dev/null 2>&1; then
+if grep -c 'claude-mem' "$PROJECT_ROOT/commands/auto.md" >/dev/null 2>&1; then
     pass "Smart router: auto.md mentions claude-mem"
 else
     fail "Smart router: auto.md mentions claude-mem" "no claude-mem reference in router"
@@ -102,12 +102,12 @@ else
     fail "Wired: save_session_checkpoint calls bridge observe" "no bridge observe or memory_observe call found"
 fi
 
-# ── 8. SessionStart memory hook queries claude-mem ───────────────────
+# ── 8. SessionStart memory hook queries the memory contract ──────────
 
-if grep -c 'BRIDGE_SCRIPT\|claude-mem-bridge' "$PROJECT_ROOT/hooks/session-start-memory.sh" >/dev/null 2>&1; then
-    pass "Wired: session-start-memory.sh queries claude-mem context"
+if grep -c 'memory_context\|scripts/lib/memory.sh' "$PROJECT_ROOT/hooks/session-start-memory.sh" >/dev/null 2>&1; then
+    pass "Wired: session-start-memory.sh queries memory contract context"
 else
-    fail "Wired: session-start-memory.sh queries claude-mem context" "no bridge reference in hook"
+    fail "Wired: session-start-memory.sh queries memory contract context" "no memory contract reference in hook"
 fi
 
 # ── 9. Provider report card function exists ──────────────────────────
@@ -132,23 +132,18 @@ else
     fi
 fi
 
-# ── 11. Persistent fallback log in doctor ────────────────────────────
+# ── 11. Persistent fallback history in review ───────────────────────
 
-if grep -c 'provider-fallbacks.log' "$ORCH" >/dev/null 2>&1; then
-    pass "Doctor: reads provider-fallbacks.log"
+if grep -c 'provider-fallbacks.log' "$PROJECT_ROOT/scripts/lib/review.sh" >/dev/null 2>&1; then
+    pass "Review: records provider-fallbacks.log"
 else
-    fail "Doctor: reads provider-fallbacks.log" "no fallback log reference in doctor"
+    fail "Review: records provider-fallbacks.log" "no fallback log reference in review"
 fi
 
-if grep -c 'provider-fallbacks.*providers.*warn' "$ORCH" >/dev/null 2>&1; then
-    pass "Doctor: warns on recent fallbacks"
+if grep -F -c 'Provider failure details:' "$PROJECT_ROOT/scripts/lib/review.sh" >/dev/null 2>&1; then
+    pass "Review: reports provider fallbacks after output"
 else
-    # Try alternate pattern
-    if grep -c 'doctor_add.*provider-fallback' "$ORCH" >/dev/null 2>&1; then
-        pass "Doctor: warns on recent fallbacks"
-    else
-        fail "Doctor: warns on recent fallbacks" "no doctor_add for fallback warning"
-    fi
+    fail "Review: reports provider fallbacks after output" "no post-output fallback report"
 fi
 
 # ── 12. Review default focus is all areas ────────────────────────────
@@ -161,7 +156,7 @@ fi
 
 # ── 13. Review auto-skip in pipeline context ─────────────────────────
 
-if grep -c 'OCTOPUS_WORKFLOW_PHASE' "$PROJECT_ROOT/.claude/commands/review.md" >/dev/null 2>&1; then
+if grep -c 'OCTOPUS_WORKFLOW_PHASE' "$PROJECT_ROOT/commands/review.md" >/dev/null 2>&1; then
     pass "Review: auto-skips prompts in pipeline context"
 else
     fail "Review: auto-skips prompts in pipeline context" "no OCTOPUS_WORKFLOW_PHASE check in review.md"

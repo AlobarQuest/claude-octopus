@@ -22,11 +22,14 @@ SESSION_FILE="${HOME}/.claude-octopus/session.json"
 
 # Check if a workflow was active this session
 workflow=""
-if [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
-    workflow=$(jq -r '.workflow // empty' "$SESSION_FILE" 2>/dev/null)
+if [[ -f "$SESSION_FILE" ]] && command -v jq &>/dev/null &&
+   jq -e 'type == "object"' "$SESSION_FILE" >/dev/null 2>&1; then
+    workflow=$(jq -r '.workflow // empty' "$SESSION_FILE" 2>/dev/null) || workflow=""
 fi
-if [[ -z "$workflow" || "$workflow" == "null" ]] && [[ -f "$SNAPSHOT" ]]; then
-    workflow=$(jq -r '.workflow // empty' "$SNAPSHOT" 2>/dev/null)
+if [[ -z "$workflow" || "$workflow" == "null" ]] &&
+   [[ -f "$SNAPSHOT" ]] && command -v jq &>/dev/null &&
+   jq -e 'type == "object"' "$SNAPSHOT" >/dev/null 2>&1; then
+    workflow=$(jq -r '.workflow // empty' "$SNAPSHOT" 2>/dev/null) || workflow=""
 fi
 
 # No workflow active — nothing to verify
@@ -62,7 +65,7 @@ if [[ -d "$RESULTS_DIR" ]]; then
     if [[ $recent_results -eq 0 ]]; then
         echo "⚠️  WORKFLOW VERIFICATION: The '${workflow}' workflow ran but produced no result files."
         echo "   This suggests orchestrate.sh was not called and multi-LLM dispatch did not execute."
-        echo "   The agent may have used only Claude-native tools instead of dispatching to Codex/Gemini."
+        echo "   The agent may have used only Claude-native tools instead of dispatching to Codex/Antigravity."
         echo "   Consider re-running with /octo:embrace to get proper multi-provider perspectives."
     fi
 fi

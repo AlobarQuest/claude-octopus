@@ -230,30 +230,47 @@ check_workflow_skills() {
 check_hooks_config() {
   info "\nValidating hooks configuration..."
 
-  local hooks_json=".claude-plugin/hooks.json"
+  local hooks_json="hooks/hooks.json"
 
   if [ ! -f "$hooks_json" ]; then
     fail "hooks.json not found"
     return 1
   fi
 
-  # Check for visual indicator hooks (v7.4)
-  if grep -q "orchestrate.*probe|grasp|tangle|ink" "$hooks_json"; then
+  # Documented hook schema: string matchers only; command-level regex filtering
+  # lives inside the hook scripts, so assert the scripts are wired, and the
+  # standard top-level "hooks" wrapper is present (issue #611).
+  if python3 -c "
+import json,sys
+d=json.load(open('$hooks_json'))
+sys.exit(0 if isinstance(d.get('hooks'), dict) and d['hooks'] else 1)
+" 2>/dev/null; then
+    pass "hooks.json has standard top-level hooks wrapper"
+  else
+    fail "hooks.json missing standard top-level hooks wrapper"
+  fi
+
+  if grep -q "workflow-indicator.sh\|orchestrate-guard.sh\|auto-router-inject.sh" "$hooks_json"; then
     pass "hooks.json has orchestrate.sh workflow hooks"
   else
     fail "hooks.json missing orchestrate.sh workflow hooks"
   fi
 
-  if grep -q "codex exec" "$hooks_json"; then
+  if grep -q "codex-exec-guard.sh" "$hooks_json"; then
     pass "hooks.json has Codex CLI hook"
   else
     fail "hooks.json missing Codex CLI hook"
   fi
 
-  if grep -q "gemini -" "$hooks_json"; then
-    pass "hooks.json has Gemini CLI hook"
+  if python3 -c "
+import json,sys
+d=json.load(open('$hooks_json'))
+ms=[b.get('matcher') for bs in d['hooks'].values() for b in bs if 'matcher' in b]
+sys.exit(0 if all(isinstance(m,str) for m in ms) else 1)
+" 2>/dev/null; then
+    pass "hooks.json matchers are documented string form"
   else
-    fail "hooks.json missing Gemini CLI hook"
+    fail "hooks.json contains non-string matchers"
   fi
 }
 
@@ -362,7 +379,7 @@ check_release_validator_marketplace_parser() {
 check_command_frontmatter() {
   info "\nValidating command YAML frontmatter..."
 
-  local commands_dir=".claude/commands"
+  local commands_dir="commands"
 
   if [ ! -d "$commands_dir" ]; then
     fail "Commands directory not found: $commands_dir"

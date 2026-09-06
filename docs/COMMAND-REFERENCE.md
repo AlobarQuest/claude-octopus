@@ -1,6 +1,6 @@
 # Command and Usage Reference
 
-Complete reference for all 49 Claude Octopus slash commands, CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and the project-lifecycle features that are triggered by natural language rather than slash commands.
+Complete reference for all 53 Claude Octopus slash commands, CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and manual-only project-lifecycle skills.
 
 ---
 
@@ -19,7 +19,7 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 | Command | Description |
 |---------|-------------|
 | `/octo:setup` | Check setup status and configure providers (aliases: `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:wizard`, `/octo:sys-setup`) |
-| `/octo:doctor` | Environment diagnostics across 9 check categories (includes RTK install + token optimization) |
+| `/octo:skill-doctor` | Manually invoke fail-closed diagnostics without shadowing Claude Code's native `/doctor` |
 | `/octo:model-config` | Configure provider model selection per workflow phase |
 | `/octo:km` | Toggle Knowledge Work mode |
 | `/octo:dev` | Switch to Dev Work mode |
@@ -105,12 +105,13 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 | `/octo:resume` | Resume a previous agent by ID — continue an interrupted task |
 | `/octo:discipline` | Toggle discipline mode — auto-invoke verification and review checks |
 | `octopus agent-summary` | Show the current multi-provider run status table |
+| `octopus status --run RUN_ID --json` | Read a schema-versioned v10 run manifest without provider calls |
+| `octopus explain --run RUN_ID` | Explain contribution, degradation, skip, or failure decisions from durable artifacts |
 
-### Admin
+### Legacy aliases
 
 | Command | Description |
 |---------|-------------|
-| `/octo:claw` | OpenClaw instance admin across macOS, Ubuntu/Debian, Docker, OCI, Proxmox |
 | `/octo:octo` | [Legacy] Redirects to `/octo:auto` |
 
 ### CLI Tools (v9.19.0+)
@@ -119,10 +120,11 @@ Plugin executables available as bare commands (CC v2.1.91+). Also usable via ful
 
 | Command | Description |
 |---------|-------------|
-| `octopus doctor` | Run diagnostics (same as `/octo:doctor`) |
+| `octopus doctor` | Run Octopus environment diagnostics |
 | `octopus version` | Show plugin version |
 | `octopus session` | Show current session info |
 | `octopus fleet` | Show provider fleet status |
+| `octopus state-path` | Print the checkout-specific workflow `state.json` path resolved by `OCTOPUS_WORKFLOW_STATE_DIR`, `CLAUDE_PLUGIN_DATA`, `CLAUDE_OCTOPUS_WORKSPACE`, or the default host workspace |
 | `octopus agent-summary` | Show which providers ran, degraded, failed, timed out, or contributed usable output |
 | `octo-compress` | Pipe verbose output for token savings: `npm install 2>&1 \| octo-compress` |
 | `octo-compress json` | Force JSON array/object compression |
@@ -133,9 +135,11 @@ Plugin executables available as bare commands (CC v2.1.91+). Also usable via ful
 
 ### Project Lifecycle (Skill-Based)
 
-These are invoked via natural language or skill triggers — not slash commands.
+These are manual-only plugin skills, not standalone `/octo:*` commands. Choose
+one explicitly from the host's skill menu or start an Octopus workflow that
+loads it as a source; ordinary natural-language prompts do not activate them.
 
-| Feature | Natural Language | Description |
+| Feature | Example request after explicit selection | Description |
 |---------|-----------------|-------------|
 | Status | "show status", "where am I" | Project progress dashboard |
 | Resume | "resume", "continue", "pick up where I left off" | Restore context from previous session |
@@ -149,11 +153,18 @@ These are invoked via natural language or skill triggers — not slash commands.
 
 ### `/octo:auto`
 
-Single entry point with natural language intent detection. Analyzes your request and routes to the optimal workflow automatically.
+Explicit single entry point with natural language intent detection. Analyzes the
+request supplied to `/octo:auto` and routes to the optimal workflow.
 
-**You can invoke the router in two ways:**
-- Slash command: `/octo:auto <request>`
-- Plain language: `octo <request>`
+**Default invocation:** `/octo:auto <request>`
+
+Plain-prompt routing is disabled on install. Completing `/octo:setup` persists
+`auto_router_mode=suggest`, so Octopus names a matching command but never
+dispatches a provider on its own; a profile that never ran setup stays fully
+dormant. `OCTOPUS_AUTO_ROUTER_MODE` overrides the stored preference in either
+direction (`off` to silence suggestions, `invoke` to load matched routes), and
+an `auto_router_mode` value already present in
+`~/.claude-octopus/preferences.json` is never overwritten by setup.
 
 **Usage:**
 ```
@@ -185,7 +196,7 @@ Single entry point with natural language intent detection. Analyzes your request
 
 **Alias and fuzzy matching:**
 - Setup aliases such as `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:install`, `/octo:settings`, and `/octo:wizard` resolve to `/octo:setup`.
-- Common shortcut aliases resolve before routing: `/octo:cost` -> `/octo:costs`, `/octo:usage` -> `/octo:costs`, `/octo:optimize` -> `/octo:auto`, `/octo:sys-update` -> `/octo:doctor`.
+- Common shortcut aliases resolve before routing: `/octo:cost` -> `/octo:costs`, `/octo:usage` -> `/octo:costs`, and `/octo:optimize` -> `/octo:auto`.
 - Mistyped explicit `/octo:*` commands return close matches and write the event to `~/.claude-octopus/alias-log.tsv`.
 
 **Router promotion:** Prompts that name multiple concrete options, such as "Redis or DynamoDB" or "Option A vs Option B", are promoted to `/octo:debate` so the answer gets structured multi-model scoring instead of a single-model response.
@@ -206,7 +217,7 @@ Check setup status and configure AI providers.
 ```
 
 **What it does:**
-- Auto-detects installed providers (Codex CLI, Gemini CLI, Antigravity CLI, and other configured providers)
+- Auto-detects installed providers (Codex CLI, Antigravity CLI, and other configured providers)
 - Shows which providers are available and their auth status
 - Provides installation instructions for missing providers
 - Verifies API keys and authentication
@@ -217,7 +228,7 @@ Claude Octopus Setup Status
 
 Providers:
   Codex CLI: ready
-  Gemini CLI: ready
+  Antigravity CLI: ready
 
 You're all set! Try: /octo:auto research OAuth patterns
 ```
@@ -226,35 +237,58 @@ You're all set! Try: /octo:auto research OAuth patterns
 
 ---
 
-### `/octo:doctor`
+### Doctor diagnostics
 
-Run environment diagnostics across 9 check categories.
+Run fail-closed environment diagnostics across 14 check categories.
+
+Octopus intentionally leaves `/octo:doctor` unregistered so Claude Code's
+native `/doctor` remains available. Invoke `/octo:skill-doctor` inside Claude
+Code, or use the exact CLI commands below when you need arguments or JSON.
 
 **Usage:**
 ```
-/octo:doctor                    # Run all checks
-/octo:doctor providers          # Check provider installation only
-/octo:doctor auth --verbose     # Detailed auth status
-/octo:doctor config             # Plugin install/version plus Claude Code feature flags
-/octo:doctor skills             # Skill loading plus modern plugin capability notes
-/octo:doctor --json             # Machine-readable output
+/octo:skill-doctor              # Run all checks inside Claude Code
+octopus doctor                  # Run all checks from a shell
+octopus doctor providers        # Check provider installation only
+octopus doctor providers --live # Run a bounded live AGY catalog/model/dispatch probe
+octopus doctor auth --verbose   # Detailed auth status
+octopus doctor config           # Install source/path, version, build SHA when available, and Claude Code feature flags
+octopus doctor skills           # Skill loading plus modern plugin capability notes
+octopus doctor --json           # Machine-readable Doctor 2.0 output
 ```
 
 **Check categories:**
 
 | Category | What it checks |
 |----------|---------------|
-| `providers` | Claude Code version, Codex CLI, Gemini CLI, Antigravity CLI, and other configured providers |
+| `providers` | Claude Code version, Codex CLI, Antigravity CLI, and other configured providers |
+| `companions` | Optional companion-tool installation and readiness |
 | `auth` | Authentication status for each provider |
 | `config` | Plugin version, install scope, feature flags |
-| `state` | Project state.json, stale results, workspace writable |
+| `updates` | Loaded, installed, catalog, and cached plugin version drift |
+| `state` | Project state, writable cache, stale run records, and orphan process evidence |
 | `smoke` | Smoke test cache, model configuration |
 | `hooks` | hooks.json validity, hook scripts |
 | `scheduler` | Scheduler daemon, jobs, budget gates, kill switches |
 | `skills` | Skill files loaded and valid |
 | `conflicts` | Conflicting plugin detection |
+| `agents` | Agent definitions and platform projections |
+| `recurrence` | Repeated-failure and recovery evidence |
+| `cache` | Active and stale plugin-cache versions |
 
-**Modern Claude Code checks:** On Claude Code v2.1.126+, `/octo:doctor` reports which newer runtime capabilities Octopus can safely use. Current checks cover gateway model discovery opt-in, reserved MCP server names, experimental manifest key placement, `skillOverrides`, plugin zip archives, `--plugin-url`, stream-json plugin load errors, force-synchronized output, and package-manager auto-update prompts.
+Doctor returns `0` for passes and warnings, `1` when one or more checks fail,
+and `2` for invalid options, unknown categories, or multiple category
+arguments. With `--json`, a diagnostic failure still leaves a valid
+`schema_version: "10.0"` report on stdout; capture the exit status separately
+instead of discarding the report under shell `errexit`.
+
+`octopus doctor providers --live` is opt-in because it sends one small real AGY
+request. It checks the installed version, live `agy models` catalog and keyring
+authentication, the configured model against that catalog, and a bounded
+print-mode response. Normal doctor and startup checks do not spend provider
+quota or trigger interactive authentication.
+
+**Modern Claude Code checks:** On Claude Code v2.1.126+, Doctor reports which newer runtime capabilities Octopus can safely use. Current checks cover gateway model discovery opt-in, reserved MCP server names, experimental manifest key placement, `skillOverrides`, plugin zip archives, `--plugin-url`, stream-json plugin load errors, force-synchronized output, and package-manager auto-update prompts.
 
 These are advisory unless they identify a concrete misconfiguration. For example, `gateway-model-discovery` warns only when `ANTHROPIC_BASE_URL` is set without `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, and `mcp-workspace-reserved` warns only when a settings file defines `mcpServers.workspace`.
 
@@ -292,30 +326,38 @@ Configure which AI models are used across Claude Octopus workflows.
 ```
 /octo:model-config                          # View current config
 /octo:model-config show phases              # Show per-phase routing table
-/octo:model-config codex gpt-5.4            # Set Codex model
-/octo:model-config codex gpt-5.4  # Fast Spark model
-/octo:model-config gemini gemini-3.1-pro-preview  # Set Gemini model
+/octo:model-config codex gpt-5.6-sol        # Set frontier Codex model
+/octo:model-config codex gpt-5.6-terra      # Set balanced Codex model
+/octo:model-config agy default                 # Use Antigravity's service-selected model
 /octo:model-config providers                 # Show provider allowlist
 /octo:model-config disable codex --session   # Stop using Codex in this session
-/octo:model-config allow claude gemini --session  # Use only Claude + Gemini in this session
+/octo:model-config allow claude agy --session  # Use only Claude + Antigravity in this session
 /octo:model-config clear-allowlist --session # Restore default provider availability
 /octo:model-config cost-mode budget         # Use cheaper models
 /octo:model-config cost-mode premium        # Use best models
+/octo:budget-mode                            # One-step persistent budget toggle
+/octo:standard-mode                          # Select the configured standard tier
+/octo:premium-mode                           # One-step persistent premium toggle
 /octo:model-config trace                    # Debug model resolution
 /octo:model-config reset                    # Reset to defaults
 ```
 
 **Cost modes:**
 
-| Mode | Codex | Gemini | Best for |
-|------|-------|--------|----------|
-| `budget` | gpt-5.4 | gemini-3-flash | High-volume, quick feedback |
-| `standard` | gpt-5.4 | gemini-3.1-pro-preview | Default — balanced cost/quality |
-| `premium` | gpt-5.4-pro | gemini-3.1-pro-preview | Critical decisions, maximum quality |
+| Mode | Codex | Claude | Antigravity | Best for |
+|------|-------|--------|-------------|----------|
+| `budget` | GPT-5.6 Luna | Haiku 4.5 | Fast service tier | High-volume, quick feedback |
+| `standard` | GPT-5.6 Sol | Sonnet 5 | Service-selected default | Default — frontier coding/quality |
+| `premium` | GPT-5.6 Sol | Opus 5 | Service-selected default | Critical decisions and premium Claude judgment |
+
+Quick toggles persist the selected mode in
+`~/.claude-octopus/config/providers.json`. Configure a provider target for any
+tier with `/octo:model-config tier <mode> <provider> <model-or-capability>`.
+An explicit `OCTOPUS_COST_MODE` environment variable still takes precedence.
 
 **Per-phase routing:** Different models can be configured for Discover, Define, Develop, and Deliver phases. Use `show phases` to view the current routing table.
 
-**Role-based defaults (v9.29+):** `architect`, `strategist`, and `security-reviewer` use the current Claude Opus default (Opus 4.8 on Claude Code v2.1.154+, then 4.7/4.6 fallback); `code-reviewer` and `implementer` use GPT-5.4; `synthesizer` uses Claude Sonnet 4.6. See [ARCHITECTURE.md — Role → Model Mapping](../docs/ARCHITECTURE.md#role--model-mapping-v929) for rationale. Opt out with `OCTOPUS_LEGACY_ROLES=1`.
+**Role-based defaults:** `architect`, `strategist`, and `security-reviewer` use Opus 5 on Claude Code v2.1.219+ (then 4.8/4.7/4.6 fallback); `code-reviewer` and `implementer` use GPT-5.6 Sol; `synthesizer` uses Sonnet 5 on Claude Code v2.1.197+. See [the routing strategy](MODEL-ROUTING-STRATEGY.md). Opt out with `OCTOPUS_LEGACY_ROLES=1`.
 
 ---
 
@@ -389,7 +431,7 @@ Discovery phase — Multi-AI research and exploration.
 ```
 
 **What it does:**
-- Parallel research using Codex CLI + Gemini CLI
+- Parallel research using Codex CLI + Antigravity CLI
 - Relevance-aware synthesis with quality ranking (v8.49.0+)
 - Minority opinion preservation — surfaces dissenting views
 - Shows visual indicator: 🐙 🔍
@@ -487,7 +529,7 @@ Intelligent plan builder — creates strategic execution plans without executing
 **What it does:**
 - Captures comprehensive intent via 5 structured questions (goal, knowledge level, constraints, timeline, success criteria)
 - Analyzes requirements and generates a weighted execution strategy
-- Saves plan to `.claude/session-plan.md` and intent contract to `.claude/session-intent.md`
+- Saves every plan and intent contract to a unique resolved run directory: `<project-root>/.octo/plans/<run-id>/` in a project, or `~/.claude-octopus/sessions/<session-id>/plans/<run-id>/` elsewhere. It never writes loose artifacts into `~/.claude/`.
 - Offers to execute immediately with `/octo:embrace` or save for later
 
 **Aliases:** `build-plan`, `intent`
@@ -512,7 +554,7 @@ Deep research with multi-provider fanout, visible provider status, and attribute
 
 **What it does:**
 - Parses `--breadth=light|standard|exhaustive` and maps it to a dynamic research fleet
-- Runs multi-AI research across available providers such as Claude, Codex, Gemini, Antigravity, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, and WebFetch/WebSearch where configured
+- Runs multi-AI research across available providers such as Claude, Codex, Antigravity, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, and WebFetch/WebSearch where configured
 - Applies provider-aware prompt-size preflight before dispatch, using `OCTOPUS_OVERSIZE_STRATEGY=summarize|truncate|fail`
 - Renders an agent summary table before synthesis so failed, degraded, or timed-out providers are visible
 - Synthesizes findings into actionable, structured insights with provider attribution and disagreement notes
@@ -522,7 +564,7 @@ Deep research with multi-provider fanout, visible provider status, and attribute
 | Breadth | Typical Fleet | Time Budget | Best For |
 |---------|---------------|-------------|----------|
 | `light` | Claude + Codex | ~60s | Quick technical checks |
-| `standard` | Claude + available providers such as Codex, Gemini, and Antigravity | ~180s | Default research and trade-offs |
+| `standard` | Claude + available providers such as Codex and Antigravity | ~180s | Default research and trade-offs |
 | `exhaustive` | Claude + available providers + Perplexity/OpenRouter/Web where configured | ~360s | High-stakes or broad ecosystem research |
 
 If no breadth is provided, Octopus uses `OCTOPUS_RESEARCH_BREADTH` when set, otherwise it defaults to standard or asks when the query is underspecified.
@@ -558,7 +600,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
 **Team mode:**
 - Dispatches parallel queries to available providers:
   - 🔴 Codex CLI — Technical feasibility and implementation angles
-  - 🟡 Gemini CLI — Lateral thinking and ecosystem connections
+- 🧭 Antigravity CLI — Lateral thinking and ecosystem connections
   - 🔵 Claude — Synthesis, pattern naming, and moderation
 - Provider-attributed results (for example 🔴 🟡 🧭 🔵)
 - Cross-perspective synthesis: convergence, divergence, and strongest ideas
@@ -569,7 +611,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
 ```
 🐙 CLAUDE OCTOPUS ACTIVATED — Multi-AI Brainstorm
 🔴 Codex CLI — Technical feasibility and implementation angles
-🟡 Gemini CLI — Lateral thinking and ecosystem connections
+🧭 Antigravity CLI — Lateral thinking and ecosystem connections
 🔵 Claude — Synthesis, pattern naming, and moderation
 ```
 
@@ -577,7 +619,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
 
 ### `/octo:debate`
 
-AI Debate Hub — structured debates between Claude and available external providers such as Codex, Gemini, Antigravity, OpenCode, and OpenRouter.
+AI Debate Hub — structured debates between Claude and available external providers such as Codex, Antigravity, OpenCode, and OpenRouter.
 
 **Usage:**
 ```
@@ -594,7 +636,7 @@ AI Debate Hub — structured debates between Claude and available external provi
 | `-d STYLE`, `--debate-style STYLE` | `quick`, `thorough`, `adversarial`, `collaborative` |
 
 **What it does:**
-- Claude, Gemini CLI, and Codex CLI debate the topic
+- Claude, Antigravity CLI, and Codex CLI debate the topic
 - Claude acts as both participant and moderator
 - Anti-sycophancy gate prevents consensus from forming too easily
 - Produces synthesis with concrete recommendation
@@ -602,7 +644,7 @@ AI Debate Hub — structured debates between Claude and available external provi
 **Natural language triggers:**
 - `octo debate X vs Y`
 - `run a debate about Z`
-- `I want gemini and codex to review X`
+- `I want agy and codex to review X`
 
 ---
 
@@ -631,7 +673,7 @@ Persona-based multi-LLM council for advice, decision support, planning, and gate
 | `--implement never\|after-approval\|plan-only` | Implementation gate behavior |
 | `--worktree auto\|on\|off` | Worktree preference for later implementation handoff |
 | `--benchmark auto\|on\|off` | BullshitBench snapshot routing signal |
-| `--providers auto\|claude,codex,gemini,opencode,openrouter` | Provider allowlist |
+| `--providers auto\|claude,codex,agy,opencode,openrouter` | Provider allowlist |
 | `--max-cost <usd>` | Hard USD cost cap |
 | `--simulate` | Explicit single-model simulation mode; never used implicitly |
 | `--single-model` | Alias for `--simulate` |
@@ -714,7 +756,7 @@ NLSpec authoring — structured specification from multi-AI research.
 
 **What it does:**
 - Question-first approach to understand scope
-- Multi-AI research (Claude + Gemini + Codex) on the domain
+- Multi-AI research (Claude + Antigravity + Codex) on the domain
 - Generates structured NLSpec: behaviors, actors, constraints, acceptance criteria
 - Completeness validation with scoring
 - Saves specification file for downstream workflows (e.g., `/octo:factory`)
@@ -759,7 +801,7 @@ Two-stage review pipeline: spec compliance then code quality.
 ```
 
 **Stages:**
-1. **Stage 1 — Spec Compliance**: Validates against intent contract (`.claude/session-intent.md`)
+1. **Stage 1 — Spec Compliance**: Validates against intent contract (resolved plan directory's `session-intent.md`; see `/octo:plan`)
 2. **Gate check**: Stage 1 must pass before Stage 2 runs
 3. **Stage 2 — Code Quality**: Stub detection and quality review
 4. **Combined report**: Unified verdict with PR comment posting when applicable
@@ -1159,44 +1201,6 @@ Manage the Claude Octopus scheduled workflow runner daemon.
 
 ---
 
-## Admin
-
-### `/octo:claw`
-
-OpenClaw instance administration across five platforms.
-
-**Usage:**
-```
-/octo:claw                              # Auto-detect platform, run diagnostics
-/octo:claw update openclaw              # Update OpenClaw to latest stable
-/octo:claw harden my server             # Run security hardening checklist
-/octo:claw setup openclaw on proxmox    # Guided installation on Proxmox LXC
-/octo:claw check gateway health         # Gateway and channel diagnostics
-```
-
-**Supported platforms:**
-
-| Platform | What it manages |
-|----------|----------------|
-| macOS | Homebrew, launchd, Application Firewall, APFS, FileVault |
-| Ubuntu/Debian | apt, systemd, ufw, journalctl, unattended-upgrades |
-| Docker | docker compose, container health, volumes, log drivers |
-| Oracle OCI | ARM instances, VCN/NSG networking, block volumes, Tailscale |
-| Proxmox | VMs (qm), LXC containers (pct), ZFS, vzdump, clustering |
-
-**OpenClaw management:**
-- Gateway lifecycle: start, stop, restart, status, health, logs
-- Diagnostics: `openclaw doctor`, `openclaw security audit`
-- Configuration: channels, models, agents, sessions, skills, plugins
-- Updates: channel management (stable/beta/dev), backup, rollback
-
-**Natural language triggers:**
-- `octo manage my openclaw server`
-- `octo harden my server`
-- `octo check server health`
-
----
-
 ### `/octo:octo`
 
 [Legacy] Redirects to `/octo:auto`. Kept for backward compatibility.
@@ -1348,6 +1352,27 @@ Multi-provider commands call this automatically before synthesis when a run ledg
 
 ---
 
+### `octopus status --run` and `octopus explain --run`
+
+Inspect a completed, interrupted, or degraded v10 run without rerunning a
+provider or probing authentication.
+
+```bash
+octopus status --run RUN_ID --json
+octopus status --run latest
+octopus explain --run RUN_ID
+```
+
+Each run writes `~/.claude-octopus/runs/<run-id>/run.json` atomically and updates
+`runs/latest` only after the complete snapshot exists. The manifest contains
+requested and resolved provider/model/effort, source and worktree attribution,
+process cleanup, timing and token metrics, artifact paths, the full seat
+transition timeline, terminal reasons, contribution counts, and phase rollups.
+Unknown or corrupt runs return nonzero. These commands are artifact-only: they
+do not invoke provider CLIs, authentication checks, or repair actions.
+
+---
+
 ### `/octo:retro`
 
 Generate data-driven engineering retrospectives from git history.
@@ -1443,13 +1468,15 @@ Toggle discipline mode — automatic verification, brainstorming, and review gat
 
 ## Project Lifecycle (Skill-Based)
 
-These features are triggered by natural language — they are not slash commands. Claude auto-activates them based on context.
+These lifecycle skills are manual-only. Choose the plugin-scoped skill from the
+host's slash or skill menu, or let an explicitly started Octopus workflow load
+it as a source. Ordinary natural-language prompts do not auto-activate them.
 
 ### `Status`
 
 Show where you are in the workflow and what to do next.
 
-**Invocation:** Skill-based — triggered by natural language: "show status", "where am I", "what's next", "progress", "what have I been working on"
+**Invocation:** Select the skill explicitly; example requests include "show status", "where am I", "what's next", "progress", and "what have I been working on".
 
 **Output:**
 - Current phase and position
@@ -1529,7 +1556,7 @@ When Claude Octopus activates external CLIs, you'll see visual indicators:
 |-----------|---------|----------|
 | 🐙 | Multi-AI mode active | Multiple providers |
 | 🔴 | Codex CLI executing | OpenAI (your OPENAI_API_KEY) |
-| 🟡 | Gemini CLI executing | Google (your GEMINI_API_KEY) |
+| 🧭 | Antigravity CLI executing | Google Antigravity access |
 | 🟣 | Perplexity Sonar search | Your PERPLEXITY_API_KEY |
 | 🟢 | Qwen or Copilot executing | Qwen API-key/Coding-Plan auth or GitHub Copilot subscription |
 | 🟠 | OpenCode/OpenRouter provider executing | Local/OpenRouter configuration |
@@ -1548,13 +1575,13 @@ When Claude Octopus activates external CLIs, you'll see visual indicators:
 
 Providers:
 🔴 Codex CLI - Technical implementation analysis
-🟡 Gemini CLI - Ecosystem and community research
+🧭 Antigravity CLI - Ecosystem and community research
 🔵 Claude - Strategic synthesis
 
 Agent run summary
 Provider               | Status      | Tokens | Time | Reason
 codex                  | ok          |   4200 |  18s | -
-gemini                 | degraded    |   1800 |  61s | prompt summarized before dispatch
+agy                    | degraded    |   1800 |  61s | prompt summarized before dispatch
 ```
 
 ---

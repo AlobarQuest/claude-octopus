@@ -57,13 +57,15 @@ record_agent_start() {
     # Store start time for duration tracking
     local base
     base=$(get_metrics_base)
-    echo "$start_time" > "${base}/.agent-start-${agent_id}"
+    printf '%s|%s\n' "$start_time" "$estimated_input_tokens" > "${base}/.agent-start-${agent_id}"
 
     echo "$agent_id"
 }
 
 # Record agent call completion
-# Args: agent_id agent_type model output [phase] [native_token_count] [native_tool_uses] [native_duration_ms]
+# Args: agent_id agent_type model output [phase] [native_token_count]
+#       [native_tool_uses] [native_duration_ms] [native_input_tokens]
+#       [native_output_tokens]
 record_agent_complete() {
     local agent_id="$1"
     local agent_type="$2"
@@ -73,6 +75,8 @@ record_agent_complete() {
     local native_token_count="${6:-}"
     local native_tool_uses="${7:-}"
     local native_duration_ms="${8:-}"
+    local native_input_tokens="${9:-}"
+    local native_output_tokens="${10:-}"
 
     local base
     base=$(get_metrics_base)
@@ -84,7 +88,14 @@ record_agent_complete() {
         return 1
     fi
 
-    local start_time=$(cat "$start_file")
+    local start_record start_time estimated_input_tokens
+    start_record=$(cat "$start_file")
+    start_time="${start_record%%|*}"
+    if [[ "$start_record" == *"|"* ]]; then
+        estimated_input_tokens="${start_record#*|}"
+    else
+        estimated_input_tokens=100
+    fi
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
 
@@ -106,7 +117,7 @@ record_agent_complete() {
     # Estimate tokens as fallback (rough: 4 chars per token)
     local output_length=${#output}
     local estimated_output_tokens=$((output_length / 4))
-    local estimated_total_tokens=$((estimated_output_tokens + 100))  # +100 for input overhead
+    local estimated_total_tokens=$((estimated_input_tokens + estimated_output_tokens))
 
     # Use native token count for cost if available, otherwise use estimate
     local cost_basis_tokens=$estimated_total_tokens
@@ -114,10 +125,40 @@ record_agent_complete() {
         cost_basis_tokens=$token_count
     fi
 
-    # Get pricing for model
-    local cost_per_1k
-    cost_per_1k=$(get_model_cost "$model")
-    local estimated_cost=$(awk "BEGIN {printf \"%.4f\", ($cost_basis_tokens / 1000.0) * $cost_per_1k}")
+    local input_tokens="$estimated_input_tokens" output_tokens="$estimated_output_tokens"
+    if [[ "$has_native" == "true" ]]; then
+        if [[ "$native_input_tokens" =~ ^[0-9]+$ && "$native_output_tokens" =~ ^[0-9]+$ ]] &&
+           (( native_input_tokens + native_output_tokens == cost_basis_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens="$native_output_tokens"
+        elif [[ "$native_input_tokens" =~ ^[0-9]+$ ]] && (( native_input_tokens <= cost_basis_tokens )); then
+            input_tokens="$native_input_tokens"
+            output_tokens=$((cost_basis_tokens - input_tokens))
+        elif [[ "$native_output_tokens" =~ ^[0-9]+$ ]] && (( native_output_tokens <= cost_basis_tokens )); then
+            output_tokens="$native_output_tokens"
+            input_tokens=$((cost_basis_tokens - output_tokens))
+        else
+            if (( input_tokens > cost_basis_tokens )); then input_tokens="$cost_basis_tokens"; fi
+            output_tokens=$((cost_basis_tokens - input_tokens))
+        fi
+    fi
+    local pricing input_price output_price
+    if declare -f get_model_pricing >/dev/null 2>&1; then
+        pricing="$(get_model_pricing "$model" "$agent_type")"
+        input_price="${pricing%%:*}"
+        output_price="${pricing##*:}"
+        if declare -f octo_effective_model_pricing >/dev/null 2>&1; then
+            pricing="$(octo_effective_model_pricing "$model" "$input_tokens" "$input_price" "$output_price")"
+            input_price="${pricing%%:*}"
+            output_price="${pricing##*:}"
+        fi
+    else
+        input_price="$(get_model_cost "$model")"
+        output_price="$input_price"
+    fi
+    local estimated_cost
+    estimated_cost=$(awk -v tin="$input_tokens" -v tout="$output_tokens" -v pin="$input_price" -v pout="$output_price" \
+        'BEGIN {printf "%.4f", (tin * pin + tout * pout) / 1000000}')
 
     # Record in metrics file
     if command -v jq &> /dev/null; then
@@ -159,19 +200,30 @@ EOF
     rm -f "$start_file"
 }
 
-# Get model pricing (cost per 1K tokens, rough estimates)
+# Get model input pricing per million tokens for standalone legacy use.
 get_model_cost() {
     local model="$1"
+    if declare -f octo_model_canonical_id >/dev/null 2>&1; then
+        model="$(octo_model_canonical_id "$model")" || return 1
+    fi
 
     case "$model" in
         # Claude models (input cost, simplified)
-        claude-opus-4-8|claude-opus-4-7|claude-opus-4-6) echo "5.00" ;;
+        claude-opus-5)          echo "5.00" ;;
+        claude-opus-5-fast)     echo "10.00" ;;
+        claude-fable-5|claude-fable-5-1) echo "10.00" ;;
+        claude-opus-4.8|claude-opus-4.7|claude-opus-4.6|claude-opus-4-8|claude-opus-4-7|claude-opus-4-6) echo "5.00" ;;
         claude-opus-4-5)        echo "15.00" ;;    # legacy
-        claude-sonnet-4-5)      echo "3.00" ;;
+        claude-sonnet-5)       echo "2.00" ;;
+        claude-sonnet-4.6|claude-sonnet-4.5|claude-sonnet-4-6|claude-sonnet-4-5) echo "3.00" ;;
         claude-sonnet-4)        echo "3.00" ;;
         claude-haiku-*)         echo "0.25" ;;
 
         # OpenAI/Codex models (rough estimates)
+        gpt-6-astra)            echo "10.00" ;;
+        gpt-5.6-sol)            echo "4.00" ;;
+        gpt-5.6-terra)          echo "2.00" ;;
+        gpt-5.6-luna)           echo "0.20" ;;
         gpt-5.3-codex)          echo "4.00" ;;
         gpt-5*)                 echo "3.00" ;;
         gpt-4*)                 echo "3.00" ;;
@@ -343,16 +395,25 @@ record_agents_batch_complete() {
 
         # v8.6.0: Extract native metrics from result file
         local native_tokens="" native_tools="" native_duration=""
+        local native_input_tokens="" native_output_tokens=""
+        local native_cached_input_tokens="" native_cache_write_tokens="" native_reasoning_tokens=""
         if declare -f parse_task_metrics &>/dev/null; then
             parse_task_metrics "$output"
             native_tokens="$_PARSED_TOKENS"
             native_tools="$_PARSED_TOOL_USES"
             native_duration="$_PARSED_DURATION_MS"
+            native_input_tokens="$_PARSED_INPUT_TOKENS"
+            native_output_tokens="$_PARSED_OUTPUT_TOKENS"
+            native_cached_input_tokens="${_PARSED_CACHED_INPUT_TOKENS:-}"
+            native_cache_write_tokens="${_PARSED_CACHE_WRITE_TOKENS:-}"
+            native_reasoning_tokens="${_PARSED_REASONING_TOKENS:-}"
         fi
 
         # Record completion
         record_agent_complete "$metrics_id" "$agent_type" "$model" "$output" "$phase" \
-            "$native_tokens" "$native_tools" "$native_duration"
+            "$native_tokens" "$native_tools" "$native_duration" \
+            "$native_input_tokens" "$native_output_tokens" \
+            "$native_cached_input_tokens" "$native_cache_write_tokens" "$native_reasoning_tokens"
 
         # Remove from map
         sed -i.bak "/^${task_group}-${task_id}:/d" "$metrics_map" 2>/dev/null || true
@@ -453,7 +514,7 @@ display_per_phase_cost_table() {
         notes+=("* = native metrics (from Task tool)")
     fi
     if [[ "$has_fast" == "true" ]]; then
-        notes+=("⚡ = fast mode (2x standard on Opus 4.8; legacy 4.6 fast remains 6x)")
+        notes+=("⚡ = fast mode (2x standard on Opus 5; legacy 4.6 fast remains 6x)")
     fi
     for note in "${notes[@]}"; do
         echo "  $note"

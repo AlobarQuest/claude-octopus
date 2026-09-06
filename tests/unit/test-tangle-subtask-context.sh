@@ -12,14 +12,11 @@ source "$SCRIPT_DIR/../helpers/test-framework.sh"
 
 test_suite "tangle subtask context preservation"
 
-test_case "workflows.sh has valid bash syntax"
-if bash -n "$WORKFLOWS" 2>/dev/null; then
-    test_pass
-else
-    test_fail "syntax error in workflows.sh"
-fi
+# These tests exercise tangle dispatch/validation behavior, not contextual review.
+export OCTOPUS_TANGLE_CODE_REVIEW=false
 
 # shellcheck source=/dev/null
+source "$PROJECT_ROOT/scripts/lib/testing.sh"
 source "$WORKFLOWS"
 
 CYAN=""
@@ -35,7 +32,6 @@ WORKSPACE_DIR="$RESULTS_DIR/workspace"
 CAPTURE_DIR="$RESULTS_DIR/captured-prompts"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$WORKSPACE_DIR/.octo/agents" "$CAPTURE_DIR"
-trap 'rm -rf "$RESULTS_DIR"' EXIT
 
 log() { :; }
 octopus_phase_banner() { :; }
@@ -45,6 +41,16 @@ design_review_ceremony() { :; }
 fleet_dispatch_begin() { :; }
 fleet_dispatch_end() { :; }
 validate_tangle_results() { :; }
+
+test_case "repository context preserves declared Files scope as exclusive write authority"
+repo_context="$(tangle_build_repo_context_block '[CODING] Demo — Files: scripts/lib/workflows.sh — Task: inspect related files')"
+if [[ "$repo_context" == *"Files: clause is the only write authority"* ]] &&
+   [[ "$repo_context" == *"Never edit a resolved file"* ]] &&
+   [[ "$repo_context" != *"Prefer the resolved files"* ]]; then
+    test_pass
+else
+    test_fail "repository context still conflicts with the exclusive write-scope contract"
+fi
 
 test_case "subtask prompt builder validates required inputs"
 set +e
@@ -58,9 +64,13 @@ else
 fi
 
 run_agent_sync() {
+    if [[ "${OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED:-}" == "tangle-decomposition-adequacy" ]]; then
+        printf '%s\n' 'VERDICT: PASS' 'SCOPE_REVIEW: NONE' 'REASONS: fixture decomposition covers the requested template work'
+        return 0
+    fi
     cat <<'EOF'
-1. [CODING] Template polish. Files: src/lib/templates/NA10_HANDLE_SILENCE.ts
-2. [REASONING] Integration review
+1. [CODING] Template polish. Files: src/lib/templates/NA10_HANDLE_SILENCE.ts — Task: polish the template
+2. [REASONING] Integration review — Task: review the implementation handoff
 EOF
 }
 
@@ -118,13 +128,34 @@ fi
 
 test_case "coding subtask prompts require direct edits and integration evidence"
 if [[ "$captured_prompts" == *"edit the repository files directly"* ]] && \
-   [[ "$captured_prompts" == *"exclusive write scope"* ]] && \
+   [[ "$captured_prompts" == *"exclusive write-scope authority"* ]] && \
    [[ "$captured_prompts" == *"Tests alone are not integration evidence"* ]] && \
    [[ "$captured_prompts" == *"## Worktree Changes"* ]] && \
    [[ "$captured_prompts" == *"## Integration Evidence"* ]]; then
     test_pass
 else
     test_fail "spawned prompts did not require direct worktree edits and integration evidence"
+fi
+
+test_case "subtask prompts deny persistent migration application by default"
+if [[ "$captured_prompts" == *"Do not apply, push, repair, or mark database migrations"* \
+   && "$captured_prompts" == *"Never rename, delete, or rewrite a migration after any database has applied its version"* ]]; then
+    test_pass
+else
+    test_fail "default subtask prompt omitted migration immutability policy"
+fi
+
+test_case "explicit database-apply authorization preserves the history consistency contract"
+OCTOPUS_TANGLE_ALLOW_DB_APPLY=true
+authorized_prompt=$(build_tangle_subtask_prompt \
+    "Implement supabase/migrations/20260813130000_example.sql" \
+    "1. [CODING] Files: supabase/migrations/20260813130000_example.sql")
+unset OCTOPUS_TANGLE_ALLOW_DB_APPLY
+if [[ "$authorized_prompt" == *"External migration application is explicitly authorized"* \
+   && "$authorized_prompt" == *"prove the applied history still matches the files on disk"* ]]; then
+    test_pass
+else
+    test_fail "authorized migration prompt dropped the consistency requirement"
 fi
 
 test_summary

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Octopus Dependency Installer
 # ═══════════════════════════════════════════════════════════════════════════════
-# Called by /octo:setup and /octo:doctor to detect and install dependencies.
+# Called by /octo:setup and Doctor diagnostics to detect and install dependencies.
 # Usage: install-deps.sh [check|install|install-statusline|install-plugins]
 #   check             — Report missing deps as structured output
 #   install           — Install all missing deps (npm, brew, statusline, plugins)
@@ -61,11 +61,11 @@ check_deps() {
         missing+=("codex:Codex CLI — npm install -g @openai/codex")
     fi
 
-    # Gemini CLI
-    if has_cmd gemini; then
-        ok+=("gemini:Gemini CLI installed")
+    # Antigravity CLI (Google seat)
+    if has_cmd agy; then
+        ok+=("agy:Antigravity CLI installed")
     else
-        missing+=("gemini:Gemini CLI — npm install -g @google/gemini-cli")
+        warnings+=("agy:Antigravity CLI not installed (optional) — install agy from Google Antigravity")
     fi
 
     # Ollama (optional — local LLM)
@@ -93,7 +93,20 @@ check_deps() {
         warnings+=("qwen:Qwen CLI not installed (optional) — npm install -g @qwen-code/qwen-code; auth via QWEN_API_KEY or Coding-Plan")
     fi
 
-    # Cursor Agent CLI (optional — Grok 4.20 via Cursor subscription)
+    # Kimi Code CLI (optional — config.toml provider credentials or /login)
+    if has_cmd kimi; then
+        local kimi_version
+        kimi_version="$(kimi --version 2>/dev/null || true)"
+        if [[ "$kimi_version" == "kimi, version "* ]]; then
+            warnings+=("kimi_legacy:Legacy kimi-cli detected — install current Kimi Code: curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash. The installer renames the old executable to kimi-legacy; first launch offers data migration, or run kimi migrate manually. OAuth is not migrated, so run kimi and enter /login again.")
+        else
+            ok+=("kimi:Kimi Code CLI installed")
+        fi
+    else
+        warnings+=("kimi:Kimi Code CLI not installed (optional) — install: curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash; then run kimi and enter /login")
+    fi
+
+    # Cursor CLI (optional — Cursor subscription models via the `agent` binary)
     if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
         ok+=("cursor-agent:Cursor Agent CLI installed")
     else
@@ -120,7 +133,7 @@ check_deps() {
         if declare -f octo_is_windows_git_bash >/dev/null 2>&1 && octo_is_windows_git_bash; then
             warnings+=("rtk:RTK not installed (optional) — saves tokens on bash output. On Windows Git Bash, install RTK and use its CLAUDE.md injection mode instead of rtk init -g.")
         else
-            warnings+=("rtk:RTK not installed (optional) — saves 60-90% tokens on bash output. Install: brew install rtk && rtk init -g. Run /octo:doctor for guided setup.")
+            warnings+=("rtk:RTK not installed (optional) — saves 60-90% tokens on bash output. Install: brew install rtk && rtk init -g. Run octopus doctor for guided setup.")
         fi
     fi
 
@@ -151,6 +164,11 @@ check_deps() {
             ok+=("claude-mem:claude-mem plugin installed")
         else
             missing+=("claude-mem:claude-mem plugin — persistent cross-session memory")
+        fi
+        if grep -q 'agentmemory' "$plugins_json" 2>/dev/null || command -v agentmemory >/dev/null 2>&1; then
+            ok+=("agentmemory:agentmemory companion detected")
+        else
+            warnings+=("agentmemory:agentmemory companion — optional persistent cross-agent memory")
         fi
         if grep -q '"document-skills@anthropic-agent-skills": true' "$plugins_json" 2>/dev/null; then
             ok+=("document-skills:document-skills plugin installed")
@@ -241,6 +259,14 @@ install_plugins() {
         any_missing=true
     fi
 
+    if [[ -f "$settings" ]] && ! grep -q 'agentmemory' "$settings" 2>/dev/null && ! command -v agentmemory >/dev/null 2>&1; then
+        echo "📦 agentmemory — Persistent cross-agent memory (optional)"
+        echo "   Enables shared memory through MCP/REST across Claude Code, Codex, Cursor, and other agents"
+        echo "   Install: npm install -g @agentmemory/agentmemory && agentmemory connect claude-code"
+        echo ""
+        any_missing=true
+    fi
+
     if [[ -f "$settings" ]] && ! grep -q '"document-skills@anthropic-agent-skills": true' "$settings" 2>/dev/null; then
         echo "📦 document-skills — Document export (PDF, DOCX, PPTX, XLSX)"
         echo "   Required for /octo:km Knowledge Work mode"
@@ -289,17 +315,6 @@ install_all() {
             npm install -g @openai/codex 2>&1 && echo "✓ Codex CLI installed" || echo "⚠ Codex install failed — try: sudo npm install -g @openai/codex"
         else
             echo "⚠ Cannot install Codex CLI — npm not found. Install Node.js first: https://nodejs.org/"
-        fi
-        echo ""
-    fi
-
-    # Gemini CLI
-    if ! has_cmd gemini; then
-        if has_cmd npm; then
-            echo "Installing Gemini CLI..."
-            npm install -g @google/gemini-cli 2>&1 && echo "✓ Gemini CLI installed" || echo "⚠ Gemini install failed — try: sudo npm install -g @google/gemini-cli"
-        else
-            echo "⚠ Cannot install Gemini CLI — npm not found. Install Node.js first: https://nodejs.org/"
         fi
         echo ""
     fi

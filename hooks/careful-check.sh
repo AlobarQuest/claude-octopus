@@ -2,7 +2,7 @@
 # Claude Octopus Careful Mode Hook (v9.8.0)
 # PreToolUse hook on Bash that warns before destructive command patterns.
 # Activated by /octo:careful command (writes state file).
-# Returns JSON decision: {"decision":"allow"} or {"permissionDecision":"ask","message":"..."}
+# Emits permissionDecision: ask under Claude, deny under Codex; silence continues.
 #
 # Kill switch: OCTO_CAREFUL_MODE=off — disables all destructive command checks
 set -euo pipefail
@@ -18,7 +18,7 @@ source "$_HOOK_DIR/../scripts/lib/session-id.sh" 2>/dev/null || true
 
 # Kill switch — respect user's choice to disable careful mode entirely
 # (careful mode is opt-in via /octo:careful; OCTO_CAREFUL_MODE=off is the dedicated off-switch)
-[[ "${OCTO_CAREFUL_MODE:-on}" == "off" ]] && { echo '{"decision":"allow"}'; exit 0; }
+[[ "${OCTO_CAREFUL_MODE:-on}" == "off" ]] && exit 0
 
 # Read tool input from stdin
 if command -v timeout &>/dev/null; then
@@ -28,13 +28,6 @@ else
 fi
 [[ -z "$INPUT" ]] && INPUT='{}'
 
-# Only gate Bash commands
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
-if [[ "$TOOL_NAME" != "Bash" ]]; then
-    echo '{"decision":"allow"}'
-    exit 0
-fi
-
 # Check if careful mode is active
 if declare -f octo_session_state_file >/dev/null 2>&1; then
     STATE_FILE=$(octo_session_state_file "careful" "txt" "$INPUT")
@@ -42,29 +35,30 @@ else
     STATE_FILE="/tmp/octopus-careful-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$$}}.txt"
 fi
 if [[ ! -f "$STATE_FILE" ]]; then
-    echo '{"decision":"allow"}'
+    : # pass-through — current hook schema treats silence as continue
     exit 0
 fi
 
-# Extract command from input — use jq if available, fall back to grep
-# Note: grep-based extraction truncates at escaped quotes, so we also check raw INPUT
-if command -v jq &>/dev/null; then
-    COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // .command // ""' 2>/dev/null || echo "")
-else
-    COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
-fi
-# Also check raw input as fallback for escaped-quote edge cases
-CHECK_TEXT="${COMMAND}
-${INPUT}"
-if [[ -z "$COMMAND" && -z "$INPUT" ]]; then
-    echo '{"decision":"allow"}'
+_octo_invalid_input() {
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Careful mode could not validate the tool input. Check that Python 3 is installed and the hook input is valid JSON before retrying."}}'
     exit 0
-fi
+}
+_octo_careful_decision() {
+    python3 "$_HOOK_DIR/safety-contract.py" careful-decision "$1" 2>/dev/null || _octo_invalid_input
+}
+
+# Codex calls exec_command Bash in PreToolUse, just as Claude does.
+# Parse JSON structurally so whitespace and escaped quotes retain their meaning.
+TOOL_NAME=$(printf '%s' "$INPUT" | python3 "$_HOOK_DIR/safety-contract.py" field tool_name 2>/dev/null) || _octo_invalid_input
+[[ "$TOOL_NAME" == "Bash" ]] || exit 0
+COMMAND=$(printf '%s' "$INPUT" | python3 "$_HOOK_DIR/safety-contract.py" field command 2>/dev/null) || _octo_invalid_input
+CHECK_TEXT="$COMMAND"
+[[ -n "$CHECK_TEXT" ]] || exit 0
 
 # ── Destructive pattern checks ────────────────────────────────────────
 
 # 1. rm -rf — but allow safe exceptions (node_modules, dist, .next, __pycache__, build, coverage, .turbo)
-if echo "$CHECK_TEXT" | grep -qE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f|rm\s+-r\s+-f|rm\s+-f\s+-r|rm\s+--recursive\s+--force'; then
+if echo "$CHECK_TEXT" | grep -qE '(^|[^[:alnum:]_])rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-r\s+-f|-f\s+-r|--recursive\s+--force)'; then
     # Check if the target is a safe exception
     safe=false
     for safe_dir in node_modules dist .next __pycache__ build coverage .turbo; do
@@ -74,49 +68,119 @@ if echo "$CHECK_TEXT" | grep -qE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f|rm\s+-r\s+-f|rm\s+-
         fi
     done
     if [[ "$safe" == "false" ]]; then
-        echo '{"permissionDecision":"ask","message":"⚠️ Destructive command detected: rm -rf. This recursively force-deletes files. Confirm you want to proceed."}'
+        _octo_careful_decision 'Destructive command detected: rm -rf. This recursively force-deletes files.'
         exit 0
     fi
 fi
 
-# 2. SQL destructive operations
-if echo "$CHECK_TEXT" | grep -qiE 'DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE'; then
-    matched=$(echo "$CHECK_TEXT" | grep -oiE 'DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE' | head -1)
-    echo "{\"permissionDecision\":\"ask\",\"message\":\"⚠️ Destructive SQL detected: ${matched}. This permanently destroys data. Confirm you want to proceed.\"}"
+# 2. SQL destructive operations. A SQL-looking string alone is not execution: source
+# searches and output commands routinely contain examples such as `DROP TABLE` and
+# `TRUNCATE users`. Gate only when the statement is either a direct shell command or
+# appears alongside a known SQL client. This keeps read-only grep/rg/printf commands
+# quiet while retaining coverage for client flags, stdin pipes, and heredocs.
+_octo_drop_pat='DROP\s+(TABLE|DATABASE)(\s+IF\s+EXISTS)?(\s+["'\''`]?[[:alnum:]_.$-]+["'\''`]?)?'
+_octo_truncate_pat='TRUNCATE\s+["'\''`]?[[:alnum:]_.$-]+["'\''`]?(\s+["'\''`]?[[:alnum:]_.$-]+["'\''`]?)?'
+_octo_sql_pat="${_octo_drop_pat}|${_octo_truncate_pat}"
+_octo_sql_client_pat='(^|[;&|][[:space:]]*)((sudo|command|env)[[:space:]]+)?([[:alpha:]_][[:alnum:]_]*=[^[:space:]]+[[:space:]]+)*(psql|mysql|mariadb|sqlite3|sqlcmd|cockroach\s+sql)([[:space:]]|$)'
+_octo_direct_sql_pat="^[[:space:]]*(${_octo_sql_pat})"
+
+# ERE alternation alone cannot distinguish `TRUNCATE TABLE foo` from the
+# incomplete `TRUNCATE TABLE`: the optional TABLE branch can backtrack and
+# consume TABLE as the identifier. Inspect candidate tokens so TABLE requires a
+# third token, while `TRUNCATE users` and quoted identifiers remain protected.
+_octo_has_destructive_sql() {
+    local drop_matches truncate_matches
+    drop_matches=$(echo "$CHECK_TEXT" | grep -oiE "$_octo_drop_pat" || true)
+    if [[ -n "$drop_matches" ]] && printf '%s\n' "$drop_matches" | awk '
+        {
+            if (NF < 3) next
+            if (tolower($3) == "if") {
+                if (NF < 5 || tolower($4) != "exists") next
+                target = $5
+            } else {
+                target = $3
+            }
+            quote = substr(target, 1, 1)
+            apostrophe = sprintf("%c", 39)
+            if ((quote == "\"" || quote == "`" || quote == apostrophe) &&
+                substr(target, length(target), 1) != quote) next
+            found = 1
+            exit
+        }
+        END { exit(found ? 0 : 1) }
+    '; then
+        return 0
+    fi
+    truncate_matches=$(echo "$CHECK_TEXT" | grep -oiE "$_octo_truncate_pat" || true)
+    [[ -n "$truncate_matches" ]] || return 1
+    printf '%s\n' "$truncate_matches" | awk '
+        {
+            raw = $2
+            token = tolower(raw)
+            gsub(/^["`]/, "", token)
+            gsub(/["`;]$/, "", token)
+            apostrophe = sprintf("%c", 39)
+            first = substr(raw, 1, 1)
+            quoted = (first == "\"" || first == "`" || first == apostrophe)
+            if (token == "table" && !quoted && NF < 3) next
+            target = (token == "table" && !quoted) ? $3 : $2
+            quote = substr(target, 1, 1)
+            if ((quote == "\"" || quote == "`" || quote == apostrophe) &&
+                substr(target, length(target), 1) != quote) next
+            found = 1
+            exit
+        }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+if _octo_has_destructive_sql \
+    && { echo "$CHECK_TEXT" | grep -qiE "$_octo_sql_client_pat" \
+        || echo "$CHECK_TEXT" | grep -qiE "$_octo_direct_sql_pat"; }; then
+    matched=$(echo "$CHECK_TEXT" | grep -oiE "$_octo_sql_pat" | head -1)
+    _octo_careful_decision "Destructive SQL detected: ${matched}. This permanently destroys data."
     exit 0
 fi
 
 # 3. git push --force / -f
-if echo "$CHECK_TEXT" | grep -qE 'git\s+push\s+.*--force|git\s+push\s+.*-f'; then
-    echo '{"permissionDecision":"ask","message":"⚠️ Destructive command detected: git push --force. This rewrites remote history and can cause data loss for collaborators. Confirm you want to proceed."}'
+# `-f` must be matched as a standalone flag token. The previous `.*-f` matched
+# any branch name containing "-f" (e.g. `git push origin release-final`), so
+# ordinary pushes were flagged as force pushes.
+if echo "$CHECK_TEXT" | grep -qE 'git\s+push\s+([^|;&]*\s)?(-[a-zA-Z]*f|--force(-with-lease)?(=[^ ]*)?)(\s|$)'; then
+    _octo_careful_decision 'Destructive command detected: git push --force. This rewrites remote history and can cause data loss for collaborators.'
     exit 0
 fi
 
 # 4. git reset --hard
 if echo "$CHECK_TEXT" | grep -qE 'git\s+reset\s+--hard'; then
-    echo '{"permissionDecision":"ask","message":"⚠️ Destructive command detected: git reset --hard. This discards all uncommitted changes. Confirm you want to proceed."}'
+    _octo_careful_decision 'Destructive command detected: git reset --hard. This discards all uncommitted changes.'
     exit 0
 fi
 
-# 5. git checkout . / git restore .
-if echo "$CHECK_TEXT" | grep -qE 'git\s+checkout\s+\.|git\s+restore\s+\.'; then
-    echo '{"permissionDecision":"ask","message":"⚠️ Destructive command detected: git checkout/restore. This discards all unstaged changes. Confirm you want to proceed."}'
+# 5. git checkout . / git restore . — only the WHOLE-TREE discard (`.` or bare `./`)
+# should warn "discards all unstaged changes". Bare `\.` also matched a single dotfile
+# (`git checkout .gitignore`), and `\.(/)` also matched a `./`-prefixed single path
+# (`git checkout ./.gitignore`, `git restore ./.env`) — both discard one file, not all.
+# Allow shell-equivalent quoting and `--`, but require the dot path to end at a
+# shell boundary so dotfiles and `./subpaths` remain quiet.
+if echo "$CHECK_TEXT" | grep -qE "git\\s+(checkout|restore)\\s+(--\\s+)?[\"']?\\.(/)?[\"']?([[:space:];|&]|$)"; then
+    _octo_careful_decision 'Destructive command detected: git checkout/restore. This discards all unstaged changes.'
     exit 0
 fi
 
 # 6. kubectl delete
 if echo "$CHECK_TEXT" | grep -qE 'kubectl\s+delete'; then
-    echo '{"permissionDecision":"ask","message":"⚠️ Destructive command detected: kubectl delete. This removes Kubernetes resources. Confirm you want to proceed."}'
+    _octo_careful_decision 'Destructive command detected: kubectl delete. This removes Kubernetes resources.'
     exit 0
 fi
 
 # 7. docker rm -f / docker system prune
 if echo "$CHECK_TEXT" | grep -qE 'docker\s+rm\s+-f|docker\s+system\s+prune'; then
     matched=$(echo "$CHECK_TEXT" | grep -oE 'docker\s+(rm\s+-f|system\s+prune)' | head -1)
-    echo "{\"permissionDecision\":\"ask\",\"message\":\"⚠️ Destructive command detected: ${matched}. This forcefully removes Docker resources. Confirm you want to proceed.\"}"
+    _octo_careful_decision "Destructive command detected: ${matched}. This forcefully removes Docker resources."
     exit 0
 fi
 
 # All checks passed
-echo '{"decision":"allow"}'
+: # pass-through — current hook schema treats silence as continue
 exit 0

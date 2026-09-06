@@ -35,7 +35,7 @@ export ANTHROPIC_BASE_URL=http://localhost:11434
 export ANTHROPIC_AUTH_TOKEN=ollama
 ```
 
-The MCP and OpenClaw adapters forward these env vars automatically. This path is user-configurable
+The MCP adapter forwards these env vars automatically. This path is user-configurable
 but not the primary integration — it hides Ollama's identity from the orchestrator's observability.
 
 ## Role Assignment
@@ -82,7 +82,7 @@ Use Ollama for:
 - Exploration and brainstorming when cost matters
 - Offline or air-gapped environments
 - Privacy-sensitive code review
-- Fallback when Codex/Gemini auth is expired or unavailable
+- Fallback when Codex/Antigravity auth is expired or unavailable
 - Local testing of prompt patterns before sending to cloud providers
 
 ## Dispatch Pattern

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Claude Octopus — Environment Doctor Diagnostics
 # Extracted from orchestrate.sh
-# Source-safe: no main execution block.
-set -eo pipefail
+# Source-safe: no main execution block, and no `set -e`/`set -o pipefail` —
+# shell options set here would leak into the sourcing shell and persist.
 
 if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
     _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,9 +20,24 @@ if ! declare -f qwen_auth_method >/dev/null 2>&1; then
     source "${_doctor_lib_dir}/qwen.sh" 2>/dev/null || true
 fi
 
+if ! declare -f octo_plugin_update_load >/dev/null 2>&1; then
+    _doctor_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    source "${_doctor_lib_dir}/plugin-update.sh" 2>/dev/null || true
+fi
+
+if ! declare -f _octo_bare_auth_probe >/dev/null 2>&1; then
+    _doctor_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    source "${_doctor_lib_dir}/providers.sh" 2>/dev/null || true
+fi
+
+if ! declare -f octo_provider_readiness_result >/dev/null 2>&1; then
+    _doctor_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    source "${_doctor_lib_dir}/preflight.sh" 2>/dev/null || true
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODULAR DOCTOR SYSTEM (v8.16.0)
-# 8 check categories, structured results, category filtering, JSON output
+# 14 check categories, structured results, category filtering, JSON output
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Result accumulator (parallel arrays for bash 3.x compat)
@@ -31,6 +46,9 @@ DOCTOR_RESULTS_CAT=()
 DOCTOR_RESULTS_STATUS=()   # pass|warn|fail
 DOCTOR_RESULTS_MSG=()
 DOCTOR_RESULTS_DETAIL=()
+DOCTOR_AGY_LIVE_AUTH_STATUS="not-run"
+DOCTOR_PROVIDER_READINESS=()
+DOCTOR_PROVIDER_READINESS_KIND=""
 
 doctor_add() {
     local name="$1" cat="$2" status="$3" msg="$4" detail="${5:-}"
@@ -39,6 +57,251 @@ doctor_add() {
     DOCTOR_RESULTS_STATUS+=("$status")
     DOCTOR_RESULTS_MSG+=("$msg")
     DOCTOR_RESULTS_DETAIL+=("$detail")
+}
+
+_doctor_collect_provider_readiness() {
+    local check_kind="static" result
+    [[ "${DOCTOR_LIVE_PROBE:-false}" == "true" ]] && check_kind="live"
+    if [[ "$DOCTOR_PROVIDER_READINESS_KIND" == "$check_kind" && ${#DOCTOR_PROVIDER_READINESS[@]} -gt 0 ]]; then
+        return 0
+    fi
+    DOCTOR_PROVIDER_READINESS=()
+    while IFS= read -r result; do
+        [[ -n "$result" ]] && DOCTOR_PROVIDER_READINESS+=("$result")
+    done < <(octo_provider_readiness_all "$check_kind")
+    DOCTOR_PROVIDER_READINESS_KIND="$check_kind"
+}
+
+_doctor_provider_result_name() {
+    case "$1" in
+        codex) printf '%s\n' "codex-cli" ;;
+        agy) printf '%s\n' "agy-cli" ;;
+        perplexity) printf '%s\n' "perplexity-api" ;;
+        ollama) printf '%s\n' "ollama" ;;
+        copilot) printf '%s\n' "copilot-cli" ;;
+        qwen) printf '%s\n' "qwen-cli" ;;
+        cursor-agent) printf '%s\n' "cursor-agent" ;;
+        grok) printf '%s\n' "grok" ;;
+        vibe) printf '%s\n' "vibe-cli" ;;
+        kimi) printf '%s\n' "kimi-cli" ;;
+        opencode) printf '%s\n' "opencode-cli" ;;
+        *) printf '%s-readiness\n' "$1" ;;
+    esac
+}
+
+doctor_check_plugin_validation() {
+    local plugin_root="${1:-${PLUGIN_DIR:-}}" output="" help_output="" rc=0 detail=""
+    local strict_flag="" probe_timeout term_timeout kill_grace=0
+    [[ -n "$plugin_root" ]] || plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+    if ! command -v claude >/dev/null 2>&1; then
+        doctor_add "plugin-validation" "config" "info" \
+            "Strict Claude plugin validation unavailable" "Install Claude Code to run: claude plugin validate $plugin_root"
+        return 0
+    fi
+
+    probe_timeout="$(_octo_bare_probe_timeout "${OCTOPUS_PLUGIN_VALIDATE_TIMEOUT:-20}")"
+    term_timeout="$probe_timeout"
+    if [[ "$probe_timeout" -gt 2 ]]; then
+        kill_grace=2
+        term_timeout=$((probe_timeout - kill_grace))
+    fi
+    help_output="$(_octo_run_bare_probe_with_timeout \
+        "$probe_timeout" "$term_timeout" "$kill_grace" \
+        claude plugin validate --help </dev/null 2>&1 || true)"
+    [[ "$help_output" == *"--strict"* ]] && strict_flag="--strict"
+    if [[ -n "$strict_flag" ]]; then
+        output="$(_octo_run_bare_probe_with_timeout \
+            "$probe_timeout" "$term_timeout" "$kill_grace" \
+            claude plugin validate "$strict_flag" "$plugin_root" </dev/null 2>&1)" || rc=$?
+    else
+        output="$(_octo_run_bare_probe_with_timeout \
+            "$probe_timeout" "$term_timeout" "$kill_grace" \
+            claude plugin validate "$plugin_root" </dev/null 2>&1)" || rc=$?
+    fi
+    detail="$(printf '%s\n' "$output" | sed -n '1,5p')"
+    if [[ "$rc" -eq 0 ]]; then
+        doctor_add "plugin-validation" "config" "pass" \
+            "Strict plugin validation passed" "${detail:-claude plugin validate accepted $plugin_root}"
+    else
+        doctor_add "plugin-validation" "config" "fail" \
+            "Strict plugin validation failed (exit $rc)" "${detail:-Run: claude plugin validate $plugin_root}"
+    fi
+}
+
+_doctor_iso_epoch() {
+    local timestamp="${1:-}" epoch=""
+    [[ -n "$timestamp" ]] || { printf '0\n'; return; }
+    epoch="$(date -u -d "$timestamp" +%s 2>/dev/null)" || epoch=""
+    if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+        epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$timestamp" +%s 2>/dev/null)" || epoch=""
+    fi
+    [[ "$epoch" =~ ^[0-9]+$ ]] && printf '%s\n' "$epoch" || printf '0\n'
+}
+
+doctor_check_v10_state_health() {
+    local workspace="${WORKSPACE_DIR:-${HOME}/.claude-octopus}" cache_dir=""
+    local now stale_after snapshot seat_id timestamp _transition epoch
+    local running_ids="" running_count=0 stale_count=0 invalid_snapshot_count=0
+    local snapshot_rows=""
+    local pid_file="${PID_FILE:-${workspace}/pids}" pid _agent task
+    local orphan_count=0 stale_pid_count=0
+
+    if type octo_probe_cache_dir >/dev/null 2>&1; then
+        cache_dir="$(octo_probe_cache_dir 2>/dev/null || true)"
+    fi
+    [[ -n "$cache_dir" ]] || cache_dir="${workspace%/}/.cache/probe-results"
+    if [[ -d "$cache_dir" && -w "$cache_dir" ]]; then
+        doctor_add "probe-cache-writable" "state" "pass" "Probe cache writable" "$cache_dir"
+    elif [[ ! -e "$cache_dir" && -d "$workspace" && -w "$workspace" ]]; then
+        doctor_add "probe-cache-writable" "state" "pass" "Probe cache can be created" "$cache_dir"
+    else
+        doctor_add "probe-cache-writable" "state" "fail" "Probe cache is not writable" "$cache_dir"
+    fi
+
+    now="$(date +%s)"
+    stale_after="${OCTOPUS_RUNNING_STALE_SECONDS:-900}"
+    [[ "$stale_after" =~ ^[0-9]+$ ]] || stale_after=900
+    if command -v jq >/dev/null 2>&1 && [[ -d "$workspace/runs" ]]; then
+        for snapshot in "$workspace"/runs/*/seats.json; do
+            [[ -f "$snapshot" ]] || continue
+            if ! snapshot_rows="$(jq -r '.seats[]? | select(.transition | IN("contributed", "degraded", "skipped", "failed", "timeout", "cancelled") | not) | [.seat_id, .transition, (.timestamp // "")] | @tsv' "$snapshot" 2>/dev/null)"; then
+                ((invalid_snapshot_count++)) || true
+                continue
+            fi
+            while IFS=$'\t' read -r seat_id _transition timestamp; do
+                [[ -n "$seat_id" ]] || continue
+                ((running_count++)) || true
+                running_ids="${running_ids}${running_ids:+$'\n'}${seat_id}"
+                epoch="$(_doctor_iso_epoch "$timestamp")"
+                if [[ "$epoch" -eq 0 || $((now - epoch)) -gt "$stale_after" ]]; then
+                    ((stale_count++)) || true
+                fi
+            done <<< "$snapshot_rows"
+        done
+    fi
+    if [[ "$invalid_snapshot_count" -gt 0 ]]; then
+        doctor_add "invalid-run-snapshots" "state" "warn" \
+            "$invalid_snapshot_count unreadable or malformed run snapshot(s)" \
+            "Inspect ${workspace}/runs; malformed state was excluded from stale-run analysis"
+    fi
+    if [[ "$stale_count" -gt 0 ]]; then
+        doctor_add "stale-running-records" "state" "warn" \
+            "$stale_count stale non-terminal run record(s)" \
+            "Inspect ${workspace}/runs; resume or cancel explicitly before retrying"
+    else
+        doctor_add "stale-running-records" "state" "pass" \
+            "No stale non-terminal run records" "${running_count} active non-terminal record(s)"
+    fi
+
+    if [[ -f "$pid_file" ]]; then
+        while IFS=: read -r pid _agent task; do
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+                if ! grep -Fxc "spawn-${task}" <<< "$running_ids" >/dev/null && \
+                   ! grep -Fxc "$task" <<< "$running_ids" >/dev/null; then
+                    ((orphan_count++)) || true
+                fi
+            else
+                ((stale_pid_count++)) || true
+            fi
+        done < "$pid_file"
+    fi
+    if [[ "$orphan_count" -gt 0 ]]; then
+        doctor_add "orphan-processes" "state" "warn" \
+            "$orphan_count live provider process(es) lack a matching run record" \
+            "Inspect $pid_file and cancel by recorded PID only after confirming ownership"
+    else
+        doctor_add "orphan-processes" "state" "pass" "No orphan provider process evidence" "$pid_file"
+    fi
+    if [[ "$stale_pid_count" -gt 0 ]]; then
+        doctor_add "stale-pid-records" "state" "warn" \
+            "$stale_pid_count stale PID record(s)" \
+            "Repair proposal: remove dead entries from $pid_file after explicit confirmation; preserve the original until an atomic replacement succeeds"
+    fi
+}
+
+doctor_check_agy_live() {
+    local octo_root="$1"
+    local probe_timeout term_timeout kill_grace catalog="" model="" output=""
+    local catalog_rc=0 model_rc=0 dispatch_rc=0
+
+    DOCTOR_AGY_LIVE_AUTH_STATUS="fail"
+    if ! command -v agy >/dev/null 2>&1; then
+        doctor_add "agy-live-install" "providers" "warn" \
+            "AGY live probe skipped because the CLI is not installed" \
+            "Install Antigravity CLI, then rerun: octopus doctor providers --live"
+        return
+    fi
+
+    probe_timeout="$(_octo_bare_probe_timeout "${OCTOPUS_AGY_HEALTH_TIMEOUT:-30}")"
+    term_timeout="$probe_timeout"
+    kill_grace=0
+    if [[ "$probe_timeout" -gt 2 ]]; then
+        kill_grace=2
+        term_timeout=$((probe_timeout - kill_grace))
+    fi
+
+    catalog="$(_octo_run_bare_probe_with_timeout \
+        "$probe_timeout" "$term_timeout" "$kill_grace" \
+        agy models </dev/null 2>&1)" || catalog_rc=$?
+    if [[ "$catalog_rc" -ne 0 || ! "$catalog" =~ [^[:space:]] ]]; then
+        doctor_add "agy-live-catalog" "providers" "warn" \
+            "AGY catalog/keyring authentication failed (exit ${catalog_rc})" \
+            "Launch plain 'agy' in a terminal and finish its browser sign-in. On macOS, if access is denied, open Keychain Access, find the Antigravity CLI item, and allow agy under Access Control."
+        return
+    fi
+    doctor_add "agy-live-catalog" "providers" "pass" \
+        "AGY catalog and keyring authentication succeeded" \
+        "agy models returned a live catalog within ${probe_timeout}s"
+    DOCTOR_AGY_LIVE_AUTH_STATUS="pass"
+
+    if ! declare -f resolve_octopus_model >/dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        source "${octo_root}/scripts/lib/model-resolver.sh" 2>/dev/null || true
+    fi
+    if ! declare -f log >/dev/null 2>&1; then
+        log() { :; }
+    fi
+    if declare -f resolve_octopus_model >/dev/null 2>&1; then
+        model="$(OCTOPUS_AGY_MODELS_TIMEOUT="$probe_timeout" \
+            resolve_octopus_model agy agy doctor health 2>/dev/null)" || model_rc=$?
+    else
+        model_rc=127
+    fi
+    if [[ "$model_rc" -ne 0 || ! "$model" =~ [^[:space:]] ]]; then
+        doctor_add "agy-live-model" "providers" "warn" \
+            "AGY configured model did not resolve against the live catalog" \
+            "Run 'agy models', then set OCTOPUS_AGY_MODEL to an exact returned ID or label; use 'default' for AGY's service-selected model."
+        return
+    fi
+    doctor_add "agy-live-model" "providers" "pass" \
+        "AGY configured model resolved: ${model}" \
+        "Validated against the live agy models catalog"
+
+    output="$(_octo_run_bare_probe_with_timeout \
+        "$probe_timeout" "$term_timeout" "$kill_grace" \
+        env "OCTOPUS_AGY_MODEL=${model}" \
+            "OCTOPUS_AGY_PRINT_TIMEOUT=${probe_timeout}s" \
+            "OCTOPUS_AGY_NO_RETRY=1" \
+            bash "${octo_root}/scripts/helpers/agy-exec.sh" \
+        <<'AGY_HEALTH_PROMPT' 2>&1
+Return these two tokens in your response:
+OCTOPUS_AGY_HEALTH_OK
+LOCAL_PROVIDER_DISPATCH_WORKS
+AGY_HEALTH_PROMPT
+    )" || dispatch_rc=$?
+
+    if [[ "$dispatch_rc" -eq 0 && "$output" == *"OCTOPUS_AGY_HEALTH_OK"* && \
+          "$output" == *"LOCAL_PROVIDER_DISPATCH_WORKS"* ]]; then
+        doctor_add "agy-live-dispatch" "providers" "pass" \
+            "AGY print-mode dispatch returned substantive output" \
+            "Model ${model}; bounded to ${probe_timeout}s"
+    else
+        doctor_add "agy-live-dispatch" "providers" "warn" \
+            "AGY print-mode dispatch failed or returned incomplete output (exit ${dispatch_rc})" \
+            "Run plain 'agy' to repair authentication, confirm the model with 'agy models', then rerun: octopus doctor providers --live"
+    fi
 }
 
 # --- Category 1: Providers ---
@@ -62,15 +325,15 @@ cmd_update_clis() {
     fi
     echo ""
 
-    # Update Gemini CLI
-    echo -e "  ${YELLOW}→${NC} Updating Gemini CLI (@google/gemini-cli)..."
-    if npm install -g @google/gemini-cli 2>&1 | sed 's/^/    /'; then
-        local gemini_ver
-        gemini_ver=$(gemini --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        echo -e "  ${GREEN}✓${NC} Gemini CLI updated to v${gemini_ver}"
+    # Update Antigravity CLI (the sole Google seat)
+    echo -e "  ${YELLOW}→${NC} Updating Antigravity CLI..."
+    if command -v agy >/dev/null 2>&1 && agy update 2>&1 | sed 's/^/    /'; then
+        local agy_ver
+        agy_ver=$(agy --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        echo -e "  ${GREEN}✓${NC} Antigravity CLI updated to v${agy_ver}"
         ((updated++))
     else
-        echo -e "  ${RED}✗${NC} Gemini CLI update failed. Try manually: npm install -g @google/gemini-cli"
+        echo -e "  ${RED}✗${NC} Antigravity CLI update failed or agy is not installed. Try manually: agy update"
         ((failed++))
     fi
     echo ""
@@ -84,331 +347,35 @@ cmd_update_clis() {
 }
 
 doctor_check_providers() {
-    local _doctor_lib_dir
+    local readiness provider status reason remediation result_name doctor_status check_kind
+    local _doctor_lib_dir _octo_root
     _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local _octo_root="${OCTO_ROOT:-}"
-    if [[ -z "$_octo_root" ]]; then
-        _octo_root="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)"
-    fi
-    if [[ -z "$_octo_root" || ! -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
-        _octo_root="$(cd "${_doctor_lib_dir}/../.." && pwd)"
-    fi
+    _octo_root="${OCTO_ROOT:-$(cd "${_doctor_lib_dir}/../.." && pwd)}"
+    check_kind="static"
+    [[ "${DOCTOR_LIVE_PROBE:-false}" == "true" ]] && check_kind="live"
 
-    if [[ -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
-        source "${_octo_root}/scripts/lib/provider-versions.sh"
-    fi
-    if ! type -t octo_version_ok >/dev/null 2>&1; then
-        # shellcheck disable=SC2317  # fallback stub
-        octo_version_ok() { return 0; }
-    fi
-    local _timeout_cmd=""
-    if command -v gtimeout &>/dev/null; then
-        _timeout_cmd="gtimeout"
-    elif command -v timeout &>/dev/null; then
-        _timeout_cmd="timeout"
-    fi
-    # Claude Code version + compatibility
-    local cc_ver="${CLAUDE_CODE_VERSION:-}"
-    if [[ -n "$cc_ver" ]]; then
-        doctor_add "claude-code-version" "providers" "pass" \
-            "Claude Code v${cc_ver}" "$(command -v claude 2>/dev/null || echo 'path unknown')"
-    else
-        doctor_add "claude-code-version" "providers" "warn" \
-            "Claude Code version unknown" "Could not detect version"
-    fi
+    _doctor_collect_provider_readiness
+    for readiness in "${DOCTOR_PROVIDER_READINESS[@]}"; do
+        provider="$(jq -r '.provider' <<<"$readiness")"
+        status="$(jq -r '.status' <<<"$readiness")"
+        reason="$(jq -r '.reason_code' <<<"$readiness")"
+        remediation="$(jq -r '.remediation' <<<"$readiness")"
+        result_name="$(_doctor_provider_result_name "$provider")"
+        case "$status" in
+            available) doctor_status="pass" ;;
+            degraded) doctor_status="warn" ;;
+            *) doctor_status="info" ;;
+        esac
+        doctor_add "$result_name" "providers" "$doctor_status" \
+            "$provider is $status ($reason; $check_kind check)" "$remediation"
+    done
 
-    # Codex CLI
-    if command -v codex &>/dev/null; then
-        local codex_ver codex_path
-        codex_ver=$(codex --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        codex_path=$(command -v codex)
-        if ! octo_version_ok "${codex_ver}" "${OCTO_CODEX_MIN_VERSION:-0.100.0}"; then
-            doctor_add "codex-cli" "providers" "warn" \
-                "Codex CLI v${codex_ver} (outdated, min: v${OCTO_CODEX_MIN_VERSION:-0.100.0})" \
-                "${codex_path} — run orchestrate.sh update-clis or: npm install -g @openai/codex"
-        else
-            doctor_add "codex-cli" "providers" "pass" \
-                "Codex CLI v${codex_ver}" "$codex_path"
-        fi
-    else
-        doctor_add "codex-cli" "providers" "warn" \
-            "Codex CLI not installed" "npm install -g @openai/codex"
+    # AGY's explicit live Doctor stages provide catalog, model, and deterministic
+    # dispatch evidence beyond the generic registry health handler.
+    if [[ "${DOCTOR_LIVE_PROBE:-false}" == "true" ]]; then
+        doctor_check_agy_live "$_octo_root"
     fi
-
-    # Gemini CLI
-    if command -v gemini &>/dev/null; then
-        local gemini_ver gemini_path
-        gemini_ver=$(gemini --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        gemini_path=$(command -v gemini)
-        if ! octo_version_ok "${gemini_ver}" "${OCTO_GEMINI_MIN_VERSION:-1.0.0}"; then
-            doctor_add "gemini-cli" "providers" "warn" \
-               "Gemini CLI v${gemini_ver} (outdated, min: v${OCTO_GEMINI_MIN_VERSION:-1.0.0})" \
-               "${gemini_path} — npm install -g @google/gemini-cli"
-        else
-            doctor_add "gemini-cli" "providers" "pass" \
-               "Gemini CLI v${gemini_ver}" "$gemini_path"
-        fi
-    else
-        doctor_add "gemini-cli" "providers" "warn" \
-            "Gemini CLI not installed" "npm install -g @google/gemini-cli"
-    fi
-
-    # Antigravity CLI (agy)
-    if command -v agy &>/dev/null; then
-        local agy_ver agy_path
-        agy_ver=$(agy --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        agy_path=$(command -v agy)
-        if ! octo_version_ok "${agy_ver}" "${OCTO_AGY_MIN_VERSION:-1.0.6}"; then
-            doctor_add "agy-cli" "providers" "warn" \
-               "Antigravity CLI v${agy_ver} (below floor v${OCTO_AGY_MIN_VERSION:-1.0.6})" "${agy_path} — run: agy update"
-        else
-            doctor_add "agy-cli" "providers" "pass" \
-               "Antigravity CLI v${agy_ver}" "$agy_path"
-        fi
-    else
-        doctor_add "agy-cli" "providers" "info" \
-            "Antigravity CLI not installed (optional)" "Install agy to enable Antigravity provider routing"
-    fi
-
-    # Perplexity API (v8.24.0 - optional)
-    if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
-        doctor_add "perplexity-api" "providers" "pass" \
-            "Perplexity API configured" "PERPLEXITY_API_KEY set — web search enabled in discover workflows"
-    else
-        doctor_add "perplexity-api" "providers" "info" \
-            "Perplexity not configured (optional)" "export PERPLEXITY_API_KEY=\"pplx-...\" for live web search"
-    fi
-
-    # Ollama (local LLM — optional)
-    if command -v ollama &>/dev/null; then
-        local ollama_health
-        ollama_health=$(curl -sf http://localhost:11434/api/tags 2>/dev/null) || true
-        if [[ -n "$ollama_health" ]]; then
-            local model_count stale_count
-            model_count=$(printf '%s' "$ollama_health" | grep -c '"name"' 2>/dev/null || true)
-            [[ "$model_count" =~ ^[0-9]+$ ]] || model_count=0
-            # Check model staleness via check-ollama-models.sh (Pre-mortem F2: sanitize to integer)
-            stale_count=0
-            local _check="${_octo_root}/scripts/helpers/check-ollama-models.sh"
-            if [[ -r "$_check" ]]; then
-                stale_count=$(bash "$_check" --count-stale 2>/dev/null || echo "0")
-                stale_count=$(printf '%s' "$stale_count" | grep -oE '^[0-9]+$' || echo "0")
-                stale_count="${stale_count:-0}"
-            fi
-            if [[ "$stale_count" -gt 0 ]]; then
-                doctor_add "ollama" "providers" "warn" \
-                    "Ollama running (${model_count} models, ${stale_count} stale)" \
-                    "Run: ollama pull <model> to refresh stale models (threshold: ${OCTO_OLLAMA_STALE_DAYS:-30}d)"
-            else
-                doctor_add "ollama" "providers" "pass" \
-                    "Ollama running (${model_count} models)" "http://localhost:11434"
-            fi
-        else
-            doctor_add "ollama" "providers" "warn" \
-                "Ollama installed but server not running" "Run: ollama serve"
-        fi
-    else
-        doctor_add "ollama" "providers" "info" \
-            "Ollama not installed (optional)" "brew install ollama — local LLM for zero-cost workflows"
-    fi
-
-    # GitHub Copilot CLI (optional — zero additional cost, uses GitHub subscription)
-    if command -v copilot &>/dev/null; then
-        local copilot_auth="none"
-        if [[ -n "${COPILOT_GITHUB_TOKEN:-}" ]]; then
-            copilot_auth="env:COPILOT_GITHUB_TOKEN"
-        elif [[ -n "${GH_TOKEN:-}" ]]; then
-            copilot_auth="env:GH_TOKEN"
-        elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            copilot_auth="env:GITHUB_TOKEN"
-        elif [[ -f "${HOME}/.copilot/config.json" ]]; then
-            copilot_auth="keychain"
-        elif command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-            copilot_auth="gh-cli"
-        fi
-        local gh_ver
-        if [[ -n "$_timeout_cmd" ]]; then
-            gh_ver=$("$_timeout_cmd" 3 gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        else
-            gh_ver=$(gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        fi
-        if ! octo_version_ok "${gh_ver}" "${OCTO_GH_MIN_VERSION:-2.0.0}"; then
-            doctor_add "copilot-cli" "providers" "warn" \
-               "gh CLI v${gh_ver} (outdated, min: v${OCTO_GH_MIN_VERSION:-2.0.0})" \
-               "$(command -v gh) — gh extension upgrade --all"
-        elif [[ "$copilot_auth" != "none" ]]; then
-            doctor_add "copilot-cli" "providers" "pass" \
-                "Copilot CLI installed (auth: ${copilot_auth})" "$(command -v copilot) — research/exploration via copilot -p"
-        else
-            doctor_add "copilot-cli" "providers" "warn" \
-                "Copilot CLI installed but not authenticated" "Run: copilot login (or set COPILOT_GITHUB_TOKEN)"
-        fi
-    else
-        doctor_add "copilot-cli" "providers" "info" \
-            "Copilot CLI not installed (optional)" "brew install copilot-cli — zero-cost research via GitHub subscription"
-    fi
-
-    # Qwen CLI (optional). oco-dar: free OAuth tier was discontinued 2026-04-15
-    # and token refresh is broken — expired OAuth never recovers. Durable auth is
-    # API key / Coding-Plan. Use expiry-aware qwen_auth_method when available.
-    local _qwen_setup="Set QWEN_API_KEY, or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL), or run: qwen auth coding-plan"
-    if command -v qwen &>/dev/null; then
-        local qwen_auth="none"
-        if declare -f qwen_auth_method &>/dev/null; then
-            qwen_auth="$(qwen_auth_method)"
-        elif [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
-            qwen_auth="oauth"
-        elif [[ -f "${HOME}/.qwen/config.json" ]]; then
-            qwen_auth="config"
-        elif [[ -n "${QWEN_API_KEY:-}" ]]; then
-            qwen_auth="env:QWEN_API_KEY"
-        elif [[ -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_BASE_URL:-}" ]]; then
-            qwen_auth="env:OPENAI_COMPAT"
-        fi
-        local qwen_ver
-        if [[ -n "$_timeout_cmd" ]]; then
-            qwen_ver=$("$_timeout_cmd" 3 qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        else
-            qwen_ver=$(qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        fi
-        if ! octo_version_ok "${qwen_ver}" "${OCTO_QWEN_MIN_VERSION:-0.14.0}"; then
-            doctor_add "qwen-cli" "providers" "warn" \
-               "Qwen CLI v${qwen_ver} (outdated, min: v${OCTO_QWEN_MIN_VERSION:-0.14.0})" \
-               "$(command -v qwen) — npm install -g @qwen-code/qwen-code"
-        elif [[ "$qwen_auth" == "oauth-expired" ]]; then
-            doctor_add "qwen-cli" "providers" "warn" \
-                "Qwen CLI v${qwen_ver} — OAuth token expired (free tier discontinued 2026-04-15, not refreshable)" \
-                "$_qwen_setup"
-        elif [[ "$qwen_auth" == "oauth-unvalidated" ]]; then
-            doctor_add "qwen-cli" "providers" "warn" \
-                "Qwen CLI v${qwen_ver} — OAuth token could not be validated" \
-                "$_qwen_setup"
-        elif [[ "$qwen_auth" != "none" ]]; then
-            doctor_add "qwen-cli" "providers" "pass" \
-                "Qwen CLI v${qwen_ver} (auth: ${qwen_auth})" "$(command -v qwen)"
-        else
-            doctor_add "qwen-cli" "providers" "warn" \
-                "Qwen CLI installed but not authenticated" "$_qwen_setup"
-        fi
-    else
-        doctor_add "qwen-cli" "providers" "info" \
-            "Qwen CLI not installed (optional)" "npm install -g @qwen-code/qwen-code — auth via QWEN_API_KEY / Coding-Plan"
-    fi
-
-    # Cursor Agent CLI (optional — Grok 4.20 via Cursor subscription)
-    if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
-        local cursor_auth="none"
-        if [[ -n "${CURSOR_API_KEY:-}" ]]; then
-            cursor_auth="env:CURSOR_API_KEY"
-        elif grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
-            cursor_auth="cursor-session"
-        fi
-        if [[ "$cursor_auth" != "none" ]]; then
-            doctor_add "cursor-agent" "providers" "pass" \
-                "Cursor Agent CLI installed (auth: ${cursor_auth})" "$(command -v agent) — Grok 4.20 via Cursor subscription"
-        else
-            doctor_add "cursor-agent" "providers" "warn" \
-                "Cursor Agent CLI installed but not authenticated" "Run: agent login (or set CURSOR_API_KEY)"
-        fi
-    else
-        doctor_add "cursor-agent" "providers" "info" \
-            "Cursor Agent CLI not installed (optional)" "curl -fsSL https://cursor.com/install | bash — Grok 4.20 via Cursor subscription"
-    fi
-
-    # Vibe CLI (optional — Mistral Vibe interactive CLI)
-    if command -v vibe &>/dev/null; then
-        local vibe_auth="none"
-        if [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; then
-            vibe_auth="env-file"
-        elif [[ -n "${MISTRAL_API_KEY:-}" ]]; then
-            vibe_auth="env:MISTRAL_API_KEY"
-        elif [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; then
-            vibe_auth="config"
-        fi
-        if [[ "$vibe_auth" != "none" ]]; then
-            doctor_add "vibe-cli" "providers" "pass" \
-                "Vibe CLI installed (auth: ${vibe_auth})" "$(command -v vibe) — Mistral Vibe interactive CLI"
-        else
-            doctor_add "vibe-cli" "providers" "warn" \
-                "Vibe CLI installed but not authenticated" "Run: vibe --setup (or set MISTRAL_API_KEY)"
-        fi
-    else
-        doctor_add "vibe-cli" "providers" "info" \
-            "Vibe CLI not installed (optional)" "pip install mistral-vibe (or pipx) — Mistral Vibe interactive CLI"
-    fi
-
-    # OpenCode CLI (optional — multi-provider router, v9.11.0)
-    if command -v opencode &>/dev/null; then
-        local opencode_ver
-        if [[ -n "$_timeout_cmd" ]]; then
-            opencode_ver=$("$_timeout_cmd" 3 opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        else
-            opencode_ver=$(opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-        fi
-        if ! octo_version_ok "${opencode_ver}" "${OCTO_OPENCODE_MIN_VERSION:-0.1.0}"; then
-            doctor_add "opencode-version" "providers" "warn" "OpenCode v${opencode_ver} (below floor v${OCTO_OPENCODE_MIN_VERSION:-0.1.0})" "$(command -v opencode) — npm install -g opencode-ai"
-        fi
-        local opencode_auth="none"
-        if [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
-            if [[ -n "$_timeout_cmd" ]] && "$_timeout_cmd" 3 opencode auth list &>/dev/null; then
-                opencode_auth="multi"
-            elif [[ -z "$_timeout_cmd" ]] && opencode auth list &>/dev/null; then
-                opencode_auth="multi"
-            else
-                opencode_auth="expired"
-            fi
-        fi
-        # Check env-based auth if file-based auth not found
-        if [[ "$opencode_auth" == "none" ]]; then
-            if [[ -n "${GITHUB_TOKEN:-}" || -n "${OPENROUTER_API_KEY:-}" || -n "${Z_AI_API_KEY:-}" || -n "${MINIMAX_API_KEY:-}" ]]; then
-                opencode_auth="env"
-            fi
-        fi
-        if [[ "$opencode_auth" != "none" && "$opencode_auth" != "expired" ]]; then
-            doctor_add "opencode-cli" "providers" "pass" \
-                "OpenCode CLI installed (auth: ${opencode_auth})" "$(command -v opencode) — multi-provider router (google, openai, z-ai, openrouter)"
-        elif [[ "$opencode_auth" == "expired" ]]; then
-            doctor_add "opencode-cli" "providers" "warn" \
-                "OpenCode CLI installed but auth expired" "Run: opencode auth login (to refresh credentials)"
-        else
-            doctor_add "opencode-cli" "providers" "warn" \
-                "OpenCode CLI installed but not authenticated" "Run: opencode auth login (or set GITHUB_TOKEN/OPENROUTER_API_KEY)"
-        fi
-    else
-        doctor_add "opencode-cli" "providers" "info" \
-            "OpenCode CLI not installed (optional)" "npm install -g opencode-ai — multi-provider router for google, openai, z-ai models"
-    fi
-
-    # v9.0: Check recent provider fallback history
-    local fallback_log="${HOME}/.claude-octopus/provider-fallbacks.log"
-    if [[ -f "$fallback_log" ]]; then
-        local recent_failures=0 codex_failures=0 gemini_failures=0
-        local cutoff
-        cutoff=$(date -v-24H +%Y-%m-%d 2>/dev/null || date -d '24 hours ago' +%Y-%m-%d 2>/dev/null || echo "")
-        if [[ -n "$cutoff" ]]; then
-            while IFS= read -r line; do
-                local log_date="${line:1:10}"  # Extract date from [YYYY-MM-DDTHH:MM:SS]
-                if [[ "$log_date" > "$cutoff" || "$log_date" == "$cutoff" ]]; then
-                    ((recent_failures++)) || true
-                    [[ "$line" == *"provider=codex"* ]] && ((codex_failures++)) || true
-                    [[ "$line" == *"provider=gemini"* ]] && ((gemini_failures++)) || true
-                fi
-            done < "$fallback_log"
-        else
-            recent_failures=$(wc -l < "$fallback_log" | tr -d ' ')
-        fi
-        if [[ $recent_failures -gt 0 ]]; then
-            local detail="Last 24h:"
-            [[ $codex_failures -gt 0 ]] && detail="$detail Codex failed ${codex_failures}x"
-            [[ $gemini_failures -gt 0 ]] && detail="$detail Gemini failed ${gemini_failures}x"
-            doctor_add "provider-fallbacks" "providers" "warn" \
-                "${recent_failures} provider fallback(s) in last 24h" \
-                "${detail}. Check auth: codex auth / gemini auth. Log: ${fallback_log}"
-        else
-            doctor_add "provider-fallbacks" "providers" "pass" \
-                "No recent provider fallbacks" ""
-        fi
-    fi
+    return 0
 }
 
 # --- Category 1b: Optional companions ---
@@ -475,76 +442,86 @@ doctor_check_companions() {
 
 # --- Category 2: Auth ---
 doctor_check_auth() {
-    # Codex auth
-    if command -v codex &>/dev/null; then
-        if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]]; then
-            local method="auth.json"
-            [[ -n "${OPENAI_API_KEY:-}" ]] && method="OPENAI_API_KEY"
-            doctor_add "codex-auth" "auth" "pass" \
-                "Codex authenticated" "via $method"
+    local readiness provider status remediation any_auth=false result_name doctor_status
+    _doctor_collect_provider_readiness
+    for readiness in "${DOCTOR_PROVIDER_READINESS[@]}"; do
+        provider="$(jq -r '.provider' <<<"$readiness")"
+        status="$(jq -r '.status' <<<"$readiness")"
+        remediation="$(jq -r '.remediation' <<<"$readiness")"
+        case "$provider" in
+            codex) result_name="codex-auth" ;;
+            agy) result_name="agy-auth" ;;
+            cursor-agent) result_name="cursor-agent-auth" ;;
+            perplexity) result_name="perplexity-auth" ;;
+            *) continue ;;
+        esac
+
+        if [[ "$provider" == "agy" && "${DOCTOR_LIVE_PROBE:-false}" == "true" &&
+              "$DOCTOR_AGY_LIVE_AUTH_STATUS" != "pass" ]]; then
+            doctor_status="fail"
+            status="not verified by the live catalog"
+            remediation="Launch plain 'agy' and complete browser sign-in; on macOS, allow agy to access the Antigravity CLI item in Keychain Access"
+        elif [[ "$status" == "available" ]]; then
+            doctor_status="pass"
+            any_auth=true
+        elif [[ "$status" == "degraded" ]]; then
+            doctor_status="fail"
         else
-            doctor_add "codex-auth" "auth" "fail" \
-                "Codex not authenticated" "Run: codex login  OR  export OPENAI_API_KEY=\"sk-...\""
+            continue
         fi
-    fi
+        doctor_add "$result_name" "auth" "$doctor_status" \
+            "$provider authentication is $status" "$remediation"
+    done
 
-    # Gemini auth
-    if command -v gemini &>/dev/null; then
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-            local method="oauth_creds.json"
-            [[ -n "${GEMINI_API_KEY:-}" ]] && method="GEMINI_API_KEY"
-            [[ -n "${GOOGLE_API_KEY:-}" ]] && method="GOOGLE_API_KEY"
-            doctor_add "gemini-auth" "auth" "pass" \
-                "Gemini authenticated" "via $method"
-        else
-            doctor_add "gemini-auth" "auth" "fail" \
-                "Gemini not authenticated" "Run: gemini  OR  export GEMINI_API_KEY=\"...\""
-        fi
-    fi
-
-    # Cursor Agent auth
-    if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
-        if [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "$HOME/.cursor/cli-config.json" 2>/dev/null; then
-            local method="cursor-session"
-            [[ -n "${CURSOR_API_KEY:-}" ]] && method="CURSOR_API_KEY"
-            doctor_add "cursor-agent-auth" "auth" "pass" \
-                "Cursor Agent authenticated" "via $method"
-        else
-            doctor_add "cursor-agent-auth" "auth" "fail" \
-                "Cursor Agent not authenticated" "Run: agent login  OR  export CURSOR_API_KEY=\"...\""
-        fi
-    fi
-
-    # Perplexity auth (v8.24.0 - optional, info-only)
-    if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
-        doctor_add "perplexity-auth" "auth" "pass" \
-            "Perplexity authenticated" "via PERPLEXITY_API_KEY"
-    fi
-
-    # At least one provider must be authenticated
-    local any_auth=false
-    if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]] || \
-       [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] || \
-       [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "$HOME/.cursor/cli-config.json" 2>/dev/null; then
-        any_auth=true
-    fi
-    if [[ "$any_auth" == "false" ]]; then
-        doctor_add "any-provider-auth" "auth" "fail" \
-            "No provider authenticated" "At least one of Codex, Gemini, or Cursor Agent must be authenticated"
-    else
+    if [[ "$any_auth" == "true" ]]; then
         doctor_add "any-provider-auth" "auth" "pass" \
-            "At least one provider authenticated" ""
+            "At least one provider credential is configured" ""
+    else
+        doctor_add "any-provider-auth" "auth" "fail" \
+            "No provider authenticated" "Configure one provider with /octo:setup."
     fi
 
-    # Enterprise backend
     local backend="${OCTOPUS_BACKEND:-api}"
     if [[ "$backend" != "api" ]]; then
-        doctor_add "enterprise-backend" "auth" "pass" \
-            "Enterprise backend: $backend" ""
+        doctor_add "enterprise-backend" "auth" "pass" "Enterprise backend: $backend" ""
     fi
+    return 0
 }
 
 # --- Category 3: Config ---
+doctor_build_sha() {
+    local plugin_root="${1:-}" sha=""
+    [[ -n "$plugin_root" ]] || return 1
+    if [[ "${OCTOPUS_BUILD_SHA:-}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+        printf '%s\n' "$OCTOPUS_BUILD_SHA"
+        return 0
+    fi
+    command -v git >/dev/null 2>&1 || return 1
+    sha="$(git -C "$plugin_root" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+    printf '%s\n' "$sha"
+}
+
+doctor_install_source() {
+    local plugin_root="${1:-}"
+    case "$plugin_root" in
+        */.claude/plugins/cache/*) printf '%s\n' "claude-marketplace-cache" ;;
+        */.codex/plugins/cache/*) printf '%s\n' "codex-plugin-cache" ;;
+        */node_modules/*) printf '%s\n' "npm" ;;
+        *)
+            local inside_work_tree=""
+            if command -v git >/dev/null 2>&1; then
+                inside_work_tree="$(git -C "$plugin_root" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+            fi
+            if [[ "$inside_work_tree" == true ]]; then
+                printf '%s\n' "git-checkout"
+            else
+                printf '%s\n' "manual"
+            fi
+            ;;
+    esac
+}
+
 doctor_check_config() {
     local plugin_json="$SCRIPT_DIR/../.claude-plugin/plugin.json"
 
@@ -570,6 +547,18 @@ doctor_check_config() {
     fi
     doctor_add "install-scope" "config" "pass" \
         "Install scope: $scope" "$PLUGIN_DIR"
+
+    local install_source build_sha
+    install_source="$(doctor_install_source "$PLUGIN_DIR")"
+    doctor_add "install-source" "config" "pass" \
+        "Install source: $install_source" "$PLUGIN_DIR"
+    if build_sha="$(doctor_build_sha "$PLUGIN_DIR")"; then
+        doctor_add "plugin-build" "config" "pass" \
+            "Build SHA: $build_sha" "$PLUGIN_DIR"
+    else
+        doctor_add "plugin-build" "config" "info" \
+            "Build SHA unavailable" "Install source: $install_source; set OCTOPUS_BUILD_SHA when packaging a detached build"
+    fi
 
     # Feature flag / CC version consistency
     local cc_ver="${CLAUDE_CODE_VERSION:-}"
@@ -749,18 +738,94 @@ doctor_check_config() {
                 "No reserved MCP server name 'workspace' detected" ""
         fi
     fi
+
+    doctor_check_plugin_validation "$PLUGIN_DIR"
+}
+
+# --- Plugin update health (issue #851) ---
+# Local-only by design. Network/package-manager work is reserved for the
+# explicit `update-plugin` command so doctor and SessionStart stay non-blocking.
+doctor_check_updates() {
+    if ! declare -f octo_plugin_update_load >/dev/null 2>&1; then
+        doctor_add "plugin-update-health" "updates" "info" \
+            "Plugin update health unavailable" "scripts/lib/plugin-update.sh could not be loaded"
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        doctor_add "plugin-update-dependency" "updates" "warn" \
+            "Plugin update health unavailable: jq is not installed" \
+            "Install jq, then rerun orchestrate.sh doctor updates"
+        return
+    fi
+
+    local plugin_root="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_DIR:-}}"
+    local host="${OCTOPUS_HOST:-}"
+    if [[ -z "$plugin_root" ]]; then
+        plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    fi
+    [[ -n "$host" ]] || host="$(octo_plugin_detect_host "$plugin_root")"
+    octo_plugin_update_load "$plugin_root" "$host"
+
+    if [[ "$OCTO_PLUGIN_LOADED_VERSION" == "unknown" ]]; then
+        doctor_add "plugin-loaded-version" "updates" "warn" \
+            "Loaded Octopus version is unknown" "Expected .claude-plugin/plugin.json under $plugin_root"
+    else
+        doctor_add "plugin-loaded-version" "updates" "pass" \
+            "Loaded Octopus v${OCTO_PLUGIN_LOADED_VERSION}" "$plugin_root"
+    fi
+
+    if [[ "$host" == "claude" ]]; then
+        case "$OCTO_PLUGIN_AUTO_UPDATE" in
+            enabled)
+                doctor_add "plugin-auto-update" "updates" "pass" \
+                    "nyldn-plugins auto-update enabled" "Claude Code checks the marketplace in the background; reload after an update"
+                ;;
+            disabled|missing)
+                doctor_add "plugin-auto-update" "updates" "warn" \
+                    "nyldn-plugins auto-update ${OCTO_PLUGIN_AUTO_UPDATE}" \
+                    "Use /plugin → Marketplaces → nyldn-plugins → Enable auto-update"
+                ;;
+            malformed)
+                doctor_add "plugin-auto-update" "updates" "fail" \
+                    "Claude marketplace state is malformed" \
+                    "Repair ~/.claude/plugins/known_marketplaces.json through /plugin; do not hand-edit it during a session"
+                ;;
+            *)
+                doctor_add "plugin-auto-update" "updates" "info" \
+                    "Claude marketplace auto-update state unavailable" "No Claude marketplace state was found"
+                ;;
+        esac
+    else
+        doctor_add "plugin-auto-update" "updates" "info" \
+            "Host-managed auto-update state is not exposed for ${host}" "Use the ${host} plugin manager and restart after updating"
+    fi
+
+    local versions="installed ${OCTO_PLUGIN_INSTALLED_VERSION}; catalog ${OCTO_PLUGIN_CATALOG_VERSION}; cache ${OCTO_PLUGIN_CACHE_VERSION}"
+    if [[ "$OCTO_PLUGIN_RELOAD_REQUIRED" == "true" ]]; then
+        doctor_add "plugin-reload" "updates" "warn" \
+            "Installed Octopus v${OCTO_PLUGIN_INSTALLED_VERSION} is newer than this loaded session" \
+            "Run /reload-plugins or restart the host — ${versions}"
+    elif [[ "$OCTO_PLUGIN_UPDATE_AVAILABLE" == "true" ]]; then
+        doctor_add "plugin-update-available" "updates" "warn" \
+            "A newer Octopus version is known locally" \
+            "Run orchestrate.sh update-plugin explicitly — ${versions}"
+    else
+        doctor_add "plugin-update-current" "updates" "pass" \
+            "No newer local Octopus version detected" "$versions"
+    fi
 }
 
 # --- Category 4: State ---
 doctor_check_state() {
+    local workflow_state_file="${STATE_FILE:-}"
     # state.json integrity
-    if [[ -f ".claude-octopus/state.json" ]]; then
-        if jq empty ".claude-octopus/state.json" 2>/dev/null; then
+    if [[ -f "$workflow_state_file" ]]; then
+        if jq empty "$workflow_state_file" 2>/dev/null; then
             doctor_add "state-json" "state" "pass" \
-                "state.json valid" ".claude-octopus/state.json"
+                "state.json valid" "$workflow_state_file"
         else
             doctor_add "state-json" "state" "fail" \
-                "state.json is invalid JSON" "File exists but cannot be parsed"
+                "state.json is invalid JSON" "$workflow_state_file cannot be parsed"
         fi
     else
         doctor_add "state-json" "state" "pass" \
@@ -806,11 +871,13 @@ doctor_check_state() {
         doctor_add "preflight-cache" "state" "pass" \
             "No preflight cache (will create on first run)" ""
     fi
+
+    doctor_check_v10_state_health
 }
 
 # --- Category 5: Hooks ---
 doctor_check_hooks() {
-    local hooks_json="$SCRIPT_DIR/../.claude-plugin/hooks.json"
+    local hooks_json="$SCRIPT_DIR/../hooks/hooks.json"
     if [[ ! -f "$hooks_json" ]]; then
         doctor_add "hooks-file" "hooks" "fail" \
             "hooks.json not found" "$hooks_json"
@@ -1151,13 +1218,19 @@ doctor_check_skills() {
                 "--bare flag disabled via OCTOPUS_DISABLE_BARE=1" \
                 "Subprocess synthesis falls back to standard claude -p (slower but avoids auth issues)"
         else
-            # Probe whether --bare can authenticate (CC v2.1.114 regression, issue #288)
-            local _bare_test
-            _bare_test=$(echo "x" | claude --bare --print --model claude-haiku-4-5-20251001 2>/dev/null | head -1 || true)
+            # Probe whether --bare can authenticate (CC v2.1.114 regression,
+            # issue #288) without allowing auth or Keychain waits to wedge doctor.
+            local _bare_test="" _bare_test_rc=0
+            _bare_test=$(_octo_bare_auth_probe 2>/dev/null) || _bare_test_rc=$?
+            _bare_test="${_bare_test%%$'\n'*}"
             if [[ "$_bare_test" == *"Not logged in"* || "$_bare_test" == *"Please run /login"* ]]; then
                 doctor_add "bare-flag" "skills" "fail" \
                     "--bare flag breaks subprocess auth on this install (issue #288)" \
                     "Set OCTOPUS_DISABLE_BARE=1 in your shell profile or ~/.claude/settings.json env block to fix"
+            elif [[ "$_bare_test_rc" -ne 0 ]]; then
+                doctor_add "bare-flag" "skills" "warn" \
+                    "--bare authentication probe did not complete (exit ${_bare_test_rc})" \
+                    "Octopus disabled --bare for this run instead of waiting indefinitely"
             else
                 doctor_add "bare-flag" "skills" "pass" \
                     "CC v2.1.87 --bare flag active — subprocess synthesis runs faster" \
@@ -1321,6 +1394,18 @@ doctor_check_skills() {
             "Use OCTOPUS_OPUS_MODEL=claude-opus-4.6 only when you need legacy behavior"
     fi
 
+    if [[ "${SUPPORTS_SONNET_5:-false}" == "true" ]]; then
+        doctor_add "sonnet-5" "skills" "pass" \
+            "CC v2.1.197 Sonnet 5 available for standard Claude seats" \
+            "Existing providers.json pins remain unchanged; new configs default to claude-sonnet-5"
+    fi
+
+    if [[ "${SUPPORTS_OPUS_5:-false}" == "true" ]]; then
+        doctor_add "opus-5" "skills" "pass" \
+            "CC v2.1.219 Opus 5 available; claude-opus routes to the current premium lead model" \
+            "Pin OCTOPUS_OPUS_MODEL only when you need Fable 5 or a legacy fallback"
+    fi
+
     if [[ "${SUPPORTS_DYNAMIC_WORKFLOWS:-false}" == "true" ]]; then
         doctor_add "dynamic-workflows" "skills" "info" \
             "CC v2.1.154 dynamic workflows available for huge single-Claude migrations" \
@@ -1399,6 +1484,29 @@ doctor_check_conflicts() {
             "claude-mem v${mem_version} detected (companion — persistent cross-session memory)" \
             "Octopus workflows can use claude-mem MCP tools (search, timeline, get_observations) for past session context"
     fi
+
+    local agentmemory_dir=""
+    for dir in \
+        "$HOME"/.claude/plugins/cache/rohitg00/agentmemory/*/ \
+        "$HOME"/.claude/plugins/cache/agentmemory/agentmemory/*/ \
+        "$HOME"/.codex/plugins/cache/rohitg00/agentmemory/*/ \
+        "$HOME"/.codex/plugins/cache/agentmemory/agentmemory/*/; do
+        [[ -d "$dir" ]] && agentmemory_dir="$dir" && break
+    done
+    if [[ -n "$agentmemory_dir" ]]; then
+        local agentmemory_version
+        agentmemory_version=$(basename "${agentmemory_dir%/}" 2>/dev/null || echo "unknown")
+        doctor_add "companion-agentmemory" "conflicts" "pass" \
+            "agentmemory v${agentmemory_version} detected (companion — persistent cross-agent memory)" \
+            "Octopus memory hooks can use agentmemory through MCP or the local REST bridge"
+    elif command -v agentmemory >/dev/null 2>&1; then
+        doctor_add "companion-agentmemory" "conflicts" "pass" \
+            "agentmemory CLI detected (companion — persistent cross-agent memory)" \
+            "$(command -v agentmemory)"
+    elif [[ -n "${AGENTMEMORY_URL:-}" ]]; then
+        doctor_add "companion-agentmemory" "conflicts" "info" \
+            "agentmemory URL configured" "$AGENTMEMORY_URL"
+    fi
 }
 
 # --- Category 9: Smoke Test (v8.19.0 - Issue #34) ---
@@ -1430,14 +1538,14 @@ doctor_check_smoke() {
     fi
 
     # Current model config
-    local codex_model gemini_model
+    local codex_model agy_model
     codex_model=$(get_agent_model "codex" 2>/dev/null || echo "not configured")
-    gemini_model=$(get_agent_model "gemini" 2>/dev/null || echo "not configured")
+    agy_model=$(get_agent_model "agy" 2>/dev/null || echo "not configured")
 
     doctor_add "smoke-codex-model" "smoke" "pass" \
         "Codex model: ${codex_model}" "OCTOPUS_CODEX_MODEL=${OCTOPUS_CODEX_MODEL:-<default>}"
-    doctor_add "smoke-gemini-model" "smoke" "pass" \
-        "Gemini model: ${gemini_model}" "OCTOPUS_GEMINI_MODEL=${OCTOPUS_GEMINI_MODEL:-<default>}"
+    doctor_add "smoke-agy-model" "smoke" "pass" \
+        "Antigravity model: ${agy_model}" "OCTOPUS_AGY_MODEL=${OCTOPUS_AGY_MODEL:-<default>}"
 
     # Skip flag
     if [[ "$SKIP_SMOKE_TEST" == "true" ]]; then
@@ -1457,12 +1565,12 @@ doctor_check_agents() {
     fi
 
     local agent_count
-    agent_count=$(grep -c '^\s\{2\}[a-z]' "$config_file" 2>/dev/null || echo "0")
+    agent_count=$(grep -c '^\s\{2\}[a-z]' "$config_file" 2>/dev/null) || agent_count=0
     doctor_add "agents-count" "agents" "pass" \
         "${agent_count} agent definitions found" ""
 
     local worktree_agents
-    worktree_agents=$(grep -c 'isolation: worktree' "$config_file" 2>/dev/null || echo "0")
+    worktree_agents=$(grep -c 'isolation: worktree' "$config_file" 2>/dev/null) || worktree_agents=0
     doctor_add "agents-worktree" "agents" "pass" \
         "${worktree_agents} agents with worktree isolation" ""
 
@@ -1471,7 +1579,7 @@ doctor_check_agents() {
         cli_output=$(claude agents 2>/dev/null | head -20 || echo "")
         if [[ -n "$cli_output" ]]; then
             local cli_count
-            cli_count=$(echo "$cli_output" | grep -c "^" || echo "0")
+            cli_count=$(echo "$cli_output" | grep -c "^") || cli_count=0
             doctor_add "agents-cli" "agents" "pass" \
                 "Claude agents CLI: ${cli_count} agents registered" ""
         else
@@ -1663,8 +1771,10 @@ doctor_output_human() {
         local icon
         case "$status" in
             pass) icon="${GREEN}✓${NC}" ;;
+            info) icon="${BLUE}ℹ${NC}" ;;
             warn) icon="${YELLOW}⚠${NC}" ;;
             fail) icon="${RED}✗${NC}" ;;
+            *) icon="${RED}?${NC}" ;;
         esac
 
         echo -e "  ${icon} ${msg}"
@@ -1696,21 +1806,79 @@ doctor_output_human() {
 }
 
 # --- Output: JSON ---
+doctor_json_escape() {
+    local value="${1:-}"
+    if command -v jq >/dev/null 2>&1; then
+        jq -Rrn --arg value "$value" '$value | tojson | .[1:-1]' && return 0
+    fi
+
+    local LC_ALL=C
+    local out="" ch ord escaped i
+    for ((i=0; i<${#value}; i++)); do
+        ch="${value:i:1}"
+        case "$ch" in
+            '"') out="${out}\\\"" ;;
+            \\) out="${out}\\\\" ;;
+            $'\b') out="${out}\\b" ;;
+            $'\f') out="${out}\\f" ;;
+            $'\n') out="${out}\\n" ;;
+            $'\r') out="${out}\\r" ;;
+            $'\t') out="${out}\\t" ;;
+            *)
+                if [[ "$ch" == [[:cntrl:]] ]]; then
+                    LC_ALL=C printf -v ord '%d' "'$ch"
+                    printf -v escaped '\\u%04x' "$ord"
+                    out="${out}${escaped}"
+                else
+                    out="${out}${ch}"
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 doctor_output_json() {
     local total=${#DOCTOR_RESULTS_NAME[@]}
+    local pass_count=0 warn_count=0 fail_count=0 info_count=0 exit_code=0
     local json="["
     for ((i=0; i<total; i++)); do
         [[ $i -gt 0 ]] && json+=","
-        # Escape strings for JSON safety
-        local name="${DOCTOR_RESULTS_NAME[$i]}"
-        local cat="${DOCTOR_RESULTS_CAT[$i]}"
-        local status="${DOCTOR_RESULTS_STATUS[$i]}"
-        local msg="${DOCTOR_RESULTS_MSG[$i]//\"/\\\"}"
-        local detail="${DOCTOR_RESULTS_DETAIL[$i]//\"/\\\"}"
+        local name cat status msg detail
+        name="$(doctor_json_escape "${DOCTOR_RESULTS_NAME[$i]}")"
+        cat="$(doctor_json_escape "${DOCTOR_RESULTS_CAT[$i]}")"
+        status="$(doctor_json_escape "${DOCTOR_RESULTS_STATUS[$i]}")"
+        msg="$(doctor_json_escape "${DOCTOR_RESULTS_MSG[$i]}")"
+        detail="$(doctor_json_escape "${DOCTOR_RESULTS_DETAIL[$i]}")"
+        case "${DOCTOR_RESULTS_STATUS[$i]}" in
+            pass) ((++pass_count)) ;;
+            warn) ((++warn_count)) ;;
+            fail) ((++fail_count)) ;;
+            *) ((++info_count)) ;;
+        esac
         json+="{\"name\":\"$name\",\"category\":\"$cat\",\"status\":\"$status\",\"message\":\"$msg\",\"detail\":\"$detail\"}"
     done
     json+="]"
-    echo "$json"
+    [[ $fail_count -gt 0 ]] && exit_code=1
+    printf '{"schema_version":"10.0","summary":{"passed":%d,"warnings":%d,"failures":%d,"info":%d,"total":%d,"exit_code":%d},"results":%s}\n' \
+        "$pass_count" "$warn_count" "$fail_count" "$info_count" "$total" "$exit_code" "$json"
+    return "$exit_code"
+}
+
+doctor_usage() {
+    cat <<'EOF'
+Usage: octopus doctor [CATEGORY] [--verbose] [--json] [--live]
+
+Categories:
+  providers companions auth config updates state smoke hooks scheduler
+  skills conflicts agents recurrence cache
+
+Options:
+  -v, --verbose  Include details for passing checks
+  --json         Emit the Doctor 2.0 JSON contract
+  --live         Run bounded live provider probes (also enables verbose output)
+  -h, --help     Show this help
+EOF
 }
 
 # --- Main Doctor Runner ---
@@ -1718,14 +1886,37 @@ do_doctor() {
     local category_filter=""
     local verbose=false
     local json_output=false
+    local DOCTOR_LIVE_PROBE=false
+    local categories="providers companions auth config updates state smoke hooks scheduler skills conflicts agents recurrence cache"
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --verbose|-v) verbose=true ;;
             --json) json_output=true ;;
-            -*) ;; # ignore unknown flags
-            *) [[ -z "$category_filter" ]] && category_filter="$1" ;;
+            --live) DOCTOR_LIVE_PROBE=true; verbose=true ;;
+            --help|-h) doctor_usage; return 0 ;;
+            -*)
+                printf 'Unknown doctor option: %s\n' "$1" >&2
+                doctor_usage >&2
+                return 2
+                ;;
+            *)
+                case " $categories " in
+                    *" $1 "*) ;;
+                    *)
+                        printf 'Unknown doctor category: %s\n' "$1" >&2
+                        doctor_usage >&2
+                        return 2
+                        ;;
+                esac
+                if [[ -n "$category_filter" ]]; then
+                    printf 'Only one doctor category may be selected (got %s and %s).\n' "$category_filter" "$1" >&2
+                    doctor_usage >&2
+                    return 2
+                fi
+                category_filter="$1"
+                ;;
         esac
         shift
     done
@@ -1736,10 +1927,13 @@ do_doctor() {
     DOCTOR_RESULTS_STATUS=()
     DOCTOR_RESULTS_MSG=()
     DOCTOR_RESULTS_DETAIL=()
+    DOCTOR_AGY_LIVE_AUTH_STATUS="not-run"
+    DOCTOR_PROVIDER_READINESS=()
+    DOCTOR_PROVIDER_READINESS_KIND=""
 
     # Run checks (filtered if category specified)
-    local categories=(providers companions auth config state smoke hooks scheduler skills conflicts agents recurrence cache)
-    for cat in "${categories[@]}"; do
+    local cat
+    for cat in $categories; do
         if [[ -z "$category_filter" || "$category_filter" == "$cat" ]]; then
             "doctor_check_${cat}"
         fi

@@ -71,9 +71,33 @@ MATEOF
 parse_factory_spec() {
     local spec_path="$1"
     local run_dir="$2"
+    # Maturity JSON and the effective run parameters come from factory_run.
+    # Keep them explicit so Bash dynamic scoping and environment defaults cannot
+    # make session.json disagree with the run that produced it.
+    local maturity_json_in="${3:-}"
+    local holdout_ratio="${4:-${OCTOPUS_FACTORY_HOLDOUT_RATIO:-0.20}}"
+    local max_retries="${5:-${OCTOPUS_FACTORY_MAX_RETRIES:-1}}"
+    [[ -n "$maturity_json_in" ]] || maturity_json_in='{}'
 
     if [[ ! -f "$spec_path" ]]; then
         log ERROR "Factory spec not found: $spec_path"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        log ERROR "jq is required to validate factory session metadata"
+        return 1
+    fi
+    if ! printf '%s' "$maturity_json_in" | jq -e -s 'length == 1' >/dev/null 2>&1; then
+        log ERROR "Factory maturity metadata is not valid JSON"
+        return 1
+    fi
+    if [[ ! "$holdout_ratio" =~ ^(0([.][0-9]+)?|1([.]0+)?)$ ]]; then
+        log ERROR "Factory holdout ratio must be numeric and between 0 and 1: $holdout_ratio"
+        return 1
+    fi
+    if [[ ! "$max_retries" =~ ^[0-9]+$ ]]; then
+        log ERROR "Factory max retries must be a non-negative integer: $max_retries"
         return 1
     fi
 
@@ -111,10 +135,14 @@ parse_factory_spec() {
         satisfaction_target="$OCTOPUS_FACTORY_SATISFACTION_TARGET"
         log INFO "Satisfaction target overridden by env: $satisfaction_target"
     fi
+    if [[ ! "$satisfaction_target" =~ ^(0([.][0-9]+)?|1([.]0+)?)$ ]]; then
+        log ERROR "Factory satisfaction target must be numeric and between 0 and 1: $satisfaction_target"
+        return 1
+    fi
 
     # Extract behaviors (lines starting with "### " under Behaviors section, or numbered items)
     local behavior_count
-    behavior_count=$(echo "$spec_content" | grep -c '^\(### \|[0-9]\+\.\s\+\*\*\)' || echo "0")
+    behavior_count=$(echo "$spec_content" | grep -c '^\(### \|[0-9]\+\.\s\+\*\*\)') || behavior_count=0
     if [[ "$behavior_count" -eq 0 ]]; then
         behavior_count=$(echo "$spec_content" | grep -c '^- \*\*' || echo "3")
     fi
@@ -129,9 +157,9 @@ parse_factory_spec() {
   "satisfaction_target": $satisfaction_target,
   "complexity": "$complexity",
   "behavior_count": $behavior_count,
-  "holdout_ratio": $OCTOPUS_FACTORY_HOLDOUT_RATIO,
-  "max_retries": $OCTOPUS_FACTORY_MAX_RETRIES,
-  "maturity": $maturity_json,
+  "holdout_ratio": $holdout_ratio,
+  "max_retries": $max_retries,
+  "maturity": $maturity_json_in,
   "status": "initialized",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -187,7 +215,7 @@ Generate scenarios that are specific enough to evaluate against an implementatio
 
     # Fallback/supplement with second provider
     local supplemental
-    supplemental=$(run_agent_sync "gemini" "$scenario_prompt" 120 "qa-engineer" "factory" 2>/dev/null) || true
+    supplemental=$(run_agent_sync "agy" "$scenario_prompt" 120 "qa-engineer" "factory" 2>/dev/null) || true
 
     if [[ -n "$supplemental" && -n "$scenarios" ]]; then
         # Merge unique scenarios from supplemental
@@ -260,7 +288,7 @@ ${spec_content:0:6000}
     nqs_result=$(run_agent_sync "claude-sonnet" "$nqs_prompt" 120 "spec-quality-analyst" "factory" 2>/dev/null) || true
 
     if [[ -z "$nqs_result" ]]; then
-        nqs_result=$(run_agent_sync "gemini" "$nqs_prompt" 120 "spec-quality-analyst" "factory" 2>/dev/null) || true
+        nqs_result=$(run_agent_sync "agy" "$nqs_prompt" 120 "spec-quality-analyst" "factory" 2>/dev/null) || true
     fi
 
     if [[ -z "$nqs_result" ]]; then

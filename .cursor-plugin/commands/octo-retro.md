@@ -1,5 +1,6 @@
 ---
-description: "\"[advanced] Generate engineering retrospectives from git history with trends and team analysis\""
+description: "[advanced] Generate engineering retrospectives from git history with trends and team analysis"
+disable-model-invocation: true
 allowed-tools: Bash, Read, Glob, Grep, Write
 ---
 
@@ -70,7 +71,7 @@ git log --format='%at %H %s' --since='<window>' --no-merges
 
 **AI-assisted commit detection:**
 ```bash
-git log --since='<window>' --no-merges --format='%H' | xargs -I{} git log -1 --format='%b' {} | grep -ci 'Co-Authored-By:'
+git log --since='<window>' --no-merges --format='%b' | grep -ci 'Co-Authored-By:'
 ```
 
 **Current user identification:**

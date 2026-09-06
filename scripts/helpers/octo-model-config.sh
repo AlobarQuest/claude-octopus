@@ -5,12 +5,21 @@
 set -eo pipefail
 
 CONFIG_FILE="${HOME}/.claude-octopus/config/providers.json"
-CACHE_FILE="/tmp/octo-model-cache-${USER:-${USERNAME:-unknown}}-${CLAUDE_CODE_SESSION:-global}.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" || { echo "ERROR: failed to load provider-allowlist.sh" >&2; exit 1; }
+source "${SCRIPT_DIR}/../lib/provider-registry.sh" || { echo "ERROR: failed to load provider-registry.sh" >&2; exit 1; }
+source "${SCRIPT_DIR}/../lib/models.sh" || { echo "ERROR: failed to load models.sh" >&2; exit 1; }
+source "${SCRIPT_DIR}/../lib/model-cache-path.sh" 2>/dev/null || true
+# Must match the path lib/model-resolver.sh writes; this was hardcoded to /tmp
+# while the resolver honoured $TMPDIR, so `clear_cache` was a no-op on macOS.
+if declare -f octo_model_cache_file >/dev/null 2>&1; then
+    CACHE_FILE="$(octo_model_cache_file 2>/dev/null || true)"
+else
+    CACHE_FILE="${TMPDIR:-/tmp}/octo-model-cache-${USER:-${USERNAME:-unknown}}-${CLAUDE_CODE_SESSION:-global}.json"
+fi
 
 # Known providers and phases for validation
-KNOWN_PROVIDERS="codex gemini agy claude perplexity openrouter opencode copilot ollama qwen cursor-agent vibe"
+KNOWN_PROVIDERS="$(octo_provider_ids model-config)"
 KNOWN_PHASES="discover define develop deliver quick debate review security research"
 
 # Colors
@@ -26,8 +35,14 @@ usage() {
     echo "Commands:"
     echo "  list                        List current configuration"
     echo "  show phases                 Show phase routing table"
+    echo "  show roles                  Show role routing override table"
     echo "  set <provider> <model>      Set default model for a provider"
     echo "  route <phase> <target>      Route a phase to a specific model/capability"
+    echo "  route-role <role> <target>  Route a role/persona to a model/capability"
+    echo "  unroute-role <role>         Remove an explicit role route override"
+    echo "  cost-mode [mode|status]     Select budget, standard, or premium routing"
+    echo "  tier <mode> <provider> <target>"
+    echo "                              Configure a provider model/capability for a tier"
     echo "  reset [provider|all]        Reset configuration to defaults"
     echo "  models [filter]             List all known models with capabilities"
     echo "  providers                   Show active provider allowlist"
@@ -43,9 +58,10 @@ usage() {
     echo ""
     echo "Environment Variables:"
     echo "  OCTOPUS_CODEX_MODEL         Override codex model (highest priority)"
-    echo "  OCTOPUS_GEMINI_MODEL        Override gemini model"
-    echo "  OCTOPUS_AGY_MODEL           Override Antigravity CLI model"
+    echo "  OCTOPUS_AGY_MODEL           Override Antigravity model (default, agy/default, or exact agy models label)"
     echo "  OCTOPUS_CURSOR_AGENT_MODEL  Override cursor-agent model"
+    echo "  OCTOPUS_GROK_MODEL          Override xAI Grok CLI model"
+    echo "  OCTOPUS_KIMI_MODEL          Select a model alias declared in Kimi Code config.toml"
     echo "  OCTOPUS_COST_MODE           Set cost tier: budget, standard, premium"
     echo "  OCTO_ALLOWED_PROVIDERS      Override provider availability for this process"
     echo "  OCTOPUS_TRACE_MODELS=1      Debug model resolution precedence"
@@ -55,6 +71,10 @@ log_info() { echo -e "${GREEN}INFO:${NC} $1"; }
 log_warn() { echo -e "${YELLOW}WARN:${NC} $1"; }
 log_error() { echo -e "${RED}ERROR:${NC} $1"; }
 
+automatic_target_allowed() {
+    octo_model_automatic_target_allowed "${1:-}" "${2:-}"
+}
+
 # Ensure config file exists and is v3.0
 ensure_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -62,24 +82,25 @@ ensure_config() {
         cat > "$CONFIG_FILE" << 'EOF'
 {
   "version": "3.0",
+  "cost_mode": "standard",
   "providers": {
     "codex": {
-      "default": "gpt-5.4",
-      "fallback": "gpt-5.4",
-      "spark": "gpt-5.4",
-      "mini": "gpt-5.4-mini",
-      "reasoning": "o3",
-      "large_context": "gpt-5.4"
+      "default": "gpt-5.6-sol",
+      "fallback": "gpt-5.6-terra",
+      "spark": "gpt-5.6-luna",
+      "mini": "gpt-5.6-luna",
+      "reasoning": "gpt-5.6-sol",
+      "large_context": "gpt-5.6-sol"
     },
-    "gemini": {
-      "default": "gemini-3.1-pro-preview",
-      "fallback": "gemini-3-flash-preview",
-      "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image"
+    "agy": {
+      "default": "Gemini 3.1 Pro (High)",
+      "fallback": "Gemini 3.5 Flash (High)",
+      "flash": "Gemini 3.5 Flash (Low)"
     },
     "claude": {
-      "default": "claude-sonnet-4.6",
-      "opus": "claude-opus-4.8"
+      "default": "claude-sonnet-5",
+      "budget": "claude-haiku-4.5",
+      "opus": "claude-opus-5"
     },
     "perplexity": {
       "default": "sonar-pro",
@@ -89,6 +110,11 @@ ensure_config() {
       "default": "opencode/deepseek-v4-flash-free",
       "fast": "opencode/deepseek-v4-flash-free",
       "research": "opencode/glm-5.1"
+    },
+    "openai-compatible-agent": {
+      "default": "example/model-id",
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": "OPENAI_COMPAT_API_KEY"
     }
   },
   "routing": {
@@ -96,16 +122,16 @@ ensure_config() {
       "deliver": "codex:default",
       "review": "codex:default",
       "security": "codex:reasoning",
-      "research": "gemini:default"
+      "research": "agy"
     },
     "roles": {
       "researcher": "perplexity"
     }
   },
   "tiers": {
-    "budget": { "codex": "mini", "gemini": "flash", "opencode": "fast" },
-    "standard": { "codex": "default", "gemini": "default", "opencode": "default" },
-    "premium": { "codex": "default", "gemini": "default", "opencode": "default" }
+    "budget": { "codex": "mini", "claude": "budget", "agy": "flash", "opencode": "fast" },
+    "standard": { "codex": "default", "claude": "default", "agy": "default", "opencode": "default" },
+    "premium": { "codex": "default", "claude": "opus", "agy": "default", "opencode": "default" }
   },
   "overrides": {}
 }
@@ -116,6 +142,56 @@ EOF
         log_error "jq is not installed. Please install it (brew install jq or apt install jq)."
         exit 1
     fi
+
+    migrate_retired_gemini_config
+}
+
+migrate_retired_gemini_config() {
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    if ! jq -e '
+        (.providers.gemini? != null) or
+        (.overrides.gemini? != null) or
+        ([.tiers[]?.gemini?] | any(. != null)) or
+        ([.routing.phases[]?, .routing.roles[]?] | any(
+            (type == "string" and startswith("gemini")) or
+            (type == "object" and .provider? == "gemini")
+        ))
+    ' "$CONFIG_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    jq '
+        def migrate_google_target:
+            if type == "string" then
+                if . == "gemini" then "agy"
+                elif startswith("gemini:") then
+                    (split(":")[1]) as $cap |
+                    if ($cap == "default" or $cap == "flash" or $cap == "fallback")
+                    then "agy:" + $cap else "agy" end
+                else . end
+            elif type == "object" and .provider? == "gemini" then
+                .provider = "agy" | if .model? then .model = "default" else . end
+            else . end;
+        .providers.agy //= {
+            "default": "Gemini 3.1 Pro (High)",
+            "fallback": "Gemini 3.5 Flash (High)",
+            "flash": "Gemini 3.5 Flash (Low)"
+        } |
+        del(.providers.gemini) |
+        if .overrides.gemini? != null and .overrides.agy? == null
+            then .overrides.agy = "default" else . end |
+        del(.overrides.gemini) |
+        .tiers = ((.tiers // {}) | with_entries(
+            .value |= (
+                if .gemini? != null and .agy? == null then .agy = .gemini else . end |
+                del(.gemini)
+            )
+        )) |
+        .routing = (.routing // {}) |
+        .routing.phases = ((.routing.phases // {}) | with_entries(.value |= migrate_google_target)) |
+        .routing.roles = ((.routing.roles // {}) | with_entries(.value |= migrate_google_target))
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+    log_info "Migrated retired Gemini provider settings to Antigravity"
 }
 
 # v8.49.0: Validate model name for shell safety
@@ -130,16 +206,24 @@ validate_model() {
     return 0
 }
 
+validate_role_name() {
+    local role="$1"
+    [[ -z "$role" ]] && return 1
+    [[ "$role" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    [[ "$role" == .* || "$role" == *..* || "$role" == /* ]] && return 1
+    return 0
+}
+
 canonical_provider() {
     local provider
     provider="$(octo_normalize_provider_name "${1:-}")"
     case "$provider" in
         anthropic|sonnet) echo "claude" ;;
         openai) echo "codex" ;;
-        google) echo "gemini" ;;
+        google) echo "agy" ;;
         cursor|xai) echo "cursor-agent" ;;
         local) echo "ollama" ;;
-        *) echo "$provider" ;;
+        *) octo_provider_canonical "$provider" 2>/dev/null || echo "$provider" ;;
     esac
 }
 
@@ -243,7 +327,7 @@ cmd_provider_allowlist() {
     fi
     echo ""
     echo "  Session command examples:"
-    echo "    octo-model-config allow claude gemini --session"
+    echo "    octo-model-config allow claude agy --session"
     echo "    octo-model-config disable codex --session"
     echo "    octo-model-config clear-allowlist --session"
 }
@@ -310,7 +394,95 @@ cmd_clear_allowlist() {
 
 # v8.49.0: Invalidate model resolution cache after config changes
 clear_cache() {
+    [[ -n "${CACHE_FILE:-}" ]] || return 0
     rm -f "$CACHE_FILE"
+}
+
+validate_cost_mode() {
+    case "${1:-}" in
+        budget|standard|premium) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+configured_cost_mode() {
+    ensure_config
+    jq -r '.cost_mode // "standard"' "$CONFIG_FILE" 2>/dev/null || echo "standard"
+}
+
+cmd_cost_mode() {
+    local mode="${1:-status}"
+    ensure_config
+
+    if [[ "$mode" == "status" || -z "$mode" ]]; then
+        if [[ -n "${OCTOPUS_COST_MODE:-}" ]]; then
+            echo -e "${CYAN}Cost Mode${NC}"
+            echo "  ${OCTOPUS_COST_MODE} (environment: OCTOPUS_COST_MODE)"
+        else
+            echo -e "${CYAN}Cost Mode${NC}"
+            echo "  $(configured_cost_mode) (providers.json)"
+        fi
+        return 0
+    fi
+
+    if ! validate_cost_mode "$mode"; then
+        log_error "Invalid cost mode '$mode'. Valid modes: budget, standard, premium"
+        return 1
+    fi
+
+    local tmp_file="${CONFIG_FILE}.tmp.$$"
+    if ! jq --arg mode "$mode" '.cost_mode = $mode' "$CONFIG_FILE" > "$tmp_file" ||
+       ! mv "$tmp_file" "$CONFIG_FILE"; then
+        rm -f "$tmp_file"
+        log_error "Failed to persist cost mode"
+        return 1
+    fi
+
+    clear_cache
+    log_info "Cost mode → $mode"
+    echo "  Saved: $CONFIG_FILE"
+    if [[ -n "${OCTOPUS_COST_MODE:-}" && "${OCTOPUS_COST_MODE}" != "$mode" ]]; then
+        log_warn "OCTOPUS_COST_MODE=${OCTOPUS_COST_MODE} still overrides the saved mode in this environment"
+    fi
+}
+
+cmd_tier() {
+    local mode="${1:-}"
+    local provider="${2:-}"
+    local target="${3:-}"
+
+    if ! validate_cost_mode "$mode"; then
+        log_error "Invalid cost mode '$mode'. Valid modes: budget, standard, premium"
+        return 1
+    fi
+
+    provider="$(canonical_provider "$provider")"
+    if ! provider_known "$provider"; then
+        log_error "Unknown provider '${2:-}'. Valid: $KNOWN_PROVIDERS"
+        return 1
+    fi
+
+    if ! validate_model "$target"; then
+        log_error "Invalid tier target: '$target'"
+        return 1
+    fi
+    if ! automatic_target_allowed "$target" "$provider"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic cost tier"
+        return 1
+    fi
+
+    ensure_config
+    local tmp_file="${CONFIG_FILE}.tmp.$$"
+    if ! jq --arg mode "$mode" --arg provider "$provider" --arg target "$target" \
+        '.tiers[$mode][$provider] = $target' "$CONFIG_FILE" > "$tmp_file" ||
+       ! mv "$tmp_file" "$CONFIG_FILE"; then
+        rm -f "$tmp_file"
+        log_error "Failed to persist tier mapping"
+        return 1
+    fi
+
+    clear_cache
+    log_info "Cost tier ${mode}.${provider} → $target"
 }
 
 cmd_list() {
@@ -321,7 +493,7 @@ cmd_list() {
     # Environment overrides
     echo -e "\n${YELLOW}Environment Overrides:${NC}"
     local has_env=false
-    for var in OCTOPUS_CODEX_MODEL OCTOPUS_GEMINI_MODEL OCTOPUS_AGY_MODEL OCTOPUS_CURSOR_AGENT_MODEL OCTOPUS_PERPLEXITY_MODEL OCTOPUS_OPENCODE_MODEL OCTOPUS_COST_MODE OCTO_ALLOWED_PROVIDERS OCTOPUS_TRACE_MODELS; do
+    for var in OCTOPUS_CODEX_MODEL OCTOPUS_AGY_MODEL OCTOPUS_GROK_MODEL OCTOPUS_KIMI_MODEL OCTOPUS_CURSOR_AGENT_MODEL OCTOPUS_PERPLEXITY_MODEL OCTOPUS_OPENCODE_MODEL OCTOPUS_COST_MODE OCTO_ALLOWED_PROVIDERS OCTOPUS_TRACE_MODELS; do
         if [[ -n "${!var:-}" ]]; then
             echo "  $var=${!var}"
             has_env=true
@@ -347,7 +519,11 @@ cmd_list() {
 
     # Cost mode
     echo -e "\n${YELLOW}Cost Mode:${NC}"
-    echo "  ${OCTOPUS_COST_MODE:-standard} (set via OCTOPUS_COST_MODE env var)"
+    if [[ -n "${OCTOPUS_COST_MODE:-}" ]]; then
+        echo "  ${OCTOPUS_COST_MODE} (environment: OCTOPUS_COST_MODE)"
+    else
+        echo "  $(configured_cost_mode) (providers.json)"
+    fi
 
     # Provider allowlist
     echo -e "\n${YELLOW}Provider Allowlist:${NC}"
@@ -396,11 +572,29 @@ cmd_show_phases() {
             case "$phase" in
                 deliver|review|quick) default_target="codex:spark" ;;
                 security) default_target="codex:reasoning" ;;
-                research) default_target="gemini:default" ;;
+                research) default_target="agy" ;;
             esac
             printf "  %-12s %-25s %s\n" "$phase" "$default_target" "(default)"
         fi
     done
+}
+
+cmd_show_roles() {
+    ensure_config
+    echo -e "${CYAN}Role Routing Overrides${NC}"
+    echo "─────────────────────────────────────────────────"
+    printf "  %-28s %s\n" "Role" "Target"
+    echo "  ────────────────────────────────────────────────"
+
+    local roles
+    roles=$(jq -r '.routing.roles // {} | to_entries | sort_by(.key)[] | "\(.key)	\(.value)"' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ -z "$roles" ]]; then
+        echo "  (none — using provider/persona defaults)"
+    else
+        echo "$roles" | while IFS=$'	' read -r role target; do
+            printf "  %-28s %s\n" "$role" "$target"
+        done
+    fi
 }
 
 cmd_verify() {
@@ -408,7 +602,7 @@ cmd_verify() {
     log_info "Verifying model accessibility..."
 
     local errors=0
-    for cli in codex gemini claude opencode; do
+    for cli in codex agy claude opencode; do
         if command -v "$cli" &>/dev/null; then
             local model
             model=$(jq -r --arg p "$cli" '.providers[$p].default // "n/a"' "$CONFIG_FILE")
@@ -439,6 +633,7 @@ cmd_set() {
         provider="${provider_arg%%.*}"
         capability="${provider_arg#*.}"
     fi
+    provider="$(canonical_provider "$provider")"
 
     for arg in "${@:3}"; do
         [[ "$arg" == "--session" ]] && session=true
@@ -463,7 +658,17 @@ cmd_set() {
         exit 1
     fi
 
+    if [[ -n "$capability" ]] && ! automatic_target_allowed "$model" "$provider"; then
+        log_error "$model is explicit-only and cannot be assigned to an automatic capability"
+        exit 1
+    fi
+
     ensure_config
+
+    if [[ -z "$capability" ]] && ! automatic_target_allowed "$model" "$provider"; then
+        log_error "$model is explicit-only; use a one-command environment pin or an exact model-qualified seat"
+        exit 1
+    fi
 
     # v8.49.0: Use jq --arg for injection safety
     if [[ -n "$capability" ]]; then
@@ -496,6 +701,10 @@ cmd_route() {
         log_error "Invalid target: '$target'"
         exit 1
     fi
+    if ! automatic_target_allowed "$target"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic phase route"
+        exit 1
+    fi
 
     ensure_config
     # v8.49.0: Use jq --arg for injection safety
@@ -504,50 +713,64 @@ cmd_route() {
     clear_cache
 }
 
+cmd_route_role() {
+    local role="$1"
+    local target="$2"
+
+    [[ -z "$role" || -z "$target" ]] && { usage; exit 1; }
+
+    if ! validate_role_name "$role"; then
+        log_error "Invalid role: '$role'"
+        log_warn "Role names may contain only letters, digits, dot, underscore, and hyphen."
+        exit 1
+    fi
+
+    if ! validate_model "$target"; then
+        log_error "Invalid target: '$target'"
+        exit 1
+    fi
+    if ! automatic_target_allowed "$target"; then
+        log_error "$target is explicit-only and cannot be assigned to an automatic role route"
+        exit 1
+    fi
+
+    ensure_config
+    jq --arg r "$role" --arg t "$target" '.routing.roles[$r] = $t' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+    log_info "Routed role '$role' → '$target'"
+    clear_cache
+}
+
+cmd_unroute_role() {
+    local role="$1"
+
+    [[ -z "$role" ]] && { usage; exit 1; }
+
+    if ! validate_role_name "$role"; then
+        log_error "Invalid role: '$role'"
+        log_warn "Role names may contain only letters, digits, dot, underscore, and hyphen."
+        exit 1
+    fi
+
+    ensure_config
+    jq --arg r "$role" 'del(.routing.roles[$r])' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+    log_info "Removed role route override: $role"
+    clear_cache
+}
+
 cmd_models() {
     local filter="${1:-}"
     echo -e "${CYAN}Model Catalog${NC}"
     echo "───────────────────────────────────────────────────────────────────────────"
-    printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" "Model" "Ctx(K)" "Tools" "Image" "Reas" "Provider" "Tier" "Status"
-    echo "  ───────────────────────────────────────────────────────────────────────────"
+    printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %-10s %s\n" "Model" "Ctx(K)" "Tools" "Image" "Reas" "Provider" "Tier" "Policy" "Status"
+    echo "  ──────────────────────────────────────────────────────────────────────────────────────"
 
-    # Inline catalog (matches orchestrate.sh get_model_catalog)
-    local -a models=(
-        "gpt-5.4|400|yes|yes|no|codex|standard|active"
-        "gpt-5.4-pro|400|yes|yes|no|codex|premium|active"
-        "gpt-5.3-codex|400|yes|yes|no|codex|standard|active"
-        "gpt-5.2-codex|400|yes|yes|no|codex|standard|active"
-        "gpt-5.4-mini|400|yes|no|no|codex|budget|active"
-        "gpt-5.1-codex-max|400|yes|yes|no|codex|premium|active"
-        "o3|200|yes|no|yes|codex|premium|active"
-        "o3-mini|200|yes|no|yes|codex|budget|active"
-        "gemini-3.1-pro-preview|1000|yes|yes|no|gemini|premium|active"
-        "gemini-3-flash-preview|1000|yes|yes|no|gemini|budget|active"
-        "gemini-3-pro-image|1000|yes|yes|no|gemini|premium|active"
-        "gemini-3.1-flash-image|1000|yes|yes|no|gemini|budget|active"
-        "gemini-3-pro-image-preview|1000|yes|yes|no|gemini|premium|deprecated"
-        "claude-sonnet-4.6|200|yes|yes|no|claude|standard|active"
-        "claude-opus-4.8|1000|yes|yes|yes|claude|premium|active"
-        "claude-opus-4.7|1000|yes|yes|yes|claude|premium|legacy"
-        "claude-opus-4.6|200|yes|yes|yes|claude|premium|legacy"
-        "grok-4-20|200|yes|no|no|cursor-agent|standard|active"
-        "grok-4-20-thinking|200|yes|no|yes|cursor-agent|premium|active"
-        "composer-2-fast|200|yes|no|no|cursor-agent|standard|active"
-        "composer-2|200|yes|no|no|cursor-agent|premium|active"
-        "sonar-pro|128|no|no|no|perplexity|standard|active"
-        "sonar|128|no|no|no|perplexity|budget|active"
-        "z-ai/glm-5|203|yes|no|no|openrouter|standard|active"
-        "moonshotai/kimi-k2.5|262|yes|yes|no|openrouter|standard|active"
-        "deepseek/deepseek-r1-0528|164|yes|no|yes|openrouter|standard|active"
-        "opencode/deepseek-v4-flash-free|128|yes|no|no|opencode|budget|active"
-        "opencode/gpt-5.4|400|yes|yes|no|opencode|premium|active"
-        "opencode/gpt-5.4-mini|400|yes|no|no|opencode|budget|active"
-        "opencode/glm-5.1|203|yes|no|no|opencode|standard|active"
-    )
-
-    for entry in "${models[@]}"; do
-        local name ctx tools images reasoning provider tier status
-        IFS='|' read -r name ctx tools images reasoning provider tier status <<< "$entry"
+    local name catalog ctx tools images reasoning provider tier status policy selection
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        catalog="$(get_model_catalog "$name")"
+        IFS='|' read -r ctx tools images reasoning provider tier status <<< "$catalog"
+        policy="$(get_model_policy "$name")"
+        selection="${policy%%|*}"
 
         # Apply filter
         if [[ -n "$filter" ]]; then
@@ -561,22 +784,39 @@ cmd_models() {
             esac
         fi
 
-        printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %s\n" \
-            "$name" "${ctx}K" "$tools" "$images" "$reasoning" "$provider" "$tier" "$status"
-    done
+        printf "  %-24s %-8s %-6s %-6s %-5s %-10s %-8s %-10s %s\n" \
+            "$name" "${ctx}K" "$tools" "$images" "$reasoning" "$provider" "$tier" "$selection" "$status"
+    done < <(octo_model_ids)
     echo ""
     echo "  Filters: --tools, --images, --reasoning, --budget, --premium, or text search"
 }
 
 cmd_reset() {
     local provider="${1:-all}"
+    if [[ "$provider" != "all" ]]; then
+        provider="$(canonical_provider "$provider")"
+    fi
     if [[ "$provider" == "all" ]]; then
         rm -f "$CONFIG_FILE"
         ensure_config
         log_info "Reset all configuration to defaults"
     else
         ensure_config
-        jq --arg p "$provider" 'del(.providers[$p]) | del(.overrides[$p])' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp.$$" && mv "${CONFIG_FILE}.tmp.$$" "$CONFIG_FILE"
+        local reset_tmp="${CONFIG_FILE}.tmp.$$"
+        if ! jq --arg p "$provider" '
+            del(.providers[$p])
+            | del(.overrides[$p])
+            | .tiers = ((.tiers // {}) | with_entries(.value |= del(.[$p])))
+        ' "$CONFIG_FILE" > "$reset_tmp"; then
+            rm -f "$reset_tmp"
+            log_error "Failed to rewrite configuration while resetting provider: $provider"
+            return 1
+        fi
+        if ! mv "$reset_tmp" "$CONFIG_FILE"; then
+            rm -f "$reset_tmp"
+            log_error "Failed to install reset configuration for provider: $provider"
+            return 1
+        fi
         log_info "Reset configuration for provider: $provider"
     fi
     clear_cache
@@ -591,11 +831,16 @@ case "$COMMAND" in
     show)
         case "${1:-}" in
             phases) cmd_show_phases ;;
+            roles) cmd_show_roles ;;
             *) cmd_list ;;
         esac
         ;;
     set) cmd_set "$@" ;;
     route) cmd_route "$@" ;;
+    route-role|role-route) cmd_route_role "$@" ;;
+    unroute-role|role-unroute) cmd_unroute_role "$@" ;;
+    cost-mode|mode) cmd_cost_mode "$@" ;;
+    tier|set-tier) cmd_tier "$@" ;;
     reset) cmd_reset "$@" ;;
     models) cmd_models "$@" ;;
     providers|allowlist) cmd_provider_allowlist ;;

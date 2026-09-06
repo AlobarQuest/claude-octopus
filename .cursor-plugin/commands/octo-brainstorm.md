@@ -1,5 +1,6 @@
 ---
-description: "\"Start a creative thought partner brainstorming session\""
+description: "Start a creative thought partner brainstorming session"
+disable-model-invocation: true
 ---
 
 # /octo:brainstorm
@@ -65,7 +66,6 @@ set -euo pipefail
 
 echo "PROVIDER_CHECK_START"
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
-printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
@@ -73,6 +73,7 @@ printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo 
 printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
 printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
 printf "agy:%s\n" "$(command -v agy >/dev/null 2>&1 && echo available || echo missing)"
+printf "grok:%s\n" "$(command -v grok >/dev/null 2>&1 && { [ -n "${XAI_API_KEY:-}" ] || [ -f "${HOME}/.grok/auth.json" ]; } && echo available || echo missing)"
 echo "PROVIDER_CHECK_END"
 ```
 
@@ -82,8 +83,8 @@ Then render the provider banner from actual provider checks. Do not hand-write o
 status_cli() { command -v "$1" >/dev/null 2>&1 && echo "Available ✓" || echo "Not installed ✗"; }
 status_env() { [[ -n "${1:-}" ]] && echo "Configured ✓" || echo "Not configured ✗"; }
 codex_status="$(status_cli codex)"
-gemini_status="$(status_cli gemini)"
 agy_status="$(status_cli agy)"
+if command -v grok >/dev/null 2>&1 && { [ -n "${XAI_API_KEY:-}" ] || [ -f "${HOME}/.grok/auth.json" ]; }; then grok_status="Available ✓"; else grok_status="Not installed ✗"; fi
 opencode_status="$(status_cli opencode)"
 copilot_status="$(status_cli copilot)"
 qwen_status="$(status_cli qwen)"
@@ -95,8 +96,8 @@ cat <<BANNER
 
 Providers:
 🔴 Codex CLI: ${codex_status}
-🟡 Gemini CLI: ${gemini_status}
 🧭 Antigravity CLI: ${agy_status}
+🤖 Grok CLI (xAI): ${grok_status}
 🟤 OpenCode: ${opencode_status}
 🟢 Copilot CLI: ${copilot_status}
 🟠 Qwen CLI: ${qwen_status}
@@ -108,14 +109,14 @@ BANNER
 
 The rendered banner must look like this shape, with ACTUAL statuses:
 
-```
+```text
 🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-AI Brainstorm
 🔍 Brainstorm: [Topic being explored]
 
 Providers:
 🔴 Codex CLI: [Available ✓ / Not installed ✗]
-🟡 Gemini CLI: [Available ✓ / Not installed ✗]
 🧭 Antigravity CLI: [Available ✓ / Not installed ✗]
+🤖 Grok CLI (xAI): [Available ✓ / Not installed ✗]
 🟤 OpenCode: [Available ✓ / Not installed ✗]
 🟢 Copilot CLI: [Available ✓ / Not installed ✗]
 🟠 Qwen CLI: [Available ✓ / Not installed ✗]
@@ -142,43 +143,45 @@ TOPIC="[TOPIC]"
 ORCH="${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh"
 [[ -x "$ORCH" ]] || { echo "Octopus orchestrator not found: $ORCH"; exit 1; }
 ORCH_HELP="$("$ORCH" 2>&1 || true)"
-printf '%s\n' "$ORCH_HELP" | grep -q 'spawn <agent>' || { echo "Octopus orchestrator does not expose spawn"; exit 1; }
+printf '%s\n' "$ORCH_HELP" | grep -c 'spawn <agent>' >/dev/null || { echo "Octopus orchestrator does not expose spawn"; exit 1; }
 
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/octopus-brainstorm.XXXXXX")"
 trap 'rm -rf "$RUN_DIR"' EXIT
-FLEET_OUTPUT=$("${HOME}/.claude-octopus/plugin/scripts/helpers/build-fleet.sh" research standard "$TOPIC" 2>/dev/null || true)
-ADVISORS=$(echo "$FLEET_OUTPUT" | awk -F'|' '$1 !~ /^claude/ {print $1}' | paste -sd',' -)
-if [[ -z "$ADVISORS" ]]; then
-  fallback_advisors=()
-  command -v codex >/dev/null 2>&1 && fallback_advisors+=(codex)
-  command -v agy >/dev/null 2>&1 && fallback_advisors+=(agy)
-  command -v gemini >/dev/null 2>&1 && fallback_advisors+=(gemini)
-  ADVISORS=$(IFS=,; echo "${fallback_advisors[*]}")
+CONSULTATIVE_LIB="${HOME}/.claude-octopus/plugin/scripts/lib/consultative-advisors.sh"
+ADVISOR_SELECTOR="${HOME}/.claude-octopus/plugin/scripts/helpers/select-fleet-advisors.sh"
+source "$CONSULTATIVE_LIB" || exit 1
+HOST_CLAUDE_ALLOWED=false
+HOST_ADVISOR_SUCCESS=0
+if octo_consultative_host_allowed; then
+  HOST_CLAUDE_ALLOWED=true
+fi
+REQUIRED_EXTERNAL_ADVISORS=$(octo_consultative_required_external_count)
+if ! ADVISORS=$("$ADVISOR_SELECTOR" research standard "$TOPIC"); then
+  echo "No eligible external brainstorm advisors are available." >&2
+  exit 1
 fi
 
-IFS=',' read -r -a ADVISOR_LIST <<< "$ADVISORS"
-for advisor in "${ADVISOR_LIST[@]}"; do
-  case "$advisor" in
-    claude*|codex*|gemini*|agy*|antigravity|copilot*|qwen*|opencode*|ollama*|cursor-agent*|vibe*) ;;
-    *) echo "Skipping unsupported advisor: $advisor"; continue ;;
-  esac
-  safe_advisor=$(printf '%s' "$advisor" | tr -c '[:alnum:]_-' '_')
-  "$ORCH" spawn "$advisor" \
-    "Think creatively about: ${TOPIC}
+BRAINSTORM_PROMPT="Think creatively about: ${TOPIC}
 
-Your role: independent brainstorm advisor.
+You are {{advisor}}, an independent brainstorm advisor.
 - Suggest concrete, specific ideas.
 - Identify implementation tradeoffs and non-obvious constraints.
 - Include at least one unconventional approach.
 
-Be specific and creative. Avoid generic advice." \
-    > "${RUN_DIR}/octopus-brainstorm-${safe_advisor}.md" &
-done
-wait
+Be specific and creative. Avoid generic advice."
+if ! SUCCESSFUL_EXTERNAL_ADVISORS=$(octo_launch_advisors "$ORCH" "$ADVISORS" \
+    "$RUN_DIR" octopus-brainstorm- "$BRAINSTORM_PROMPT" "$REQUIRED_EXTERNAL_ADVISORS"); then
+  echo "The required external brainstorm advisors did not complete successfully." >&2
+  exit 1
+fi
 ```
 
-**Claude Agent** (always available — use Agent tool with run_in_background):
-```
+**Claude Agent**: Launch this advisor only when `HOST_CLAUDE_ALLOWED=true`. If
+Claude is disallowed, do not invoke the Agent tool. Set `HOST_ADVISOR_SUCCESS=1`
+only after the allowed host advisor completes with usable output; otherwise set
+it to `0`.
+
+```text
 Think creatively about: [TOPIC]
 
 Your role: Pattern spotter and paradox hunter.
@@ -191,16 +194,26 @@ Your role: Pattern spotter and paradox hunter.
 Be specific and creative. Avoid generic advice.
 ```
 
+After all allowed advisors finish, enforce the two-provider minimum:
+
+```bash
+if ! octo_consultative_provider_count_is_sufficient \
+    "$SUCCESSFUL_EXTERNAL_ADVISORS" "$HOST_ADVISOR_SUCCESS"; then
+  echo "Team brainstorm requires two successful, allowlisted providers." >&2
+  exit 1
+fi
+```
+
 #### Step 2d: Collect and Synthesize Perspectives
 
 Once all agents return, present results with provider indicators:
 
-```
+```text
 🔴 **Codex Ideas:**
 [Codex response summary — key ideas only, not full dump]
 
-🟡 **Gemini Ideas:**
-[Gemini response summary]
+🧭 **Antigravity Ideas:**
+[Antigravity response summary]
 
 🔵 **Claude Ideas:**
 [Claude response summary]
@@ -208,7 +221,7 @@ Once all agents return, present results with provider indicators:
 
 Then synthesize:
 
-```
+```text
 🐙 **Cross-Perspective Synthesis:**
 
 **Convergence** — Ideas that multiple providers surfaced:
@@ -242,7 +255,7 @@ Generate the same export format as Solo mode (see skill-thought-partner Phase 4)
 | Provider | Key Contribution | Unique Insight |
 |----------|-----------------|----------------|
 | 🔴 Codex | [Summary] | [What only Codex surfaced] |
-| 🟡 Gemini | [Summary] | [What only Gemini surfaced] |
+| 🧭 Antigravity | [Summary] | [What only Antigravity surfaced] |
 | 🔵 Claude | [Summary] | [What only Claude surfaced] |
 
 ### Cross-Provider Patterns

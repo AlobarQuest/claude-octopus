@@ -6,6 +6,15 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Provider disclosure below is derived from the registry, not hardcoded. This
+# prompt asks the user to approve spending their own money, and it previously
+# named only two providers — so a workflow dispatching grok, qwen, copilot,
+# perplexity, openrouter, agy, atlascloud, opencode, commandcode or cursor-agent
+# asked for approval without ever telling the user those seats would bill them.
+if ! declare -f octo_provider_org >/dev/null 2>&1; then
+    source "${SCRIPT_DIR}/lib/provider-registry.sh" 2>/dev/null || true
+fi
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -48,6 +57,12 @@ estimate_cost() {
             echo "\$0.01-0.50"
             ;;
     esac
+
+    # NOTE: the range above is per-workflow and does NOT scale with how many
+    # billed seats $providers names, nor with premium pins (Fable 5 and Opus 5
+    # Fast are $10/$50 per MTok — 2x standard). The argument is accepted and
+    # deliberately unused rather than silently implying it was accounted for.
+    # Callers must not present this as a per-provider total.
 }
 
 # Request background permission
@@ -79,16 +94,31 @@ request_background_permission() {
     echo "" >&2
 
     # Show which providers will be used
-    if echo "$providers" | grep -q "codex"; then
-        echo -e "  🔴 ${RED}Codex CLI${NC} - Uses your OPENAI_API_KEY" >&2
+    local _p _org _billed=0
+    for _p in $providers; do
+        case "$_p" in
+            claude|claude-sdk|claude-sonnet|claude-opus*)
+                echo -e "  🔵 ${CYAN}${_p}${NC} - Included with Claude Code" >&2
+                continue
+                ;;
+        esac
+        if declare -f octo_provider_org >/dev/null 2>&1; then
+            _org="$(octo_provider_org "$_p" 2>/dev/null || true)"
+        else
+            _org=""
+        fi
+        # Unknown providers are still disclosed. Staying silent about a seat
+        # because the registry has not caught up is the failure this replaced.
+        echo -e "  ⚠️  ${YELLOW}${_p}${NC} - billed to your ${_org:-provider} account" >&2
+        _billed=$((_billed + 1))
+    done
+    if [[ "$_billed" -eq 0 ]]; then
+        echo -e "  🔵 ${CYAN}Claude${NC} - Included with Claude Code" >&2
     fi
-    if echo "$providers" | grep -q "gemini"; then
-        echo -e "  🟡 ${YELLOW}Gemini CLI${NC} - Uses your GEMINI_API_KEY" >&2
-    fi
-    echo -e "  🔵 ${CYAN}Claude${NC} - Included with Claude Code" >&2
     echo "" >&2
 
-    echo -e "${CYAN}Estimated API cost: ${cost_estimate}${NC}" >&2
+    echo -e "${CYAN}Estimated API cost per provider: ${cost_estimate}${NC}" >&2
+    echo -e "(Per billed seat above; a multi-provider run costs roughly this times the number of seats)" >&2
     echo -e "(Depends on query complexity and response length)" >&2
     echo "" >&2
 
@@ -121,7 +151,7 @@ request_background_permission() {
 check_background_permission() {
     local workflow="$1"
     local autonomy_mode="${2:-supervised}"
-    local providers="${3:-codex gemini claude}"
+    local providers="${3:-codex agy claude}"
 
     local permission_result
     permission_result=$(request_background_permission "$workflow" "$autonomy_mode" "$providers")
@@ -160,19 +190,19 @@ log_background_end() {
 # Main command dispatcher
 case "${1:-}" in
     request)
-        request_background_permission "$2" "${3:-supervised}" "${4:-codex gemini claude}"
+        request_background_permission "$2" "${3:-supervised}" "${4:-codex agy claude}"
         ;;
     check)
-        check_background_permission "$2" "${3:-supervised}" "${4:-codex gemini claude}"
+        check_background_permission "$2" "${3:-supervised}" "${4:-codex agy claude}"
         ;;
     log-start)
-        log_background_start "$2" "${3:-codex gemini claude}"
+        log_background_start "$2" "${3:-codex agy claude}"
         ;;
     log-end)
         log_background_end "$2" "$3"
         ;;
     estimate)
-        estimate_cost "$2" "${3:-codex gemini claude}"
+        estimate_cost "$2" "${3:-codex agy claude}"
         ;;
     *)
         cat <<EOF
@@ -191,7 +221,7 @@ Commands:
 
 Workflows: discover, define, develop, deliver, embrace
 Autonomy: supervised, semi-autonomous, autonomous
-Providers: Space-separated list (e.g., "codex gemini claude")
+Providers: Space-separated list (e.g., "codex agy claude")
 
 EOF
         exit 1

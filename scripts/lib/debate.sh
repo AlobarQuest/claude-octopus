@@ -6,6 +6,22 @@ debate_label_upper() {
     printf '%s\n' "$1" | tr '[:lower:]' '[:upper:]'
 }
 
+# First ready provider for a release-default debate seat, skipping agents that
+# already hold a slot. Cursor CLI leads (Cursor-only setups), then the other
+# external CLIs; a Claude Opus seat is the last resort so the debate can still
+# run with distinct participants.
+_debate_pick_available_seat() {
+    local candidate
+    for candidate in cursor-agent codex agy copilot qwen opencode claude-opus; do
+        case " $* " in *" $candidate "*) continue ;; esac
+        if is_agent_available_v2 "$candidate" 2>/dev/null; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 debate_labels_match() {
     local label="$1"
     local label_upper="$2"
@@ -47,11 +63,12 @@ grapple_debate() {
     # The /octo:model-config wizard writes a "Debate participants" array to that
     # path; before this change there was no consumer. Slots A/B/C drive every
     # run_agent_sync call, prompt label, and synthesis attribution below.
-    # Default trio: codex, gemini, claude-sonnet (preserves prior behavior).
+    # Default trio: Codex, Antigravity, and Claude Sonnet.
     local agent_a="codex" label_a="Codex" label_a_upper="CODEX"
-    local agent_b="gemini" label_b="Gemini" label_b_upper="GEMINI"
+    local agent_b="agy" label_b="Antigravity" label_b_upper="ANTIGRAVITY"
     local agent_c="claude-sonnet" label_c="Sonnet" label_c_upper="SONNET"
 
+    local _debate_cfg_a=false _debate_cfg_b=false _debate_cfg_c=false
     local _debate_config_file="${HOME}/.claude-octopus/config/providers.json"
     if [[ -f "$_debate_config_file" ]] && command -v jq >/dev/null 2>&1; then
         local _participants _participant_count
@@ -77,9 +94,9 @@ grapple_debate() {
                 _label=$(agent_display_label "$_agent") || continue
                 _label_upper=$(agent_display_label_upper "$_agent") || continue
                 case "$_slot_idx" in
-                    0) agent_a="$_agent"; label_a="$_label"; label_a_upper="$_label_upper" ;;
-                    1) agent_b="$_agent"; label_b="$_label"; label_b_upper="$_label_upper" ;;
-                    2) agent_c="$_agent"; label_c="$_label"; label_c_upper="$_label_upper"; break ;;
+                    0) agent_a="$_agent"; label_a="$_label"; label_a_upper="$_label_upper"; _debate_cfg_a=true ;;
+                    1) agent_b="$_agent"; label_b="$_label"; label_b_upper="$_label_upper"; _debate_cfg_b=true ;;
+                    2) agent_c="$_agent"; label_c="$_label"; label_c_upper="$_label_upper"; _debate_cfg_c=true; break ;;
                 esac
                 _resolved_count=$((_resolved_count + 1))
                 _slot_idx=$((_slot_idx + 1))
@@ -90,6 +107,37 @@ grapple_debate() {
                 log INFO "Debate config had no valid participants; using defaults: $label_a ($agent_a) vs $label_b ($agent_b) vs $label_c ($agent_c)"
             fi
         fi
+    fi
+
+    # Availability fallback for release-default external seats. Slots taken from
+    # configuration are never overridden; every unconfigured slot is evaluated
+    # on its own, so a config naming only one participant still gets usable
+    # defaults, and both defaults are replaced when both are unavailable.
+    if declare -f is_agent_available_v2 >/dev/null 2>&1; then
+        local _slot_name _slot_agent _slot_cfg _replacement
+        for _slot_name in A B; do
+            if [[ "$_slot_name" == "A" ]]; then
+                _slot_agent="$agent_a"; _slot_cfg="$_debate_cfg_a"
+            else
+                _slot_agent="$agent_b"; _slot_cfg="$_debate_cfg_b"
+            fi
+            [[ "$_slot_cfg" == true ]] && continue
+            is_agent_available_v2 "$_slot_agent" 2>/dev/null && continue
+            if ! _replacement="$(_debate_pick_available_seat "$agent_a" "$agent_b" "$agent_c")"; then
+                log WARN "Debate: default participant '$_slot_agent' (slot ${_slot_name}) is unavailable and no replacement provider is ready"
+                continue
+            fi
+            log INFO "Debate: default participant '$_slot_agent' unavailable, seating $_replacement as participant ${_slot_name}"
+            if [[ "$_slot_name" == "A" ]]; then
+                agent_a="$_replacement"
+                label_a=$(agent_display_label "$_replacement")
+                label_a_upper=$(agent_display_label_upper "$_replacement")
+            else
+                agent_b="$_replacement"
+                label_b=$(agent_display_label "$_replacement")
+                label_b_upper=$(agent_display_label_upper "$_replacement")
+            fi
+        done
     fi
 
     # Keep debate attribution labels unique even when multiple configured
@@ -168,7 +216,7 @@ DEBATE INTEGRITY RULES (MANDATORY — follow these in every response):
 - EVIDENCE-BASED: Every claim (positive or negative) MUST cite a specific technical reason, not vague sentiment like 'feels cleaner' or 'seems better'.
 - PROPORTIONAL: A minor style issue is NOT a critical flaw. A fundamental architecture mistake is NOT a 'minor concern'. Calibrate severity honestly."
 
-    local codex_proposal gemini_proposal sonnet_proposal
+    local codex_proposal agy_proposal sonnet_proposal
     codex_proposal=$(run_agent_sync "$agent_a" "
 $no_explore_constraint
 
@@ -195,7 +243,7 @@ Be thorough and practical." 120 "implementer" "grapple")
         return 1
     fi
 
-    gemini_proposal=$(run_agent_sync "$agent_b" "
+    agy_proposal=$(run_agent_sync "$agent_b" "
 $no_explore_constraint
 
 You are formulating a HYPOTHESIS. Propose your best approach to this task:
@@ -213,7 +261,7 @@ Structure your response:
 $debate_integrity_rules
 Be thorough and practical." 120 "researcher" "grapple")
 
-    if [[ $? -ne 0 || -z "$gemini_proposal" ]]; then
+    if [[ $? -ne 0 || -z "$agy_proposal" ]]; then
         echo ""
         echo -e "${RED}❌ ${label_b} proposal generation failed${NC}"
         echo -e "   Check logs: ${LOGS_DIR}/"
@@ -260,7 +308,7 @@ Be thorough and practical." 120 "researcher" "grapple")
     fi
     echo ""
 
-    local codex_critique gemini_critique sonnet_critique
+    local codex_critique agy_critique sonnet_critique
 
     if [[ "$debate_mode" == "blinded" ]]; then
         # ── BLINDED MODE: Each model evaluates independently against criteria ──
@@ -291,7 +339,7 @@ $debate_integrity_rules" 90 "code-reviewer" "grapple")
             return 1
         fi
 
-        gemini_critique=$(run_agent_sync "$agent_b" "
+        agy_critique=$(run_agent_sync "$agent_b" "
 $no_explore_constraint
 
 You are an INDEPENDENT EVALUATOR. You have NOT seen any other model's proposals.
@@ -310,7 +358,7 @@ Provide your INDEPENDENT assessment:
 - EVALUATION CRITERIA: How should solutions be judged? Rate each criterion by importance (1-10).
 $debate_integrity_rules" 90 "security-auditor" "grapple")
 
-        if [[ $? -ne 0 || -z "$gemini_critique" ]]; then
+        if [[ $? -ne 0 || -z "$agy_critique" ]]; then
             echo -e "${RED}❌ ${label_b} evaluation failed${NC}"
             log ERROR "Grapple debate failed: ${label_b} blinded evaluation empty or error"
             return 1
@@ -351,7 +399,7 @@ $no_explore_constraint
 You are a FALSIFIER using Analysis of Competing Hypotheses (ACH). Your job is to DISPROVE these proposals by testing their stated assumptions.
 
 HYPOTHESIS 1 (from ${label_b}):
-$gemini_proposal
+$agy_proposal
 
 HYPOTHESIS 2 (from ${label_c}):
 $sonnet_proposal
@@ -375,7 +423,7 @@ $debate_integrity_rules" 90 "code-reviewer" "grapple")
         fi
 
         # ${label_b} falsifies ${label_a} + ${label_c} hypotheses
-        gemini_critique=$(run_agent_sync "$agent_b" "
+        agy_critique=$(run_agent_sync "$agent_b" "
 $no_explore_constraint
 
 You are a FALSIFIER using Analysis of Competing Hypotheses (ACH). Your job is to DISPROVE these proposals by testing their stated assumptions.
@@ -398,7 +446,7 @@ $principle_text}
 Focus on falsification, not preference. An approach with unfalsified assumptions is stronger than one that 'feels better'.
 $debate_integrity_rules" 90 "security-auditor" "grapple")
 
-        if [[ $? -ne 0 || -z "$gemini_critique" ]]; then
+        if [[ $? -ne 0 || -z "$agy_critique" ]]; then
             echo -e "${RED}❌ ${label_b} critique generation failed${NC}"
             log ERROR "Grapple debate failed: ${label_b} critique empty or error"
             return 1
@@ -414,7 +462,7 @@ HYPOTHESIS 1 (from ${label_a}):
 $codex_proposal
 
 HYPOTHESIS 2 (from ${label_b}):
-$gemini_proposal
+$agy_proposal
 
 For each hypothesis, attempt to falsify it:
 - ASSUMPTION TESTED: [which stated assumption you're challenging]
@@ -454,7 +502,7 @@ YOUR ORIGINAL PROPOSAL:
 $codex_proposal
 
 CRITIQUE FROM ${label_b_upper}:
-$gemini_critique
+$agy_critique
 
 CRITIQUE FROM ${label_c_upper}:
 $sonnet_critique
@@ -476,14 +524,14 @@ Be specific, technical, and constructive. Focus on improving the solution." 120 
             fi
 
             # ${label_b} defends and refines
-            local gemini_rebuttal
-            gemini_rebuttal=$(run_agent_sync "$agent_b" "
+            local agy_rebuttal
+            agy_rebuttal=$(run_agent_sync "$agent_b" "
 $no_explore_constraint
 
 You are DEFENDING your implementation against critiques from ${label_a} and ${label_c}.
 
 YOUR ORIGINAL PROPOSAL:
-$gemini_proposal
+$agy_proposal
 
 CRITIQUE FROM ${label_a_upper}:
 $codex_critique
@@ -499,7 +547,7 @@ Respond to both critiques by:
 $debate_integrity_rules
 Be specific, technical, and constructive. Focus on improving the solution." 120 "researcher" "grapple")
 
-            if [[ $? -ne 0 || -z "$gemini_rebuttal" ]]; then
+            if [[ $? -ne 0 || -z "$agy_rebuttal" ]]; then
                 echo ""
                 echo -e "${RED}❌ ${label_b} rebuttal generation failed${NC}"
                 echo -e "   Check logs: ${LOGS_DIR}/"
@@ -521,7 +569,7 @@ CRITIQUE FROM ${label_a_upper}:
 $codex_critique
 
 CRITIQUE FROM ${label_b_upper}:
-$gemini_critique
+$agy_critique
 
 Respond to both critiques by:
 1. Acknowledging valid points and proposing improvements
@@ -545,10 +593,10 @@ Be specific, technical, and constructive. Focus on improving the solution." 120 
 ### Rebuttal (Round $i)
 ${codex_rebuttal}"
 
-            gemini_proposal="${gemini_proposal}
+            agy_proposal="${agy_proposal}
 
 ### Rebuttal (Round $i)
-${gemini_rebuttal}"
+${agy_rebuttal}"
 
             sonnet_proposal="${sonnet_proposal}
 
@@ -559,15 +607,17 @@ ${sonnet_rebuttal}"
 
     # v8.20.0: Quorum consensus mode — check for 2/3 agreement before synthesis
     local synthesis=""
+    local synth_provider="claude"   # #498: synthesis attribution; moderator default
     if [[ "${OCTOPUS_CONSENSUS:-moderator}" == "quorum" ]]; then
         echo ""
         echo -e "${CYAN}[Quorum Mode] Checking for 2/3 agreement...${NC}"
         local quorum_result
-        quorum_result=$(apply_consensus "quorum" "$codex_proposal" "$gemini_proposal" "$sonnet_proposal" "$prompt")
+        quorum_result=$(apply_consensus "quorum" "$codex_proposal" "$agy_proposal" "$sonnet_proposal" "$prompt")
         if [[ -n "$quorum_result" && "$quorum_result" != "MODERATOR_MODE" ]]; then
             synthesis="## Quorum Result (2/3 Agreement)
 
 $quorum_result"
+            synth_provider="quorum"   # #498: attribute the majority path, not the moderator
             echo -e "${GREEN}  ✓ Quorum reached — using majority position${NC}"
         else
             echo -e "${YELLOW}  No quorum — falling back to moderator synthesis${NC}"
@@ -594,7 +644,7 @@ ${label_a_upper} PROPOSAL:
 $codex_proposal
 
 ${label_b_upper} PROPOSAL:
-$gemini_proposal
+$agy_proposal
 
 ${label_c_upper} PROPOSAL:
 $sonnet_proposal
@@ -603,7 +653,7 @@ ${label_a_upper}'S INDEPENDENT EVALUATION:
 $codex_critique
 
 ${label_b_upper}'S INDEPENDENT EVALUATION:
-$gemini_critique
+$agy_critique
 
 ${label_c_upper}'S INDEPENDENT EVALUATION:
 $sonnet_critique
@@ -647,7 +697,7 @@ ${label_a_upper} HYPOTHESIS:
 $codex_proposal
 
 ${label_b_upper} HYPOTHESIS:
-$gemini_proposal
+$agy_proposal
 
 ${label_c_upper} HYPOTHESIS:
 $sonnet_proposal
@@ -656,7 +706,7 @@ ${label_a_upper}'S FALSIFICATION ATTEMPTS (against ${label_b} + ${label_c}):
 $codex_critique
 
 ${label_b_upper}'S FALSIFICATION ATTEMPTS (against ${label_a} + ${label_c}):
-$gemini_critique
+$agy_critique
 
 ${label_c_upper}'S FALSIFICATION ATTEMPTS (against ${label_a} + ${label_b}):
 $sonnet_critique
@@ -724,7 +774,7 @@ Be specific and actionable. Format as markdown."
 $codex_proposal
 
 ### ${label_b} Proposal
-$gemini_proposal
+$agy_proposal
 
 ### ${label_c} Proposal
 $sonnet_proposal
@@ -737,7 +787,7 @@ $sonnet_proposal
 $codex_critique
 
 ### ${label_b}'s $(if [[ "$debate_mode" == "blinded" ]]; then echo "Evaluation"; else echo "Critique (of ${label_a} + ${label_c})"; fi)
-$gemini_critique
+$agy_critique
 
 ### ${label_c}'s $(if [[ "$debate_mode" == "blinded" ]]; then echo "Evaluation"; else echo "Critique (of ${label_a} + ${label_b})"; fi)
 $sonnet_critique
@@ -747,6 +797,13 @@ $sonnet_critique
 ## Round $rounds: Final Synthesis & Winner
 $synthesis
 EOF
+
+    # #498: emit a synthesis lifecycle event once the debate result is written.
+    # $synthesis is non-empty here (the failure branch returned above); attribute
+    # the path that produced it (moderator=claude or quorum). count=3 fixed seats.
+    if declare -f octo_event_emit >/dev/null 2>&1; then
+        octo_event_emit "synthesis" phase="debate" provider="$synth_provider" provider_label_kind="legacy-alias" executor_alias="$synth_provider" configured_provider="$(octo_provider_identity_from_agent_type "${synth_provider:-unknown}")" configured_model="$(get_agent_model "$synth_provider" "debate" "synthesizer" 2>/dev/null || echo unresolved)" runtime_provider="unknown" runtime_model="unknown" council_role="synthesizer" synthesis_strategy="debate" count="3" || true
+    fi
 
     # ═══════════════════════════════════════════════════════════════════════
     # Conclusion Ceremony (v7.13.2 - Issue #10)

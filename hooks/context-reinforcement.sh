@@ -4,7 +4,7 @@
 # conversation compression. Inspired by obra/superpowers v4.3.1 SessionStart pattern.
 #
 # Hook type: SessionStart
-# Returns: {"decision":"continue","additionalContext":"<CONTEXT-REINFORCEMENT>...</CONTEXT-REINFORCEMENT>"}
+# Returns: {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<CONTEXT-REINFORCEMENT>...</CONTEXT-REINFORCEMENT>"}
 
 set -euo pipefail
 # EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
@@ -23,11 +23,19 @@ else
 fi
 [[ -z "$INPUT" ]] && INPUT='{}'
 
-# Build compact enforcement context (~150 tokens vs ~750 previously)
+ACTIVATION_LIB="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/scripts/lib/hook-activation.sh"
+[[ -r "$ACTIVATION_LIB" ]] || exit 0
+# shellcheck source=../scripts/lib/hook-activation.sh
+source "$ACTIVATION_LIB" 2>/dev/null || exit 0
+octo_hook_workflow_active "$INPUT" || exit 0
+
+# Build compact enforcement context only for the active, matching workflow.
+# Native disable-model-invocation frontmatter is the hard activation gate; this
+# reminder only helps an explicitly started workflow survive compaction.
 read -r -d '' CONTEXT <<'RULES' || true
 <CONTEXT-REINFORCEMENT source="🐙 Octopus">
 Hard gates: no-stubs (verify before claiming done), test-first (failing test before code), debug-protocol (root cause before fix), orchestrate-only (use orchestrate.sh for research), factory-pipeline (no skipping steps).
-Human-only skills (never auto-trigger): factory, deep-research, security-audit, parallel, ship.
+All Octopus commands and skills are explicit-only. Continue only the active workflow recorded for this Claude session.
 </CONTEXT-REINFORCEMENT>
 RULES
 
@@ -36,5 +44,5 @@ ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dump
 
 # Return the hook response
 cat <<EOF
-{"decision":"continue","additionalContext":"${ESCAPED_CONTEXT}"}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"${ESCAPED_CONTEXT}"}}
 EOF

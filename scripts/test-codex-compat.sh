@@ -16,7 +16,6 @@ FAIL=0
 SKIP=0
 CODEX_INSTRUCTION_TARGETS="skills .claude/skills"
 [[ -d "$PLUGIN_ROOT/commands" ]] && CODEX_INSTRUCTION_TARGETS="$CODEX_INSTRUCTION_TARGETS commands"
-[[ -d "$PLUGIN_ROOT/.claude/commands" ]] && CODEX_INSTRUCTION_TARGETS="$CODEX_INSTRUCTION_TARGETS .claude/commands"
 
 test_cmd() {
     local name="$1"
@@ -106,6 +105,14 @@ echo "--- 2. Manifest + Output Structure (skills/) ---"
 test_cmd "Codex manifest is valid JSON" \
     "jq empty '$PLUGIN_ROOT/.codex-plugin/plugin.json'"
 
+test_output "Codex manifest preserves the installed marketplace selector" \
+    "jq -r '.name' '$PLUGIN_ROOT/.codex-plugin/plugin.json'" \
+    "^claude-octopus$"
+
+test_output "Release validation reports a missing Codex manifest clearly" \
+    "tmpdir=\$(mktemp -d); mkdir -p \"\$tmpdir/scripts\" \"\$tmpdir/.claude-plugin\"; cp '$SCRIPT_DIR/validate-release.sh' \"\$tmpdir/scripts/validate-release.sh\"; printf '%s\n' '{\"name\":\"octo\"}' > \"\$tmpdir/.claude-plugin/plugin.json\"; bash \"\$tmpdir/scripts/validate-release.sh\" 2>&1 || true; rm -rf \"\$tmpdir\"" \
+    "CRITICAL ERROR: Codex plugin manifest not found"
+
 test_output "Codex manifest points at portable root skills tree" \
     "jq -r '.skills' '$PLUGIN_ROOT/.codex-plugin/plugin.json'" \
     "^\\./skills/?$"
@@ -182,10 +189,6 @@ ALL_SRC="$SCRIPT_DIR/orchestrate.sh $SCRIPT_DIR/lib/*.sh"
 test_output "Codex host detected via CODEX_HOME" \
     "grep -l 'CODEX_HOME' $ALL_SRC | head -1 | xargs grep 'OCTOPUS_HOST.*codex'" \
     "codex"
-
-test_output "Gemini host detected via GEMINI_HOME" \
-    "grep -l 'GEMINI_HOME' $ALL_SRC | head -1 | xargs grep 'OCTOPUS_HOST.*gemini'" \
-    "gemini"
 
 test_output "Claude host detection preserved" \
     "grep 'OCTOPUS_HOST=\"claude\"' '$SCRIPT_DIR/orchestrate.sh'" \
