@@ -179,6 +179,12 @@ run_suite_with_timeout() {
             echo "PROBE-TIMEOUT ${test_name} exceeded ${limit}s -- diagnosing then killing"
             suite_timeout_dump "$pid" "$log"
             kill_tree "$pid"
+            if [[ "${OCTOPUS_ABORT_ON_SUITE_TIMEOUT:-0}" == "1" ]]; then
+                echo "PROBE-ABORT first stalled suite is ${test_name}; ending the run so this log is retained"
+                wait "$pid" 2>/dev/null || true
+                cat "$log" 2>/dev/null
+                exit 90
+            fi
             break
         fi
         sleep 1

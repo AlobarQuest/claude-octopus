@@ -1,0 +1,37 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# Slice 1's 19 suites run FAST one-job-per-suite (council 381s, rest <=25s) and
+# yet stall for >35 minutes when run in sequence in a single job. This runs them
+# in sequence and ABORTS at the first suite that exceeds the cap, so the job ends
+# and its log — including the process/lsof dump — is retained.
+name: Probe slice1 sequence
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sequence:
+    name: Slice 1 in sequence, abort at first stall
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run slice 1 in sequence
+        env:
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '600'
+          OCTOPUS_ABORT_ON_SUITE_TIMEOUT: '1'
+        run: ./tests/run-all-tests.sh --suite=unit/test-council-command.sh --suite=unit/test-agy-parallel-synthesis.sh --suite=unit/test-ci-changed.sh --suite=unit/test-command-prd-score.sh --suite=unit/test-cost-pricing.sh --suite=unit/test-dependency-wbs.sh --suite=unit/test-execution-mechanism.sh --suite=unit/test-grok-provider.sh --suite=unit/test-lockout-integration.sh --suite=unit/test-ollama-provider.sh --suite=unit/test-phases-1-2-3.sh --suite=unit/test-progress-tracking-consistency.sh --suite=unit/test-provider-registry-governance.sh --suite=unit/test-response-mode.sh --suite=unit/test-routing-features-consumers.sh --suite=unit/test-shell-safe-provider-snippets.sh --suite=unit/test-tangle-context-review-loop.sh --suite=unit/test-tangle-run-worktree.sh --suite=unit/test-v8.25.0-dark-factory.sh
