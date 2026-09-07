@@ -117,15 +117,7 @@ suite_timeout_dump() {
     for p in $pids; do
         ps -o pid=,ppid=,stat=,etime=,command= -p "$p" 2>/dev/null
     done
-    echo "PROBE-DUMP --- open files (lsof) ---"
-    for p in $pids; do
-        echo "PROBE-DUMP lsof pid=$p"
-        lsof -n -P -p "$p" 2>/dev/null | head -60
-    done
-    echo "PROBE-DUMP --- network sockets (lsof -i) ---"
-    for p in $pids; do
-        lsof -n -P -i -a -p "$p" 2>/dev/null | head -20
-    done
+    echo "PROBE-DUMP --- lsof deliberately omitted: it did not return on a wedged runner ---"
     echo "PROBE-DUMP --- suite log staleness (slow vs hung) ---"
     ls -l "$log" 2>/dev/null
     if [[ -f "$log" ]]; then

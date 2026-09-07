@@ -17,11 +17,11 @@ jobs:
   council:
     name: "council sample ${{ matrix.n }}"
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6]
+        n: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -36,7 +36,7 @@ jobs:
 
       - name: Run council alone, capped, aborting on stall
         env:
-          OCTOPUS_SUITE_TIMEOUT_SECONDS: '540'
+          OCTOPUS_SUITE_TIMEOUT_SECONDS: '600'
           OCTOPUS_ABORT_ON_SUITE_TIMEOUT: '1'
         run: |
           rc=0
