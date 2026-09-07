@@ -1,27 +1,137 @@
 # AI Agent Handoff
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
-Status: engineering method activation is implemented on `feat/method-activation`
-for the next release. Tracking: `oco-0u0`. The separate host-native automatic
-invocation investigation is `oco-ml7`; this change leaves hooks, host settings
-and implicit-invocation policy unchanged.
+Status: the five orchestrator review fixes from `a3f7847d` are prepared for
+v11.2.1 on `release/v11.2.1`, tracking `oco-c3t`. Fix implementation task
+`oco-v6s` is complete. Local verification and final code review passed.
+The separate host-native automatic invocation investigation remains `oco-ml7`;
+this change leaves hooks, host settings and implicit-invocation policy unchanged.
 
-The last published version, v11.1.0, is released from main squash commit
-`bfe1f42ff3362cb2d825cfbc44a62f3e16327452`. The release includes the workflow
-method and resumable setup work, proportional CI test tiers, committed-only
-changed-surface selection for clean CI checkouts, and deterministic release
-regression fixtures. Tag `v11.1.0`, the GitHub release, and the shared Claude
-and Codex marketplace entries are published at that exact commit.
+The last published version is v11.2.0, from main squash commit
+`4febbb11a4e0c8e82574505ce1114dddbbd11d3f`. It includes engineering method
+activation, independent review escalation and bounded engineering prototypes.
+The release candidate updates version and marketplace metadata to v11.2.1.
+
+Verified pushed checkpoint: `release/v11.2.1` matched
+`upstream/release/v11.2.1` at `627c18cfafcdc90b45211e189564d7d5010b87c2`.
+PR #1022 and its head SHA are the live source for later commits; a tracked file
+cannot contain the SHA of its own commit. This checkpoint does not claim that
+the subsequent native-cancellation changes are already pushed or published.
+
+The user authorized the remaining lifecycle fix in `oco-x38`. Native signal
+delivery now uses Linux PID handles or macOS audit tokens through one shared
+helper. Ledger tokens reach that helper, and registration rejects hosts that
+cannot support native cancellation before dispatch. Failure retains workflow
+registrations for retry. Teardown no longer launches process probes or waits
+the full grace period after workers exit. Duplicate shell tree traversal and
+an unused verification wrapper were removed.
+
+Focused verification passed native process control 20/20, orchestrator
+regressions 33/33, Probe cancellation 21/21, Tangle cancellation 16/16,
+background lifecycle 30/30, review aggregation 41/41 and PID capture 14/14.
+The native suite completed in about 0.1 seconds on macOS. Package dry-run
+includes both the ledger and shared process-control helpers with executable
+modes. A fresh Astra high review returned `NO ACTIONABLE FINDINGS` after the
+interruption, disappearing-process and failed-cleanup wait findings were fixed.
+The new full local matrix passed all 16 smoke, 326 unit and 8 integration
+suites. Final focused reruns cover the later review fixes. Contextual review
+also passed 100/100. The docs suite passed 143/143 after removing obsolete
+counters that printed a false failure section. Exact-head hosted checks and
+approval are still required before merge.
+
+The native-cancellation implementation was pushed as
+`a4120376468a1591bdda8ec1f06dbacdb8e89132`. Hosted Ubuntu unit checks passed
+all 325 ordinary suites, including 20 native process-control cases in 0.16
+seconds. Both macOS unit shards passed as well. Integration checks were still
+running at that checkpoint. A final shared PID-range guard rejects values
+outside native signed `pid_t` before conversion. Its boundary regression failed
+before the guard and passes afterward; native checks now pass 21/21 and
+orchestration checks pass 33/33. A fresh review of this bounded final change
+returned `NO ACTIONABLE FINDINGS`. Hosted checks must follow the final head.
+
+Separate follow-up `oco-imu` records the hosted review's large truncated
+specialist prompts and unavailable Codex verifier. Its PID-validation and
+prefix-pruning warnings were checked against the implementation and rejected;
+the shared validator and delimiter-qualified prune callers already cover them.
+
+The next review follow-up batches Probe and Tangle ledger verification into
+one interpreter invocation per workflow and retains verified tokens for native
+signal binding. If a parent exits during descendant admission, cleanup reports
+an incomplete result instead of claiming success or trusting a numeric PPID.
+Regression fixtures publish child markers atomically, and the native test
+wrapper uses the shared test framework. Focused Bash 3.2 checks passed 34/34
+orchestrator, 21/21 Probe, 16/16 Tangle, 4/4 v10 recovery and 100/100 contextual
+review cases. Native process-control checks passed 22/22. A fresh Astra high
+review returned `NO ACTIONABLE FINDINGS`. The final full local matrix passed
+all 16 smoke, 326 unit and 8 integration suites. Exact-head hosted checks and
+approval remain required before merge.
 
 Tracking: use the repository issue tracker and checked-in implementation
 documentation as the source of truth. Do not put private checkout paths,
 credentials, or host-specific state in this public handoff.
 
-Next action: merge and release the method activation branch through the normal
-delivery process. Use the focused selector for ordinary plugin PRs. Keep shared CI,
-unknown, or safety-net changes fail-closed to the complete core matrix; main,
-scheduled, manual, merge, and release paths retain deep council coverage.
+Next action: pass the release PR checks and review gate, squash-merge, verify
+the exact main commit, then tag and publish v11.2.1 and sync the shared
+marketplaces. Do not claim publication until those steps are verified.
+Shared runtime changes retain the full local matrix.
+
+Release preparation passed generated-file checks, README release sync 11/11,
+release workflow regressions 11/11, all 16 smoke suites and plugin assembly
+validation. A separate GPT-6 Astra high review of the metadata-only changes
+returned `NO ACTIONABLE FINDINGS`. The README introduction no longer assigns
+the original engineering-method additions to each new patch version.
+The first hosted portability pass flagged the intentionally pre-expanded EXIT
+trap under ShellCheck 0.9.0. A line-local SC2064 suppression documents why
+Bash 3.2 requires the captured arguments; it changes no runtime behavior.
+
+Hosted review on PR #1022 identified missing identity checks in workflow
+cancellation. Probe, Tangle and scoped review cleanup now verify ledger
+identities; active PID lists also require a current matching task registration.
+Probe drops rejected PIDs before its later wait and heartbeat cleanup.
+The worker-ownership pipeline consumes the full job listing under pipefail.
+Concurrent-retirement coverage now removes an existing row, and CI-mode
+coverage fails if its extracted initialization code is empty.
+These regressions failed before correction. Focused checks passed 30/30
+orchestrator cases, 21/21 Probe cancellation cases, 16/16 Tangle cancellation
+cases, 100/100 contextual-review cases and 30/30 background lifecycle cases.
+Hosted checks must be rerun on the final follow-up commit before merge.
+The follow-up full local matrix passed all 16 smoke suites and 324/325 unit
+suites. The remaining v10 cancellation fixture still wrote a legacy ledger row;
+it now registers its real worker through the shared helper and passes 4/4.
+The remaining live-worker marker fixture uses the same helper and passes 4/4.
+All 8 integration suites passed after those fixture corrections. Production
+code is unchanged from the final reviewed cancellation follow-up.
+
+## Orchestrator review fixes
+
+- Cancellation checks the worker's recorded process identity and skips legacy
+  or stale entries. Workers register before spawn returns and retire their exact
+  entry on exit. Registration, retirement and workflow pruning share one
+  portable lock, preserving concurrent tasks.
+- The legacy release command validates its arguments and delegates to
+  `release.sh`, including its failure status. Dry-run never invokes the backend.
+- Probe recovery reaches existing results and empty-directory guidance without
+  failing an `ls` pipeline when no synthesis marker exists.
+- Workflow summaries resolve provider, phase and role through the dispatch
+  configuration, including Tangle coding and reasoning overrides.
+- CI initialization preserves Jenkins, background-disabled hosts and explicit
+  unattended mode.
+- Focused checks passed: orchestrator regressions 16/16, workflow initialization
+  6/6, background lifecycle 30/30, Tangle cancellation 16/16 and probe
+  cancellation 21/21. Release workflow checks passed 11/11. Shell syntax,
+  error-level ShellCheck and diff whitespace checks passed.
+- The first fresh Codex review identified startup acknowledgement, shared
+  pruning locks and Tangle operation mapping gaps. All three were corrected
+  and covered by the focused checks above. A fresh GPT-6 Astra high review of
+  the corrected patch returned `NO ACTIONABLE FINDINGS`.
+- `make ci-changed` selected the full matrix and exited successfully: 16 smoke,
+  325 unit and 8 integration suites passed. Focused reruns above cover the
+  refinements made after the full run began. `make sync-check` passed; npm's
+  package dry-run includes both PID-ledger helpers. Existing file modes are
+  unchanged.
+- Provider execution tests use local fixtures. No live-provider compatibility
+  result, merge or new release is claimed by these checks.
 
 ## Method activation evidence
 
