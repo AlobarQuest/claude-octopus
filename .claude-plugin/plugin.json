@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "11.0.1",
-  "description": "v11.0.1 \u2014 Remove the unused OpenClaw integration and simplify MCP setup. Run /octo:setup.",
+  "version": "11.2.0",
+  "description": "v11.2.0 \u2014 Method-aware workflows, clearer independent review escalation, and bounded engineering prototypes. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"
@@ -66,6 +66,7 @@
     "./skills/skill-parallel-agents",
     "./skills/skill-prd",
     "./skills/skill-pressure-test",
+    "./skills/skill-prototype",
     "./skills/skill-resume",
     "./skills/skill-review-response",
     "./skills/skill-rollback",

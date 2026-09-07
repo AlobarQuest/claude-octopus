@@ -78,6 +78,27 @@ else
     test_fail "missing comparison base did not fail closed: $missing_base_plan"
 fi
 
+test_case "unit-only fallback does not expand into integration work"
+unit_only_plan="$(bash "$CI_CHANGED" --list --unit-only --skip-smoke --changed 'scripts/orchestrate.sh' 2>&1 || true)"
+if grep -q '^Mode: full$' <<< "$unit_only_plan" &&
+   grep -q '^Command: make test-unit$' <<< "$unit_only_plan" &&
+   ! grep -q '^Command: make ci-local$' <<< "$unit_only_plan"; then
+    test_pass
+else
+    test_fail "unit-only fallback did not remain unit-scoped: $unit_only_plan"
+fi
+
+test_case "focused unit-only selection excludes integration suites"
+unit_only_focused_plan="$(bash "$CI_CHANGED" --list --unit-only --skip-smoke --changed 'skills/skill-debug/SKILL.md' 2>&1 || true)"
+unit_only_selected="$(sed -n '/^Selected suites:/,$p' <<< "$unit_only_focused_plan")"
+if grep -q '^Mode: focused$' <<< "$unit_only_focused_plan" &&
+   grep -q 'tests/unit/test-public-reference-integrity.sh' <<< "$unit_only_selected" &&
+   ! grep -q 'tests/integration/' <<< "$unit_only_selected"; then
+    test_pass
+else
+    test_fail "focused unit-only selection leaked integration suites: $unit_only_focused_plan"
+fi
+
 test_case "automatic base selection never narrows to the previous commit"
 if ! grep -q 'BASE_REF="HEAD~1"' "$CI_CHANGED"; then
     test_pass
@@ -93,6 +114,29 @@ if grep -q '^Mode: focused$' <<< "$harness_plan" &&
     test_pass
 else
     test_fail "known harness-local artifact changed the source-test scope: $harness_plan"
+fi
+
+test_case "committed-only mode ignores CI chmod noise"
+helper_path="$PROJECT_ROOT/tests/helpers/grep-octopus.sh"
+helper_was_executable=false
+[[ -x "$helper_path" ]] && helper_was_executable=true
+tracked_mode="$(git -C "$PROJECT_ROOT" ls-files --stage -- tests/helpers/grep-octopus.sh | awk '{print $1}')"
+case "$tracked_mode" in
+    100644) chmod +x "$helper_path" ;;
+    100755) chmod -x "$helper_path" ;;
+    *) test_fail "unexpected tracked mode for $helper_path: ${tracked_mode:-missing}" ;;
+esac
+committed_only_plan="$(bash "$CI_CHANGED" --list --committed-only --base HEAD 2>&1 || true)"
+if [[ "$helper_was_executable" == "true" ]]; then
+    chmod +x "$helper_path"
+else
+    chmod -x "$helper_path"
+fi
+if ! grep -q 'tests/helpers/grep-octopus.sh' <<< "$committed_only_plan" &&
+   grep -q '^Mode: focused$' <<< "$committed_only_plan"; then
+    test_pass
+else
+    test_fail "committed-only selection included worktree-only mode noise: $committed_only_plan"
 fi
 
 test_case "changed test suites select themselves"
@@ -231,13 +275,20 @@ else
     test_fail "changed-scope command or iterative versus final guidance is missing"
 fi
 
-test_case "GitHub CI retains authoritative full coverage"
-if grep -Fq 'run: ./tests/run-all.sh unit --shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+test_case "GitHub CI balances focused PR coverage with full non-PR coverage"
+if grep -Fq 'unit-focused:' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq 'run: ./scripts/ci-changed.sh --base "$BASE_SHA" --unit-only --skip-smoke --committed-only' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq "needs.classify-changes.outputs.full_unit != 'true'" "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq 'unit-full:' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq "needs.classify-changes.outputs.full_unit == 'true'" "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq 'run: ./tests/run-all.sh unit --exclude=unit/test-council-command.sh --shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq 'unit-deep:' "$PROJECT_ROOT/.github/workflows/test.yml" &&
+   grep -Fq './tests/run-all-tests.sh --suite=unit/test-council-command.sh' "$PROJECT_ROOT/.github/workflows/test.yml" &&
    grep -q 'run: make test-integration' "$PROJECT_ROOT/.github/workflows/test.yml" &&
    ! grep -q 'make ci-changed' "$PROJECT_ROOT/.github/workflows/test.yml"; then
     test_pass
 else
-    test_fail "GitHub CI no longer runs the full unit matrix and integration job"
+    test_fail "GitHub CI no longer separates focused PR coverage from the full non-PR unit matrix"
 fi
 
 test_summary

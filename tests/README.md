@@ -12,7 +12,7 @@ make test-deps
 # Select focused suites from the files changed on this branch.
 make ci-changed
 
-# Match the required GitHub checks: generated files, smoke, unit, integration.
+# Match the complete local release gate: generated files, smoke, unit, integration.
 make ci-local
 
 # Run one suite while iterating.
@@ -32,13 +32,13 @@ execute locally. CI performs this setup before unit and symlink-path suites.
 | Category | Purpose | Command |
 | --- | --- | --- |
 | `smoke` | Fast syntax, metadata, registration, and safety checks | `make test-smoke` |
-| `unit` | Hermetic behavior and contract tests | `make test-unit` |
+| `unit` | Hermetic behavior and contract tests | `make test-unit` / `make test-unit-deep` |
 | `integration` | Cross-component workflows with local fixtures | `make test-integration` |
 | `root` | Legacy suites still awaiting relocation or retirement; not a CI gate | `make test-root` |
 | `live` | Opt-in checks that may invoke installed providers and incur cost | `make test-live` |
 
-The main runner also supports `--fail-fast`, repeatable `--suite=PATH`, and
-deterministic `--shard-index=N --shard-count=N` flags. Run
+The main runner also supports `--fail-fast`, repeatable `--suite=PATH` and
+`--exclude=PATH`, and deterministic `--shard-index=N --shard-count=N` flags. Run
 `./tests/run-all-tests.sh --help` for the current interface.
 
 ## Adding a test
@@ -70,6 +70,18 @@ behavior test or claim that model output is deterministic.
 manifest, or unmapped file changes. A focused pass is enough for ordinary
 branch pushes when the selector remains focused. Before merge or release, run
 `make ci-local` regardless of the focused result.
+
+`make test-unit` is the core unit lane used for fast feedback and ordinary CI;
+it excludes the slow council lifecycle contract, whose public CLI contracts are
+covered by smoke tests on every heavy run. `make test-unit-deep` restores the
+complete unit suite, and `make ci-local` uses that complete lane before merge
+or release. Ordinary pull requests use the changed-surface selector on one
+Linux runner; shared CI, runner, generator, and orchestration changes fail
+closed to the cross-platform core matrix. Main, scheduled, manually dispatched,
+and merge-queue runs add the explicit deep council lane. Smoke, portability,
+packaging, symlink, and integration checks remain separate gates because they
+exercise different plugin contracts. This keeps routine plugin changes fast
+without making deep validation optional for release-quality runs.
 
 Live tests are never part of the default or required matrix. Run them only when
 the change requires real-provider evidence and you intend to spend the

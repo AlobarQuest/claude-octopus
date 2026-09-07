@@ -40,9 +40,10 @@ jobs:
     outputs:
       heavy_tests: ${{ steps.classify.outputs.heavy_tests }}
       fast_path: ${{ steps.classify.outputs.fast_path }}
+      full_unit: ${{ steps.classify.outputs.full_unit }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -58,6 +59,7 @@ jobs:
           else
             echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
             echo "fast_path=false" >> "$GITHUB_OUTPUT"
+            echo "full_unit=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -69,6 +71,7 @@ jobs:
           fi
 
           fast_path=true
+          full_unit=false
           while IFS= read -r file; do
             case "$file" in
               package.json|README.md|CHANGELOG.md|docs/*|.claude-plugin/plugin.json|.claude-plugin/marketplace.json|.codex-plugin/plugin.json|.cursor-plugin/plugin.json|.factory-plugin/plugin.json|.factory-plugin/marketplace.json)
@@ -77,14 +80,21 @@ jobs:
                 fast_path=false
                 ;;
             esac
+            case "$file" in
+              .github/workflows/*|Makefile|scripts/orchestrate.sh|scripts/ci-changed.sh|scripts/lib/agent-sync.sh|scripts/lib/heartbeat.sh|scripts/lib/council.sh|scripts/lib/session.sh|scripts/lib/workflows.sh|scripts/lib/spawn.sh|scripts/lib/agents.sh|scripts/lib/dispatch.sh|scripts/build-*|scripts/sync-*|scripts/gen-*|scripts/validate-*|tests/changed-scope.tsv|tests/run-all*.sh|config/*)
+                full_unit=true
+                ;;
+            esac
           done <<< "$changed"
 
           if [[ "$fast_path" == "true" ]]; then
             echo "heavy_tests=false" >> "$GITHUB_OUTPUT"
             echo "fast_path=true" >> "$GITHUB_OUTPUT"
+            echo "full_unit=false" >> "$GITHUB_OUTPUT"
           else
             echo "heavy_tests=true" >> "$GITHUB_OUTPUT"
             echo "fast_path=false" >> "$GITHUB_OUTPUT"
+            echo "full_unit=$full_unit" >> "$GITHUB_OUTPUT"
           fi
 
   vendor-freshness:
@@ -262,8 +272,47 @@ jobs:
           path: /tmp/test_*.log
           retention-days: 7
 
-  unit:
-    name: Unit Tests (${{ matrix.label }})
+  # Ordinary pull requests use the changed-surface selector on one Linux
+  # runner. Shared CI/runner changes set full_unit and retain the complete
+  # matrix, so changing the safety net cannot narrow the safety net.
+  unit-focused:
+    name: Unit Tests (focused)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [classify-changes, smoke, portability-lint]
+    if: needs.classify-changes.outputs.heavy_tests == 'true' && github.event_name == 'pull_request' && needs.classify-changes.outputs.full_unit != 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          chmod +x scripts/ci-changed.sh
+          chmod +x tests/**/*.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run changed-surface unit tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/ci-changed.sh --base "$BASE_SHA" --unit-only --skip-smoke --committed-only
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: focused-unit-test-logs
+          path: /tmp/test_*.log
+          retention-days: 7
+
+  unit-full:
+    name: Unit Tests (full, ${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     # The unsharded macOS matrix crossed 25 minutes in run 33899702427. Two
     # duration-weighted deterministic shards preserve full coverage and avoid
@@ -271,7 +320,7 @@ jobs:
     # Ubuntu remains one complete control run.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     needs: [classify-changes, smoke, portability-lint]
-    if: needs.classify-changes.outputs.heavy_tests == 'true'
+    if: needs.classify-changes.outputs.heavy_tests == 'true' && (github.event_name != 'pull_request' || needs.classify-changes.outputs.full_unit == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -305,8 +354,8 @@ jobs:
       - name: Install adapter test dependencies
         run: make test-deps
 
-      - name: Run unit tests
-        run: ./tests/run-all.sh unit --shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}
+      - name: Run core unit tests
+        run: ./tests/run-all.sh unit --exclude=unit/test-council-command.sh --shard-index=${{ matrix.shard_index }} --shard-count=${{ matrix.shard_count }}
 
       - name: Upload test results
         if: always()
@@ -321,6 +370,50 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unit-test-logs-${{ matrix.os }}-${{ matrix.shard_index }}
+          path: /tmp/test_*.log
+          retention-days: 7
+
+  # The council contract exercises real orchestration lifecycles and is the
+  # dominant unit-test duration. Smoke tests cover its public CLI contracts on
+  # every heavy run; this deeper contract remains an explicit release-quality
+  # check on main, nightly, manual, and merge-queue runs rather than extending
+  # every ordinary PR and every cross-platform core shard.
+  unit-deep:
+    name: Unit Tests (deep council)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [classify-changes, smoke, portability-lint]
+    if: needs.classify-changes.outputs.heavy_tests == 'true' && github.event_name != 'pull_request' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || github.ref == 'refs/heads/main')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          chmod +x tests/**/*.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run deep council contract
+        run: ./tests/run-all-tests.sh --suite=unit/test-council-command.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: deep-council-test-results
+          path: test-results*.xml
+          retention-days: 30
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: deep-council-test-logs
           path: /tmp/test_*.log
           retention-days: 7
 
@@ -403,19 +496,29 @@ jobs:
   unit-required:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: [classify-changes, unit, symlinked-path]
+    needs: [classify-changes, unit-focused, unit-full, unit-deep, symlinked-path]
     if: always()
     steps:
       - name: Verify unit matrix passed
         run: |
           if [[ "${{ needs.classify-changes.outputs.heavy_tests }}" == "false" ]]; then
             echo "Fast path: skipping unit matrix for release/docs-only changes."
-          elif [[ "${{ needs.unit.result }}" != "success" ]]; then
-            echo "Unit matrix result: ${{ needs.unit.result }}"
-            exit 1
-          elif [[ "${{ needs.symlinked-path.result }}" != "success" ]]; then
-            echo "Symlinked-path result: ${{ needs.symlinked-path.result }}"
-            exit 1
+          else
+            if [[ "${{ github.event_name }}" == "pull_request" && "${{ needs.classify-changes.outputs.full_unit }}" != "true" ]]; then
+              unit_result="${{ needs.unit-focused.result }}"
+            else
+              unit_result="${{ needs.unit-full.result }}"
+            fi
+            if [[ "$unit_result" != "success" ]]; then
+              echo "Unit matrix result: $unit_result"
+              exit 1
+            elif [[ "${{ needs.symlinked-path.result }}" != "success" ]]; then
+              echo "Symlinked-path result: ${{ needs.symlinked-path.result }}"
+              exit 1
+            elif [[ "${{ github.event_name }}" != "pull_request" && ("${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" || "${{ github.ref }}" == "refs/heads/main") && "${{ needs.unit-deep.result }}" != "success" ]]; then
+              echo "Deep council result: ${{ needs.unit-deep.result }}"
+              exit 1
+            fi
           fi
 
   integration-heavy:
@@ -423,7 +526,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [classify-changes, unit-required]
-    if: needs.classify-changes.outputs.heavy_tests == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+    if: always() && needs.classify-changes.outputs.heavy_tests == 'true' && needs.unit-required.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
 
     steps:
       - name: Checkout code
@@ -475,7 +578,7 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [smoke-required, unit-required, integration, portability-lint, package-integrity]
+    needs: [smoke-required, unit-required, integration, portability-lint, package-integrity, unit-deep]
     if: always()
 
     steps:
@@ -493,6 +596,7 @@ jobs:
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Smoke | ${{ needs.smoke-required.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Unit | ${{ needs.unit-required.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deep council | ${{ needs.unit-deep.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration | ${{ needs.integration.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Portability | ${{ needs.portability-lint.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Package | ${{ needs.package-integrity.result }} |" >> "$GITHUB_STEP_SUMMARY"

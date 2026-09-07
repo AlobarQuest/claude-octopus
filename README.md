@@ -13,7 +13,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 <p align="center">
   <a href="https://claude.ai"><img src="https://img.shields.io/badge/Claude-Built_with_AI-c96442?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwbTAgMS44YTEuMiAxLjIgMCAwIDEgLjg1LjM1bDEuNSA0LjVhLjYuNiAwIDAgMCAuMzUuMzVsNC41IDEuNWExLjIgMS4yIDAgMCAxIDAgMi4yN2wtNC41IDEuNWEuNi42IDAgMCAwLS4zNS4zNWwtMS41IDQuNWExLjIgMS4yIDAgMCAxLTIuMjcgMGwtMS41LTQuNWEuNi42IDAgMCAwLS4zNS0uMzVsLTQuNS0xLjVhMS4yIDEuMiAwIDAgMSAwLTIuMjdsNC41LTEuNWEuNi42IDAgMCAwIC4zNS0uMzVsMS41LTQuNUExLjIgMS4yIDAgMCAxIDEyIDMuOCIvPjwvc3ZnPg==&labelColor=333" alt="Built with Claude"></a>
   <a href="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml"><img src="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/Version-11.0.1-blue" alt="Version 11.0.1">
+  <img src="https://img.shields.io/badge/Version-11.2.0-blue" alt="Version 11.2.0">
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.14+_required-blueviolet" alt="Requires Claude Code v2.1.14+">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
@@ -24,9 +24,9 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 
 ⚡ **Spec in, software out.** Dark Factory mode takes a spec and autonomously runs the full pipeline — research, define, develop, deliver. You review the output, not every step.
 
-🔄 **Four-phase methodology, not just tools.** Every task moves through Discover → Define → Develop → Deliver, with quality gates between phases. Other orchestrators give you infrastructure. Octopus gives you the workflows.
+🔄 **Choose the workflow the task needs.** Use a focused method for architecture, debugging, or TDD. Use `/octo:embrace` for Discover → Define → Develop → Deliver, with quality gates between phases.
 
-🐙 **31 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **53 commands** (slash commands you type), **62 skills** (reusable workflow modules). Explicit workflows select the experts they need; ordinary Claude requests do not activate Octopus.
+🐙 **31 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **53 commands** (slash commands you type), **63 skills** (reusable workflow modules). Explicit workflows select the experts they need; ordinary Claude requests do not activate Octopus.
 
 🐙 **Works with just Claude. Adds up to twelve external provider integrations.** Zero external providers are needed to start. Add them one at a time — each becomes available when detected and runs only inside an explicit workflow.
 
@@ -36,8 +36,20 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 
 ## What's New
 
+### Engineering methods
+
+Version 11.2.0 added eight engineering methods adapted from
+[Matt Pocock's skills](THIRD_PARTY_NOTICES.md). Routine architecture, TDD, and
+debugging use your current host. Ask for an independent opinion when a reviewer
+would help. Plans capture domain terms and blocking decisions, compare interface
+designs, and can propose a time-limited prototype.
+
+Setup can resume an interrupted configuration and rechecks readiness before
+reporting success. See [workflow methods](docs/WORKFLOW-METHODS.md)
+for usage and [the changelog](CHANGELOG.md) for release details.
+
 <!-- BEGIN CURRENT RELEASE -->
-> 🆕 **v11.0.1 — Remove the unused OpenClaw integration and simplify MCP setup.**
+> 🆕 **v11.2.0 — Method-aware workflows, clearer independent review escalation, and bounded engineering prototypes.**
 >
 > **Default roster:** Claude Opus 5 leads architecture, planning, security reasoning, and final judgment; GPT-5.6 Sol is the independent implementation/review peer; Claude Sonnet 5 is the standard Claude seat; Fable 5.1 remains an opt-in judgment escalation. Existing model pins and provider configuration still win. See [the routing strategy](docs/MODEL-ROUTING-STRATEGY.md).
 <!-- END CURRENT RELEASE -->
@@ -58,7 +70,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 
 | Version | Best Features |
 |---------|--------------|
-| **v11.0.1** (new) | Remove the unused OpenClaw integration and simplify MCP setup. |
+| **v11.2.0** (new) | Method-aware workflows, clearer independent review escalation, and bounded engineering prototypes. |
 | **v9.50** | **Claude Code 2026 compatibility layer** — routines manifest (schedule + GitHub-event automations), SubagentStop quality/cost gate, `/octo:usage` cost attribution, `worktree.bgIsolation` opt-out, Claude Agent SDK seat (introduced with Opus 4.8 and now following the current Opus 5 default), starter skills pack, `/plugin browse` manifest with projected context cost. |
 | **v9.41** | **`/octo:council`** promoted to first-class workflow — structured multi-LLM deliberation with goal modes, adversarial/red-team styles, benchmark-aware persona routing, quorum and critical-veto gates, budget preflight, and gated worktree handoff for approved implementation plans. |
 | **v9** | Up to 10 external provider integrations (Codex, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OrcaRouter, OpenCode, and Grok) alongside the Claude Code host. Structured provider debates and configurable multi-LLM councils. Explicit-only activation by default, with an optional smart router. Agent summary tables show which providers actually contributed. Provider-aware prompt preflight prevents silent oversize failures. Research breadth modes fan out light, standard, or exhaustive investigations. Setup aliases and fuzzy `/octo:*` corrections reduce command friction. Opt-in discipline gates and token compression. Two-stage review. Circuit breakers with automatic provider recovery inside active workflows. Cursor + OpenCode + Codex cross-compatibility. `bin/octopus` CLI. 182 Claude Code capability flags through v2.1.219, including Opus 5, Sonnet 5, and dynamic workflow awareness. |
@@ -425,6 +437,21 @@ Or type `/octo:auto <what you want>` and the smart router picks for you. Plain-p
 
 ## How It Works
 
+### Focused engineering methods
+
+Architecture, TDD, and debugging now run on the current host by default. This
+keeps routine work fast and avoids a provider call that adds little value. Add
+an independent-review request when one bounded review would materially improve the
+decision. Explicit debate, council, and multi-model commands are unchanged.
+
+Planning can propose a time-boxed prototype for one risky assumption. Setup can
+resume an interrupted human login without treating old authentication evidence as
+current. Maintainers can also inspect policy or production provider selection with
+the offline routing preview. The preview never claims to verify the final model,
+entitlement, quota, fallback, or dispatch.
+
+See [Workflow methods](docs/WORKFLOW-METHODS.md) for the contracts and limits.
+
 ### How 12 External Providers Work Together
 
 Claude Octopus coordinates twelve external provider integrations alongside the built-in Claude Code host. The optional `claude-sdk` route is a second Anthropic seat, so it is shown below but is not counted as a separate provider family.
@@ -471,7 +498,7 @@ Specialized agents selected by explicit Octopus workflows. `/octo:security` can 
 
 Categories span Software Engineering, Specialized Development, Documentation & Communication, Research & Strategy, Business & Compliance, and Creative & Design.
 
-[Full persona reference](docs/AGENTS.md) | [All 62 skills](docs/COMMAND-REFERENCE.md)
+[Full persona reference](docs/AGENTS.md) | [All 63 skills](docs/COMMAND-REFERENCE.md)
 
 ### Built-in Reaction Engine
 
@@ -708,6 +735,11 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
 ---
 
 ## Attribution
+
+Selected workflow methods adapt patterns from
+[mattpocock/skills](https://github.com/mattpocock/skills) under the MIT License.
+The distribution includes the complete license and a source-to-destination map in
+[Third-party notices](THIRD_PARTY_NOTICES.md).
 
 - **[wolverin0/claude-skills](https://github.com/wolverin0/claude-skills)** — AI Debate Hub. MIT License.
 - **[obra/superpowers](https://github.com/obra/superpowers)** — Discipline skills patterns, verification-before-completion philosophy, two-stage review approach, and review response patterns. MIT License.

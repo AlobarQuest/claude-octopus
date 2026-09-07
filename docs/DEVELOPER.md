@@ -2,9 +2,25 @@
 
 > Moved from CLAUDE.md to save ~1,000 tokens per user session. These sections are for plugin developers and maintainers, not end users.
 
+See [workflow methods](WORKFLOW-METHODS.md) for user-facing behavior and the
+[delivery contract](../RELEASING.md#delivery-contract-for-workflow-methods) for
+installation, package, and setup verification. Current workflow additions are
+documented under [Unreleased](../CHANGELOG.md#unreleased).
+
 ---
 
 ## Enforcement Best Practices (Mandatory for Workflow Skills)
+
+Host-native advisory methods do not need a provider execution block. Keep them
+explicit-only and test that ordinary prompts cannot activate them. A literal
+`orchestrate.sh` reference in a method means it spends or dispatches and must keep
+the repository's mandatory execution and prohibited-action checks.
+
+Runtime JSON helpers reject duplicate keys, non-finite values, unknown fields,
+oversized input, and mixed resolver output. Routing preview tests use fixed
+expected decisions plus separate parity checks against the production selector.
+Setup-state tests cover revisions, state transitions, linked files, malformed
+state, and concurrent supported writers.
 
 Skills that invoke orchestrate.sh MUST use the **Validation Gate Pattern** to ensure proper execution.
 
@@ -113,7 +129,9 @@ Use the smallest gate that matches the delivery stage:
 |-------|---------|----------|
 | Edit loop | affected test files | Fast feedback while the change is still moving |
 | Ordinary branch push | `make ci-changed` | Always runs sync and all smoke checks, then audited suites from `tests/changed-scope.tsv` |
-| Merge or release | `make ci-local` | Complete smoke, unit, integration, and CI-only matrix |
+| Pull request | `make ci-changed` | Generated checks, smoke, and audited suites for changed surfaces |
+| Merge or release | `make ci-local` | Complete smoke, full unit, integration, and CI-only matrix |
+| Main, nightly, manual, or merge queue | explicit deep council lane | Deep council lifecycle contract in addition to the core unit matrix |
 
 Inspect a selection without executing it with `scripts/ci-changed.sh --list`.
 The selector fails closed to `make ci-local` for shared orchestration,

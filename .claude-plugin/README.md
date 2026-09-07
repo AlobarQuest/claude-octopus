@@ -23,7 +23,21 @@ You get:    A structured comparison with three independent viewpoints,
             scored for agreement. Disagreements are flagged, not hidden.
 ```
 
-This works for research, escalated code review, debugging, TDD, escalated security audits, UI design, PRDs, and full build-to-ship workflows — 53 commands, 62 skills, 31 specialized personas.
+Octopus includes research, escalated code review, debugging, TDD, security audits, UI design, PRDs, and full build-to-ship workflows: 53 commands, 63 skills, 31 specialized personas.
+
+### Engineering methods
+
+Since v11.1.0, routine architecture, debugging, and TDD run on the
+current host. Ask for an independent opinion to request one bounded review. Planning
+methods include shared domain definitions, decision dependencies, and competing
+interface designs. A prototype skill tests one assumption within a deadline.
+Setup can resume interrupted configuration and verifies saved preferences before
+reporting completion.
+
+See [workflow methods](../docs/WORKFLOW-METHODS.md) for usage and
+[third-party notices](../THIRD_PARTY_NOTICES.md) for Matt Pocock's MIT-licensed
+source patterns. You can request an independent review in ordinary language;
+`--peer-review` remains an override.
 
 Octopus is dormant on install. Installing it does not route ordinary prompts or
 delegate to Octopus agents. Every command and skill is manual-only: use

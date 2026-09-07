@@ -50,12 +50,31 @@ else
     test_fail "retired OpenClaw wiring remains:\n$matches"
 fi
 
-test_case "release metadata mentions OpenClaw only as the current-version removal"
-current_version="$(node -p "require('$PROJECT_ROOT/package.json').version")"
-escaped_current_version="${current_version//./\\.}"
-current_version_pattern="v${escaped_current_version}([^0-9.]|$)"
-expected_removal_note="Remove the unused OpenClaw integration and simplify MCP setup."
-release_note_matches="$({
+test_case "the retirement release records removal without current metadata wiring"
+expected_removal_note="Remove the unused OpenClaw integration and simplify MCP setup"
+retirement_doc="$(grep -il -m1 'no longer ships the OpenClaw extension' "$PROJECT_ROOT"/docs/UPGRADING-*.md 2>/dev/null | head -n 1)"
+retirement_release="$(basename "$retirement_doc" | sed -E 's/^UPGRADING-V([0-9]+\.[0-9]+\.[0-9]+)\.md$/\1/')"
+retirement_heading="## [${retirement_release}]"
+retirement_section="$(awk -v target="$retirement_heading" '
+    /^## \[/ {
+        if (in_target) {
+            printf "%s", section
+            exit
+        }
+        in_target = (index($0, target) == 1)
+        section = in_target ? $0 ORS : ""
+        next
+    }
+    in_target {
+        section = section $0 ORS
+    }
+    END {
+        if (in_target) {
+            printf "%s", section
+        }
+    }
+' "$PROJECT_ROOT/CHANGELOG.md")"
+current_metadata_matches="$({
     cd "$PROJECT_ROOT"
     git grep -n -i -E "$retired_token_pattern" -- \
         README.md \
@@ -63,26 +82,22 @@ release_note_matches="$({
         .claude-plugin/marketplace.json \
         || true
 })"
-release_note_count="$(printf '%s\n' "$release_note_matches" | grep -c . || true)"
-unexpected_release_notes=""
-while IFS= read -r release_note_line; do
-    [[ -n "$release_note_line" ]] || continue
-    residual_line="${release_note_line/"$expected_removal_note"/}"
-    if ! [[ "$release_note_line" =~ $current_version_pattern ]] ||
-       [[ "$release_note_line" != *"$expected_removal_note"* ]] ||
-       printf '%s\n' "$residual_line" | grep -qiE "$retired_token_pattern"; then
-        unexpected_release_notes+="${release_note_line}"$'\n'
-    fi
-done <<< "$release_note_matches"
-if [[ "$release_note_count" -ge 1 ]] && [[ -z "$unexpected_release_notes" ]]; then
+if [[ -f "$retirement_doc" ]] &&
+   [[ "$retirement_release" != "$(basename "$retirement_doc")" ]] &&
+   [[ -n "$retirement_release" ]] &&
+   printf '%s\n' "$retirement_section" | grep -qF "$retirement_heading" &&
+   printf '%s\n' "$retirement_section" | grep -qF "$expected_removal_note" &&
+   [[ -z "$current_metadata_matches" ]]; then
     test_pass
 else
-    test_fail "release metadata contains active OpenClaw guidance or unexpected removal notes:\n${unexpected_release_notes:-found $release_note_count expected removal notes}"
+    test_fail "retirement release note or current metadata contract is invalid:\n${retirement_section:-missing retirement release section or removal note}\n${current_metadata_matches:-}"
 fi
 
-test_case "release version matching rejects longer version prefixes"
-if ! [[ "v${current_version}0" =~ $current_version_pattern ]] &&
-   ! [[ "v${current_version}.1" =~ $current_version_pattern ]]; then
+test_case "retirement release version matching rejects longer version prefixes"
+escaped_retirement_release="${retirement_release//./\\.}"
+retirement_release_pattern="v${escaped_retirement_release}([^0-9.]|$)"
+if ! [[ "v${retirement_release}0" =~ $retirement_release_pattern ]] &&
+   ! [[ "v${retirement_release}.1" =~ $retirement_release_pattern ]]; then
     test_pass
 else
     test_fail "release version matching accepted a longer version prefix"
