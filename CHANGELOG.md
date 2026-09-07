@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [11.2.0] - 2026-09-07
+
+### Changed
+
+- Select relevant engineering methods within development, review, definition
+  and planning workflows, and include the selection contract in provider prompts.
+- Accept natural-language independent review requests alongside `--peer-review`,
+  subject to existing preferences, billing limits and provider admission.
+- Route engineering prototypes through planning while retaining UI prototype
+  routing. Preserve host invocation settings and explicit multi-provider contracts.
+- Correct workflow documentation that still described the v11.1.0 methods as
+  unreleased.
+
 ## [11.1.0] - 2026-09-06
 
 ### Added
