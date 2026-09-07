@@ -58,9 +58,27 @@ exit 1
 SH
 chmod +x "$mock_bin/gh"
 
+# FORK-OWNED, and it is NOT superseded -- restored 2026-09-06 after the v11.0.1 sync merge
+# reverted it and turned Unit Tests red on ubuntu and macOS.
+#
+# `hooks/github-work-queue-watch.sh` proceeds only when the target checkout's remote matches
+# `nyldn/claude-octopus`; on any fork it emits {"decision":"continue"} and both assertions below
+# fail. Upstream's own version runs the hook against `$PROJECT_ROOT`, which is correct FOR
+# UPSTREAM and permanently red in a fork -- the fix is upstream-shaped rather than wrong, and it
+# is the one hunk of the sync where the fork's side had to survive.
+#
+# Build a dedicated fixture carrying that remote and target it through the hook's `.cwd` stdin
+# override (still honoured -- `github-work-queue-watch.sh` reads `.cwd // .workspace`), so the
+# test exercises the hook's logic wherever it runs. Upstream's OCTOPUS_GITHUB_WORK_QUEUE=on
+# gating is NEW and is kept: this restores the fixture, not the old test.
+fixture_repo="$TEST_TMP_DIR/github-work-queue-repo"
+mkdir -p "$fixture_repo"
+git -C "$fixture_repo" init -q
+git -C "$fixture_repo" remote add origin https://github.com/nyldn/claude-octopus.git
+
 test_case "hook emits open issues and PRs as additional context"
-output=$(cd "$PROJECT_ROOT" && HOME="$mock_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on OCTOPUS_GITHUB_WORK_QUEUE_FORCE=1 OCTOPUS_GITHUB_WORK_QUEUE_ISSUE=370 "$HOOK" <<'JSON'
-{"prompt":"what should we work on"}
+output=$(HOME="$mock_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on OCTOPUS_GITHUB_WORK_QUEUE_FORCE=1 OCTOPUS_GITHUB_WORK_QUEUE_ISSUE=370 "$HOOK" <<JSON
+{"prompt":"what should we work on","cwd":"$fixture_repo"}
 JSON
 )
 if assert_contains "$output" "additionalContext" "hook returns context" &&
@@ -73,12 +91,12 @@ fi
 test_case "hook debounces repeated checks"
 debounce_home="$TEST_TMP_DIR/github-work-queue-debounce-home"
 mkdir -p "$debounce_home"
-first=$(cd "$PROJECT_ROOT" && HOME="$debounce_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on "$HOOK" <<'JSON'
-{"prompt":"first"}
+first=$(HOME="$debounce_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on "$HOOK" <<JSON
+{"prompt":"first","cwd":"$fixture_repo"}
 JSON
 )
-second=$(cd "$PROJECT_ROOT" && HOME="$debounce_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on "$HOOK" <<'JSON'
-{"prompt":"second"}
+second=$(HOME="$debounce_home" PATH="$mock_bin:$PATH" OCTOPUS_GITHUB_WORK_QUEUE=on "$HOOK" <<JSON
+{"prompt":"second","cwd":"$fixture_repo"}
 JSON
 )
 if assert_contains "$first" "Open upstream work exists" "first run surfaces queue" &&
