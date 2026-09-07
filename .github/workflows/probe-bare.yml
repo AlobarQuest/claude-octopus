@@ -1,0 +1,44 @@
+# THROWAWAY DIAGNOSTIC WORKFLOW — branch probe/macos-shard1-hang only.
+# The instrumented probe redirects a suite's stdout to a file, and
+# test-council-command.sh drives script(1) PTYs, so the wrapper is a possible
+# confound. This runs the suite EXACTLY as CI does — no wrapper, no cap, stdout
+# straight to the step — six times. Healthy runs finish in 250-410s and their
+# logs are retained; a run killed at the 12-minute cap is a hang. The job
+# duration alone is the measurement, so nothing depends on a log surviving.
+name: Probe council bare
+
+on:
+  push:
+    branches: [ probe/macos-shard1-hang ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bare:
+    name: "council bare ${{ matrix.n }}"
+    runs-on: macos-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/orchestrate.sh
+          find tests -name "*.sh" -type f -exec chmod +x {} \;
+
+      - name: Install adapter test dependencies
+        run: make test-deps
+
+      - name: Run council exactly as CI does
+        run: |
+          s=$(date +%s)
+          rc=0
+          OCTOPUS_SKIP_PROVIDER_PROBES=true bash tests/unit/test-council-command.sh || rc=$?
+          echo "COUNCIL-BARE-${{ matrix.n }} rc=$rc seconds=$(( $(date +%s) - s ))"
