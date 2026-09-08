@@ -1948,7 +1948,10 @@ council_response_is_substantive() {
     #      merely quotes such a phrase is never rejected.
     # (RATIONALE: sail-cruisey #1839 — agy's "I cannot access the implementation
     # plan, PRD, or security audit files" REVISE was counted as the 2nd provider.)
-    local f="$1"
+    # A live evidence root lets the detector distinguish a real citation from
+    # a fabricated file:line token. Standalone callers may omit it for plan or
+    # PRD reviews that have no source tree.
+    local f="$1" evidence_root="${2:-}"
     [[ -f "$f" ]] || return 1
 
     # 1) Host self-dispatch stub — runner-emitted, exact match. (grep -c … >/dev/null,
@@ -1973,7 +1976,7 @@ council_response_is_substantive() {
     #    be scored as a substantive responder. Fold it in here so the single
     #    substantive gate the quorum tally keys on and the advice-phase `blind` label
     #    agree; the advice phase still re-tests is_blind to label it distinctly.
-    if council_response_is_blind "$f"; then
+    if council_response_is_blind "$f" "$evidence_root"; then
         return 1
     fi
 
@@ -1990,13 +1993,22 @@ council_response_is_blind() {
     # round instead of eating several. First-person access failure is checked
     # independently of length; less-specific refusal and permission shapes remain
     # brevity-gated to protect genuine reviews that discuss those failures.
-    local f="$1"
+    local f="$1" evidence_root="${2:-}"
     [[ -f "$f" ]] || return 1
 
     # A first-person access failure is authoritative. Citation-shaped prose is not
     # evidence that the seat read the cited file, and must never override the
     # seat's own statement that it could not reach the artifact.
     if council_response_has_access_failure "$f"; then
+        return 0
+    fi
+
+    # A softer evasion: the seat never admits an access failure, but its verdict
+    # rests entirely on the task summary / prior rounds / a clean test suite
+    # rather than on reading the artifact, and it cites no real source location.
+    # Gated on zero file:line citations so a grounded review is never flagged
+    # (sail-cruisey #2570 paraphrase, #2463 prior-phase deference).
+    if council_response_defers_without_reading "$f" "$evidence_root"; then
         return 0
     fi
 
@@ -2022,13 +2034,30 @@ council_response_has_access_failure() {
 
     # Normalize wrapping, then evaluate one sentence/clause at a time. This
     # catches Markdown line wraps without letting a first-person sentence attach
-    # to a later third-person access report.
+    # to a later third-party access report. Neutralize dots only inside known
+    # source filenames and numeric versions; a genuine sentence boundary such as
+    # "file.However" must remain a boundary even when whitespace is missing.
     local normalized_without_urls
-    normalized_without_urls="$(tr '\n' ' ' < "$f" | tr -s '[:space:]' ' ' \
+    normalized_without_urls="$(awk '
+        NR == 1 { previous = $0; next }
+        {
+            separator = ($0 ~ /^[[:space:]]*([-*][[:space:]]+|[0-9]+[.)][[:space:]]+)/) ? "; " : " "
+            printf "%s%s", previous, separator
+            previous = $0
+        }
+        END { print previous }
+    ' "$f" | tr -s '[:space:]' ' ' \
         | tr '[:upper:]' '[:lower:]' \
         | sed -E \
             -e 's#https?://[^[:space:]]*([.!?;])([[:space:]]|$)#\1\2#g' \
-            -e 's#https?://[^[:space:]]+##g')"
+            -e 's#https?://[^[:space:]]+##g' \
+            -e ':filename' \
+            -e 's#([[:alnum:]_/-]+)\.([[:alnum:]_-]+\.(tsx?|jsx?|mjs|cjs|css|scss|sass|less|html?|vue|svelte|py|go|rb|rs|java|kt|swift|cc?|cpp|cxx|hh?|hpp|sh|bash|zsh|sql|ya?ml|toml|jsonc?|mdx?|php|pl|lua|exs?|scala|dart|mm?|jl|tf|r))#\1__OCTO_DOT__\2#g' \
+            -e 'tfilename' \
+            -e 's#([[:alnum:]_/-]+)\.(tsx?|jsx?|mjs|cjs|css|scss|sass|less|html?|vue|svelte|py|go|rb|rs|java|kt|swift|cc?|cpp|cxx|hh?|hpp|sh|bash|zsh|sql|ya?ml|toml|jsonc?|mdx?|php|pl|lua|exs?|scala|dart|mm?|jl|tf|r)([^[:alnum:]_]|$)#\1__OCTO_DOT__\2\3#g' \
+            -e ':version' \
+            -e 's#([0-9]+)\.([0-9]+)#\1__OCTO_DOT__\2#g' \
+            -e 'tversion')"
     printf '%s\n' "$normalized_without_urls" | awk '
         BEGIN { RS="[.!?;]+"; found=0 }
         {
@@ -2037,6 +2066,90 @@ council_response_has_access_failure() {
             third_party_access = ($0 ~ /(^|[^[:alnum:]_])(another|other)[[:space:]]+(reviewer|seat|agent|provider|model)([^[:alnum:]_]|$)[^.!?;]{0,80}(cannot|could[[:space:]]*not|couldn.t|unable[[:space:]]+to|can.t|did[[:space:]]+not|lack(ed|s)?)/)
             first_person_access = ($0 ~ /(^|[^[:alnum:]_])(i|we)[[:space:]]+(cannot|could[[:space:]]*not|couldn.t|unable[[:space:]]+to|can.t|was[[:space:]]+not[[:space:]]+able[[:space:]]+to|were[[:space:]]+not[[:space:]]+able[[:space:]]+to)[[:space:]]+(open|read|access|view)/ || $0 ~ /(^|[^[:alnum:]_])(i|we)[[:space:]]+((did[[:space:]]+not|do[[:space:]]+not|don.t)[[:space:]]+have|lack(ed)?)[[:space:]]+(direct[[:space:]]+)?access/)
             if (first_person && access_failure && (!third_party_access || first_person_access)) found=1
+        }
+        END { exit(found ? 0 : 1) }
+    ' >/dev/null 2>&1
+}
+
+council_response_defers_without_reading() {
+    # A "soft blind" seat never states an access failure outright, but its verdict
+    # rests on the task summary, prior review rounds, or a clean test suite rather
+    # than on reading the artifact — it reviewed nothing. Two real agy evasions:
+    #   - summary paraphrase: "the ariaLabel field is correctly propagated, as
+    #     stated in the summary" (sail-cruisey #2570)
+    #   - prior-phase deference: "given the rigorous validations in previous
+    #     rounds ... I recommend proceeding" (#2463)
+    # This is length-independent (the evasions are long) but gated on ZERO
+    # `path.ext:line` citations: a genuinely grounded review carries a concrete
+    # file:line, so it is never flagged for merely mentioning a summary or a prior
+    # round. The colon citation form is deliberately the ONLY grounding signal
+    # here — prose "lines 251-263" or a bare filename can be copied from the
+    # plan/summary without reading it (#2463 does exactly that). When an
+    # evidence root is available, the cited path must also resolve beneath it.
+    local f="$1" evidence_root="${2:-}"
+    [[ -f "$f" ]] || return 1
+
+    local normalized_without_urls
+    normalized_without_urls="$(tr '\n' ' ' < "$f" | tr -s '[:space:]' ' ' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E \
+            -e 's#https?://[^[:space:]]*([.!?;])([[:space:]]|$)#\1\2#g' \
+            -e 's#https?://[^[:space:]]+##g')"
+
+    # A concrete SOURCE file:line citation is the grounding signal. Match only
+    # real source extensions, and only AFTER stripping URLs, so a URL port
+    # (https://example.com:443) or a doc/host token is never mistaken for
+    # evidence (CodeRabbit #1017). A live source tree turns this prose signal
+    # into an evidence check. Keep the extension allowlist aligned with the
+    # citations eligible for this blind-seat gate. If the live validator is
+    # unavailable, preserve the prose-only exemption rather than treating its
+    # empty result as proof that the citation is fabricated.
+    local source_extension_pattern='tsx?|jsx?|mjs|cjs|css|scss|sass|less|html?|vue|svelte|py|go|rb|rs|java|kt|swift|cs|cc?|cpp|cxx|hh?|hpp|sh|bash|zsh|ps1|sql|ya?ml|toml|jsonc?|xml|proto|graphql|gql|ini|cfg|conf|env|gradle|mdx?|php|pl|lua|exs?|scala|dart|mm?|jl|tf|r'
+    if grep -ciE "\\.(${source_extension_pattern})[[:space:]]*:[[:space:]]*[0-9]+" <<< "$normalized_without_urls" >/dev/null; then
+        if [[ -z "$evidence_root" || ! -d "$evidence_root" ]] || ! command -v python3 >/dev/null 2>&1; then
+            return 1
+        fi
+        local validated_evidence
+        validated_evidence="$(council_response_evidence_paths_json "$f" "$evidence_root")" || validated_evidence='[]'
+        local validated_source_evidence
+        validated_source_evidence="$(jq --arg ext "\\.(${source_extension_pattern})$" '[.[] | select(.path | test($ext; "i"))]' <<< "$validated_evidence" 2>/dev/null || printf '[]')"
+        if [[ "$(jq 'length' <<< "$validated_source_evidence" 2>/dev/null || printf 0)" -gt 0 ]]; then
+            return 1
+        fi
+    fi
+
+    # Code-level verification token, wrapped in word boundaries so a code term is
+    # only matched as a whole token, never as a substring of an ordinary word
+    # ("api" inside "capital", "diff" inside "different", "test" inside "latest",
+    # "class" inside "classic" — CodeRabbit #1017). ERE has no \b, and macOS awk
+    # is BWK awk (no \<); the portable form guards both sides with
+    # (^|[^[:alnum:]]) ... ([^[:alnum:]]|$) and spells out the code-form
+    # inflections so common plural/tense forms still match.
+    local code_token='(^|[^[:alnum:]])(test(s|ed|ing|cases?)?|coverage|render(s|ed|ing)?|outputs?|type[- ]?check(s|ed|ing)?|tsc|lint(s|ed|ing|er)?|implement(s|ed|ing|ations?)?|propagat(e|es|ed|ing|ion)?|byte-identical|pass(es|ing|ed)?|regress(es|ed|ions?)?|contracts?|behaviou?r(s|al)?|diff(s|ed)?|assert(s|ed|ing|ions?)?|snapshots?|dom|css|class(es)?|components?|functions?|api(s)?|endpoints?|schema(s|ta)?|payloads?|fields?)([^[:alnum:]]|$)'
+
+    printf '%s\n' "$normalized_without_urls" | awk -v ct="$code_token" '
+        {
+            # NOTE: a bare "based on the provided summary" is deliberately NOT a
+            # trigger — a legitimate plan/design review (no code to cite) uses that
+            # phrasing (sail-cruisey #2527). The blind signal is the summary being
+            # cited as CONFIRMATION of CODE-LEVEL facts ("the summary confirms the
+            # tests pass / byte-identical output") — a bare "the summary states the
+            # rollout is phased" (process, not code) is NOT a trigger — or a
+            # reported-clean test/typecheck standing in for reading the code. Both
+            # word orders count: forward ("the summary confirms <code fact>") and
+            # reverse ("<code fact> ... as stated in / according to / per the
+            # summary") — the reverse attribution is the exact #2570 wording and
+            # carries no citation of its own (CodeRabbit #1017). The code fact is
+            # the token-bounded ct regex so "the capital plan, as stated in the
+            # summary" (api ⊂ capital) is not misread as a code claim.
+            summary_reliance = ($0 ~ ("the[[:space:]]+summary[[:space:]]+(confirms|states|indicates|reports|notes|says|claims|shows|verifies|mitigat[a-z]*)[^.!?;]{0,80}" ct) \
+                || $0 ~ (ct "[^.!?;]{0,80}(as[[:space:]]+stated[[:space:]]+in|according[[:space:]]+to|per)[[:space:]]+(the[[:space:]]+)?summary") \
+                || $0 ~ /(^|[^[:alnum:]_])(i|we|my|our)[^.!?;]{0,40}(constraints?|restrictions?|rules|permissions?|sandbox)[[:space:]]+(prevent|restrict|prohibit|preclude|block)[a-z]*[^.!?;]{0,50}(verif|read|access|inspect|examin|confirm|review)/ \
+                || $0 ~ /(reported|stated|claimed)[[:space:]]+(clean|passing)[[:space:]]+((tsc|lint|test)([^[:alnum:]_]|$)|ci([^[:alnum:]_]|$)|type([^[:alnum:]_]|$)))/)
+            prior_deference = ($0 ~ /(given|based on|relying on|because of|considering)[^.!?;]{0,70}(previous|prior|earlier)[[:space:]]+(rounds?|reviews?|validations?|phases?)/ \
+                || $0 ~ /(passed|cleared|survived)[^.!?;]{0,50}(phase[[:space:]]*[0-9]+|staged|rigorous)[^.!?;]{0,25}(reviews?|validations?|gates?|checks?)/ \
+                || $0 ~ /((^|[^[:alnum:]_])test[[:space:]]+suite([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(tsc|lint|ci)([^[:alnum:]_]|$))[^.!?;]{0,40}(clean|passing|green)[^.!?;]{0,90}(recommend|proceed|approv|no[[:space:]]+(other[[:space:]]+)?(material[[:space:]]+)?(flaws?|issues?|concerns?))/)
+            if (summary_reliance || prior_deference) found=1
         }
         END { exit(found ? 0 : 1) }
     ' >/dev/null 2>&1
@@ -2105,12 +2218,12 @@ from pathlib import Path
 
 response = Path(sys.argv[1])
 root = Path(sys.argv[2]).resolve()
-pattern = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_./-]+\.[A-Za-z][A-Za-z0-9]*):([0-9]+)(?![0-9])")
+pattern = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_./-]+\.[A-Za-z][A-Za-z0-9]*)\s*:\s*([0-9]+)(?:-([0-9]+))?(?![A-Za-z0-9_/-]|\.(?:[A-Za-z0-9_/-]|\.))")
 validated = []
 seen = set()
 file_facts = {}
-for raw_path, raw_line in pattern.findall(response.read_text(encoding="utf-8", errors="replace")):
-    relative = Path(raw_path)
+for raw_path, raw_start, raw_end in pattern.findall(response.read_text(encoding="utf-8", errors="replace")):
+    relative = Path(raw_path.strip())
     if relative.is_absolute() or ".." in relative.parts:
         continue
     try:
@@ -2120,8 +2233,12 @@ for raw_path, raw_line in pattern.findall(response.read_text(encoding="utf-8", e
         continue
     if not candidate.is_file():
         continue
-    line = int(raw_line)
-    if line < 1:
+    try:
+        start_line = int(raw_start)
+        end_line = int(raw_end or raw_start)
+    except ValueError:
+        continue
+    if start_line < 1 or end_line < start_line:
         continue
     if candidate not in file_facts:
         content = hashlib.sha256()
@@ -2132,10 +2249,10 @@ for raw_path, raw_line in pattern.findall(response.read_text(encoding="utf-8", e
                 line_count += 1
         file_facts[candidate] = (line_count, "sha256:" + content.hexdigest())
     line_count, content_digest = file_facts[candidate]
-    key = (relative.as_posix(), line)
-    if line <= line_count and key not in seen:
+    key = (relative.as_posix(), start_line)
+    if end_line <= line_count and key not in seen:
         seen.add(key)
-        validated.append({"path": key[0], "line": line, "content_digest": content_digest})
+        validated.append({"path": key[0], "line": start_line, "content_digest": content_digest})
 print(json.dumps(validated, separators=(",", ":")))
 PY
 }
@@ -2220,7 +2337,7 @@ council_contribution_record_json() {
     local verdict="" evidence='[]' access_state="unverified" validation_result="invalid-empty"
     if council_response_nonempty "$response_path"; then
         verdict="$(council_response_verdict "$response_path")"
-        if council_response_is_blind "$response_path"; then
+        if council_response_is_blind "$response_path" "$evidence_root"; then
             access_state="failed"
             validation_result="invalid-access"
         elif ! council_response_has_verdict "$response_path"; then
@@ -2407,7 +2524,7 @@ council_run_advice_phase() {
         # the seat finished writing right at the boundary. Salvage that instead of
         # discarding a usable verdict as a provider shortage (sail-cruisey #2077).
         if council_response_nonempty "$output_path" \
-                && council_response_is_substantive "$output_path" \
+                && council_response_is_substantive "$output_path" "$evidence_root" \
                 && { (( dispatch_rc == 0 )) || council_response_has_verdict "$output_path"; }; then
             COUNCIL_RESPONSES_RECEIVED=$((COUNCIL_RESPONSES_RECEIVED + 1))
             resp_bytes="$(wc -c < "$output_path" 2>/dev/null | tr -d '[:space:]')"; [[ -z "$resp_bytes" ]] && resp_bytes=0
@@ -2441,11 +2558,11 @@ council_run_advice_phase() {
             fi
         elif council_response_nonempty "$output_path"; then
             resp_bytes="$(wc -c < "$output_path" 2>/dev/null | tr -d '[:space:]')"; [[ -z "$resp_bytes" ]] && resp_bytes=0
-            if council_response_is_substantive "$output_path"; then
+            if council_response_is_substantive "$output_path" "$evidence_root"; then
                 # A timed-out/truncated review without a final verdict is preserved
                 # for diagnosis, but cannot count as a response or approver.
                 seat_status="no-response"
-            elif council_response_is_blind "$output_path"; then
+            elif council_response_is_blind "$output_path" "$evidence_root"; then
                 # Returned a verdict without reading the artifact (no file tools /
                 # permission). Label it distinctly and surface which provider, so
                 # the operator can switch its mode after ROUND ONE, not round six.
@@ -2608,7 +2725,7 @@ council_run_chair_fallback() {
         # diagnosis, but must not masquerade as a recovered chair response.
         if [[ -n "$existing_response" ]] \
                 && council_response_nonempty "$existing_response" \
-                && council_response_is_substantive "$existing_response" \
+                && council_response_is_substantive "$existing_response" "$evidence_root" \
                 && jq -e --arg persona "$persona" \
                     'any(.[]; .persona == $persona and .status == "responded")' \
                     <<< "${COUNCIL_SEAT_RECORDS_JSON:-[]}" >/dev/null; then
@@ -2631,7 +2748,7 @@ council_run_chair_fallback() {
         council_dispatch_member_detached "$member_json" "independent-advice" "$output_path" || dispatch_rc=$?
         dispatch_timeout_provenance="$COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE"
         if council_response_nonempty "$output_path" \
-                && council_response_is_substantive "$output_path" \
+                && council_response_is_substantive "$output_path" "$evidence_root" \
                 && { (( dispatch_rc == 0 )) || council_response_has_verdict "$output_path"; }; then
             COUNCIL_RESPONSES_RECEIVED=$((COUNCIL_RESPONSES_RECEIVED + 1))
             COUNCIL_CHAIR_RESPONSE_RECEIVED="true"

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Council blind-seat detection now catches two further "reviewed nothing"
+  evasions that were counting toward `met: true`: (1) summary paraphrase — an
+  APPROVE that leans on the task summary as confirmation of code-level facts
+  ("the summary confirms …" or the reverse attribution "… as stated in / per the
+  summary", a reported-clean `tsc`/test run standing in for reading the code);
+  and (2) prior-phase deference — deferring to earlier rounds
+  or gates ("given the rigorous validations in previous rounds … I recommend
+  proceeding") instead of reading the artifact. Both are gated on the response
+  citing zero real `path.ext:line` locations, so a genuinely grounded review is
+  never flagged; a bare "based on the provided summary" (as a plan/design review
+  legitimately uses) is deliberately not a trigger, and code terms are matched as
+  whole tokens so a substring like `api` in "capital" is not read as a code
+  claim. Also fixes the existing
+  first-person access-failure check missing an explicit admission whose sentence
+  contained a dotted filename (e.g. `Foo.test.tsx`), whose periods split the
+  sentence and severed the first-person clause from the access-failure clause.
+  Flagged seats are excluded from the approving tally and recorded in
+  `summary.json` `quorum.blind_seats` like any other blind seat.
+- Harden evidence-aware grounding against substring and markdown-boundary false
+  positives, recognize common source/configuration extensions and flexible
+  citation spacing, and validate citation ranges before a seat can count toward
+  quorum.
+
 ### Added
 
 - Council `--context-file <path>` (repeatable): inline a referenced artifact

@@ -2558,6 +2558,236 @@ test_council_advice_marks_blind_seat() {
     fi
 }
 
+test_council_blind_summary_deference() {
+    test_case "a seat that rests on the summary or prior rounds with no file:line citation is blind; a grounded review (specific code, or a real file:line) is not (sail-cruisey #2570/#2463)"
+    load_council_lib || return 1
+
+    local d; d="$(mktemp -d "$TEST_TMP_DIR/council-deference.XXXXXX")"
+
+    # (a) Summary paraphrase (#2570): APPROVE that rests on the summary, no
+    # access-failure admission, zero file:line citations.
+    {
+        echo "### Recommendation"
+        echo "APPROVE. The refactor is sound and backward compatible."
+        echo "### Assumptions"
+        echo "- The ariaLabel field is correctly propagated through all implementations, as stated in the summary."
+        echo "- The reported clean tsc output and 100% test pass rate are accurate representations of CI state."
+        echo "The summary confirms byte-identical rendered output, effectively mitigating regression risk."
+        echo "VERDICT: APPROVE"
+    } > "$d/paraphrase.md"
+
+    # (b) Prior-phase deference (#2463): defers to earlier rounds/gates instead of
+    # reading the artifact, no access-failure admission, zero file:line citations.
+    {
+        echo "## Architectural Review"
+        echo "The footer correction is architecturally sound and aligns the frontend with the backend data shape."
+        echo "Given the rigorous validations in previous rounds and the successful resolution of the final finding, it provides a solid, grounded foundation for Phase 6 implementation. I see no other material flaws, so I recommend proceeding."
+        echo "VERDICT: APPROVE"
+    } > "$d/deference.md"
+
+    # (c) Grounded review: analyzes specific code/behavior directly, with no
+    # summary/prior-round lean — must NOT be flagged even with zero file:line.
+    {
+        echo "## Review"
+        echo "The exclusive swap (const baseIconClass = bare ? styles.emptyIconShellBare : styles.emptyIconShell) prevents cascade races, and the additive emptyActionsBare class applies the 1rem margin without overriding emptyActions."
+        echo "The empty-state.test.tsx additions cover both the icon-shell swap and the actions spacing. I found no correctness issues or missed requirements."
+        echo "VERDICT: APPROVE"
+    } > "$d/grounded.md"
+
+    # (d) Uses a deference phrase BUT carries a real file:line citation — the
+    # colon-citation guard must keep it out of the blind set.
+    {
+        echo "## Review"
+        echo "Given the prior rounds, the guard added at src/SpendingTab.tsx:257 correctly classifies the single-amount footer."
+        echo "VERDICT: APPROVE"
+    } > "$d/grounded-cited.md"
+
+    # (e) Deference lean but the only ":NN" is a URL port — must STILL be blind:
+    # URLs are stripped before the citation guard, so a link is not grounding
+    # (CodeRabbit #1017).
+    {
+        echo "## Review"
+        echo "Given the rigorous validations in previous rounds, I recommend proceeding; see the plan at https://example.com:443/plan for context."
+        echo "VERDICT: APPROVE"
+    } > "$d/url-port.md"
+
+    # (f) Plan/process review that says "the summary states" about a NON-code fact
+    # (rollout sequencing) with no citation — must NOT be flagged: summary
+    # reliance requires a code-level confirmation, not a process statement.
+    {
+        echo "## Recommendation"
+        echo "The summary states the rollout is phased across three releases, which is a sound sequencing decision for risk management."
+        echo "VERDICT: APPROVE"
+    } > "$d/plan-states.md"
+
+    # (g) Reverse-attribution ISOLATION (CodeRabbit #1017): the ONLY blind signal
+    # is a code fact deferred to the summary in reverse word order ("propagated
+    # ... as stated in the summary"). No forward "the summary confirms", no
+    # reported-clean-tsc, no prior-round deference, zero file:line. Must be blind
+    # solely via the reverse form — the paraphrase fixture (a) can't prove this
+    # because it also carries the forward and clean-tsc signals.
+    {
+        echo "## Review"
+        echo "APPROVE. The ariaLabel is correctly propagated to every icon button, as stated in the summary."
+        echo "VERDICT: APPROVE"
+    } > "$d/reverse-attr.md"
+
+    # (h) Token-boundary control (CodeRabbit #1017): a NON-code plan sentence that
+    # happens to contain a code term as a SUBSTRING ("api" ⊂ "capital"), in the
+    # reverse-attribution word order. Must NOT be flagged — code terms match only
+    # as whole tokens, so "capital" is not a code fact.
+    {
+        echo "## Recommendation"
+        echo "The capital plan is sound and the phasing is prudent, as stated in the summary."
+        echo "VERDICT: APPROVE"
+    } > "$d/plan-capital.md"
+
+    # "ci" appears inside ordinary words such as citation and sufficient; it
+    # must not satisfy the clean-CI deference branch without token boundaries.
+    {
+        echo "The reported clean citation is efficient and sufficient, and I recommend proceeding."
+        echo "VERDICT: APPROVE"
+    } > "$d/ci-substring.md"
+    {
+        echo "The reported clean TypeScript compilation succeeded, and the new hook wiring looks correct."
+        echo "VERDICT: APPROVE"
+    } > "$d/type-substring.md"
+    {
+        echo "The reported clean ci_config is efficient and sufficient, and I recommend proceeding."
+        echo "VERDICT: APPROVE"
+    } > "$d/ci-identifier.md"
+    {
+        echo "The reported passing type_name check succeeded, and I recommend proceeding."
+        echo "VERDICT: APPROVE"
+    } > "$d/type-identifier.md"
+    {
+        echo "The implementation is efficient and the tests are clean, and I recommend approval."
+        echo "VERDICT: APPROVE"
+    } > "$d/ci-prior-substring.md"
+    {
+        echo "- The previous rounds recorded the rollout context."
+        echo "- The implementation is efficient and the tests are clean, and I recommend approval."
+        echo "VERDICT: APPROVE"
+    } > "$d/adjacent-bullets.md"
+
+    local para=n defer=n grounded_ok=n cited_ok=n url_blind=n plan_states_ok=n reverse=n capital_ok=n ci_substring_ok=n type_substring_ok=n ci_identifier_ok=n type_identifier_ok=n ci_prior_substring_ok=n adjacent_bullets_ok=n
+    council_response_is_blind "$d/paraphrase.md" && para=y
+    council_response_is_blind "$d/deference.md" && defer=y
+    council_response_is_blind "$d/grounded.md" || grounded_ok=y
+    council_response_is_blind "$d/grounded-cited.md" || cited_ok=y
+    council_response_is_blind "$d/url-port.md" && url_blind=y
+    council_response_is_blind "$d/plan-states.md" || plan_states_ok=y
+    council_response_is_blind "$d/reverse-attr.md" && reverse=y
+    council_response_is_blind "$d/plan-capital.md" || capital_ok=y
+    council_response_is_blind "$d/ci-substring.md" || ci_substring_ok=y
+    council_response_is_blind "$d/type-substring.md" || type_substring_ok=y
+    council_response_is_blind "$d/ci-identifier.md" || ci_identifier_ok=y
+    council_response_is_blind "$d/type-identifier.md" || type_identifier_ok=y
+    council_response_is_blind "$d/ci-prior-substring.md" || ci_prior_substring_ok=y
+    council_response_is_blind "$d/adjacent-bullets.md" || adjacent_bullets_ok=y
+
+    # A citation-shaped token is not grounding when it does not resolve beneath
+    # the evidence root. A real source file and in-range line remains grounding.
+    local evidence_root="$d/evidence" fabricated_citation=n valid_citation=n out_of_range_citation=n
+    local valid_range_citation=n out_of_range_range_citation=n reversed_range_citation=n
+    local malformed_suffix_citation=n malformed_range_citation=n dotted_numeric_citation=n dotted_text_citation=n dotted_identifier_citation=n dotted_run_citation=n oversized_citation=n sentence_final_citation_ok=n uppercase_extension_ok=n config_extension_ok=n spaced_citation_ok=n
+    mkdir -p "$evidence_root/src"
+    printf 'const value = 1;\n' > "$evidence_root/src/real.tsx"
+    printf 'const first = 1;\nconst second = 2;\n' > "$evidence_root/src/range.tsx"
+    printf 'const first = 1;\n' > "$evidence_root/src/upper.TSX"
+    printf 'public class Program {}\n' > "$evidence_root/src/Program.cs"
+    printf '<config />\n' > "$evidence_root/src/config.xml"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at made-up.ts:1.' \
+        'VERDICT: APPROVE' > "$d/fabricated-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/real.tsx:1.' \
+        'VERDICT: APPROVE' > "$d/valid-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/real.tsx:2.' \
+        'VERDICT: APPROVE' > "$d/out-of-range-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1-2.' \
+        'VERDICT: APPROVE' > "$d/valid-range-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1-3.' \
+        'VERDICT: APPROVE' > "$d/out-of-range-range-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:2-1.' \
+        'VERDICT: APPROVE' > "$d/reversed-range-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1-2/extra.' \
+        'VERDICT: APPROVE' > "$d/malformed-suffix-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1-2-extra.' \
+        'VERDICT: APPROVE' > "$d/malformed-range-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1.2.' \
+        'VERDICT: APPROVE' > "$d/dotted-numeric-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1.foo.' \
+        'VERDICT: APPROVE' > "$d/dotted-text-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1._foo.' \
+        'VERDICT: APPROVE' > "$d/dotted-identifier-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1..foo.' \
+        'VERDICT: APPROVE' > "$d/dotted-run-citation.md"
+    local oversized_line; oversized_line="$(awk 'BEGIN { for (i = 1; i <= 5000; i++) printf "9" }')"
+    printf '%s\n' \
+        "The summary confirms the implementation is correct at src/range.tsx:${oversized_line}." \
+        'VERDICT: APPROVE' > "$d/oversized-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/range.tsx:1.' \
+        'VERDICT: APPROVE' > "$d/sentence-final-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/upper.TSX:1.' \
+        'VERDICT: APPROVE' > "$d/uppercase-extension-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/Program.cs:1.' \
+        'VERDICT: APPROVE' > "$d/config-extension-citation.md"
+    printf '%s\n' \
+        'The summary confirms the implementation is correct at src/config.xml : 1.' \
+        'VERDICT: APPROVE' > "$d/spaced-citation.md"
+    council_response_is_blind "$d/fabricated-citation.md" "$evidence_root" && fabricated_citation=y
+    council_response_is_blind "$d/valid-citation.md" "$evidence_root" || valid_citation=y
+    council_response_is_blind "$d/out-of-range-citation.md" "$evidence_root" && out_of_range_citation=y
+    council_response_is_blind "$d/valid-range-citation.md" "$evidence_root" || valid_range_citation=y
+    council_response_is_blind "$d/out-of-range-range-citation.md" "$evidence_root" && out_of_range_range_citation=y
+    council_response_is_blind "$d/reversed-range-citation.md" "$evidence_root" && reversed_range_citation=y
+    council_response_is_blind "$d/malformed-suffix-citation.md" "$evidence_root" && malformed_suffix_citation=y
+    council_response_is_blind "$d/malformed-range-citation.md" "$evidence_root" && malformed_range_citation=y
+    council_response_is_blind "$d/dotted-numeric-citation.md" "$evidence_root" && dotted_numeric_citation=y
+    council_response_is_blind "$d/dotted-text-citation.md" "$evidence_root" && dotted_text_citation=y
+    council_response_is_blind "$d/dotted-identifier-citation.md" "$evidence_root" && dotted_identifier_citation=y
+    council_response_is_blind "$d/dotted-run-citation.md" "$evidence_root" && dotted_run_citation=y
+    council_response_is_blind "$d/oversized-citation.md" "$evidence_root" && oversized_citation=y
+    council_response_is_blind "$d/sentence-final-citation.md" "$evidence_root" || sentence_final_citation_ok=y
+    council_response_is_blind "$d/uppercase-extension-citation.md" "$evidence_root" || uppercase_extension_ok=y
+    council_response_is_blind "$d/config-extension-citation.md" "$evidence_root" || config_extension_ok=y
+    council_response_is_blind "$d/spaced-citation.md" "$evidence_root" || spaced_citation_ok=y
+
+    if [[ "$para" == "y" && "$defer" == "y" && "$grounded_ok" == "y" && "$cited_ok" == "y" \
+          && "$url_blind" == "y" && "$plan_states_ok" == "y" && "$reverse" == "y" && "$capital_ok" == "y" \
+          && "$fabricated_citation" == "y" && "$valid_citation" == "y" && "$out_of_range_citation" == "y" \
+          && "$valid_range_citation" == "y" && "$out_of_range_range_citation" == "y" && "$reversed_range_citation" == "y" \
+          && "$ci_substring_ok" == "y" && "$type_substring_ok" == "y" \
+          && "$ci_identifier_ok" == "y" && "$type_identifier_ok" == "y" \
+          && "$ci_prior_substring_ok" == "y" && "$adjacent_bullets_ok" == "y" \
+          && "$malformed_suffix_citation" == "y" && "$malformed_range_citation" == "y" \
+          && "$dotted_numeric_citation" == "y" && "$dotted_text_citation" == "y" \
+          && "$dotted_identifier_citation" == "y" && "$dotted_run_citation" == "y" \
+          && "$oversized_citation" == "y" \
+          && "$sentence_final_citation_ok" == "y" \
+          && "$uppercase_extension_ok" == "y" && "$config_extension_ok" == "y" \
+          && "$spaced_citation_ok" == "y" ]]; then
+        test_pass
+    else
+        test_fail "summary/deference blind detection wrong: paraphrase=$para defer=$defer grounded_ok=$grounded_ok cited_ok=$cited_ok url_blind=$url_blind plan_states_ok=$plan_states_ok reverse=$reverse capital_ok=$capital_ok fabricated_citation=$fabricated_citation valid_citation=$valid_citation out_of_range_citation=$out_of_range_citation valid_range_citation=$valid_range_citation out_of_range_range_citation=$out_of_range_range_citation reversed_range_citation=$reversed_range_citation malformed_suffix_citation=$malformed_suffix_citation malformed_range_citation=$malformed_range_citation dotted_numeric_citation=$dotted_numeric_citation dotted_text_citation=$dotted_text_citation dotted_identifier_citation=$dotted_identifier_citation dotted_run_citation=$dotted_run_citation oversized_citation=$oversized_citation sentence_final_citation_ok=$sentence_final_citation_ok uppercase_extension_ok=$uppercase_extension_ok config_extension_ok=$config_extension_ok spaced_citation_ok=$spaced_citation_ok ci_substring_ok=$ci_substring_ok type_substring_ok=$type_substring_ok ci_identifier_ok=$ci_identifier_ok type_identifier_ok=$type_identifier_ok ci_prior_substring_ok=$ci_prior_substring_ok adjacent_bullets_ok=$adjacent_bullets_ok"
+        return 1
+    fi
+}
+
 test_council_blind_fabricated_narrative() {
     test_case "a long first-person access failure is blind regardless of length or citation prose; grounded long reviews and plan reviews are not"
     load_council_lib || return 1
@@ -2621,6 +2851,13 @@ test_council_blind_fabricated_narrative() {
         echo "VERDICT: APPROVE"
     } > "$d/third-person-restriction.md"
 
+    # An access-control statement is implementation prose, not the reviewer
+    # admitting that their own permissions prevented verification.
+    {
+        echo "The access permissions restrict access to the admin panel, and the review should confirm that the authorization boundary is preserved."
+        echo "VERDICT: APPROVE"
+    } > "$d/access-control-prose.md"
+
     # First-person prose in one clause must not attach to another reviewer's
     # access failure in a later semicolon-delimited clause.
     {
@@ -2648,6 +2885,16 @@ test_council_blind_fabricated_narrative() {
         done
         echo "VERDICT: APPROVE"
     } > "$d/same-clause-self-and-third-party.md"
+
+    # A missing space after a sentence period must not merge a first-person
+    # assessment with a later third-party access report.
+    {
+        for _i in $(seq 1 24); do
+            echo "The implementation preserves the documented workflow contract and the proposed change is internally coherent."
+        done
+        echo "I completed an independent assessment.However another reviewer could not access the files."
+        echo "VERDICT: APPROVE"
+    } > "$d/no-space-boundary.md"
 
     # Ordinary Markdown wrapping must not hide the reviewer's own admission.
     {
@@ -2747,6 +2994,7 @@ test_council_blind_fabricated_narrative() {
     local same_clause_third_party_ok=n same_clause_self_and_third_party=n
     local wrapped=n did_not_have=n was_not_able=n lack_access=n url_port=n
     local url_period_ok=n url_semicolon_ok=n assuming_ok=n shellcite_blind=n cantdiff=n
+    local access_control_ok=n no_space_boundary_ok=n ci_substring_ok=n
     council_response_is_blind "$d/cantdiff.md" && cantdiff=y
     council_response_is_blind "$d/wrapped-admission.md" && wrapped=y
     council_response_is_blind "$d/did-not-have-access.md" && did_not_have=y
@@ -2762,9 +3010,11 @@ test_council_blind_fabricated_narrative() {
     council_response_is_blind "$d/grounded.md" || grounded_ok=y
     council_response_is_blind "$d/planreview.md" || plan_ok=y
     council_response_is_blind "$d/third-person-restriction.md" || third_person_ok=y
+    council_response_is_blind "$d/access-control-prose.md" || access_control_ok=y
     council_response_is_blind "$d/mixed-person.md" || mixed_person_ok=y
     council_response_is_blind "$d/same-clause-third-party.md" || same_clause_third_party_ok=y
     council_response_is_blind "$d/same-clause-self-and-third-party.md" && same_clause_self_and_third_party=y
+    council_response_is_blind "$d/no-space-boundary.md" || no_space_boundary_ok=y
 
     # Integration: a fabricated-narrative agy seat alongside a grounded codex seat
     # in a standard (required=2) council. agy must be classified blind and dropped
@@ -2805,6 +3055,7 @@ test_council_blind_fabricated_narrative() {
 
     if [[ "$fab" == "y" && "$fab_len" -gt 1600 && "$grounded_ok" == "y" && "$plan_ok" == "y" \
           && "$third_person_ok" == "y" && "$mixed_person_ok" == "y" \
+          && "$access_control_ok" == "y" && "$no_space_boundary_ok" == "y" \
           && "$same_clause_third_party_ok" == "y" \
           && "$same_clause_self_and_third_party" == "y" \
           && "$wrapped" == "y" && "$did_not_have" == "y" \
@@ -2816,7 +3067,7 @@ test_council_blind_fabricated_narrative() {
           && "$approving_fams" == "1" && "$met" == "false" ]]; then
         test_pass
     else
-        test_fail "fabricated-narrative blind detection wrong: fab=$fab fab_len=$fab_len grounded_ok=$grounded_ok plan_ok=$plan_ok third_person_ok=$third_person_ok mixed_person_ok=$mixed_person_ok wrapped=$wrapped did_not_have=$did_not_have was_not_able=$was_not_able lack_access=$lack_access url_port=$url_port url_period_ok=$url_period_ok url_semicolon_ok=$url_semicolon_ok assuming_ok=$assuming_ok shellcite_blind=$shellcite_blind cantdiff=$cantdiff agy_status='$agy_status' blind=[$blind] responders=[$codex_prov] approving_families=$approving_fams met=$met"
+        test_fail "fabricated-narrative blind detection wrong: fab=$fab fab_len=$fab_len grounded_ok=$grounded_ok plan_ok=$plan_ok third_person_ok=$third_person_ok access_control_ok=$access_control_ok no_space_boundary_ok=$no_space_boundary_ok mixed_person_ok=$mixed_person_ok wrapped=$wrapped did_not_have=$did_not_have was_not_able=$was_not_able lack_access=$lack_access url_port=$url_port url_period_ok=$url_period_ok url_semicolon_ok=$url_semicolon_ok assuming_ok=$assuming_ok shellcite_blind=$shellcite_blind cantdiff=$cantdiff agy_status='$agy_status' blind=[$blind] responders=[$codex_prov] approving_families=$approving_fams met=$met"
         return 1
     fi
 }
@@ -3304,6 +3555,7 @@ test_council_rc_is_timeout_requires_watchdog_provenance
 test_council_advice_marks_timed_out_seat
 test_council_advice_marks_blind_seat
 test_council_blind_fabricated_narrative
+test_council_blind_summary_deference
 test_council_permission_denied_finding_is_substantive
 test_council_advice_does_not_infer_timeout_from_provider_rc
 test_council_seat_timeout_rejects_zero_and_nonnumeric
