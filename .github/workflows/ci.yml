@@ -1,0 +1,82 @@
+# THE FORK'S OWN GATE, and the word "own" is the whole design.
+#
+# This repository is a fork. Upstream's `test.yml` runs 141 unit suites here, and one of them --
+# `unit/test-council-command.sh`, "Council dry-run loads fresh benchmark snapshot" -- has failed on
+# every run since at least 2026-08-31, on push, on pull_request and on the nightly schedule alike.
+# 140 pass. That test is UPSTREAM's, not this fork's.
+#
+# Devon's ruling, 2026-09-05: this estate is not in the business of fixing upstream's issues. Let
+# them exist upstream and move our work forward.
+#
+# So the required check cannot be upstream's suite -- requiring a check that fails for reasons
+# nobody here owns blocks every pull request forever, which is the permanently-red control this
+# estate keeps writing down. And it cannot be `harden-selftest.yml` either: that one passes, but it
+# is PATH-FILTERED, so on any pull request not touching the hardening scripts it never reports at
+# all, and a required context that never reports leaves the pull request pending forever. Same
+# blockage, different route.
+#
+# WHAT THIS RUNS IS EXACTLY WHAT THE FORK ADDS. Both checks already existed inside
+# `upstream-sync.yml`, where they gate a sync and nothing else; here they gate every change to
+# `main`. Verified against the tree on 2026-09-05: the self-test passes 12/12 and 179 shell files
+# parse.
+#
+# NOT upstream's unit suite, deliberately. When upstream fixes that test, the fix arrives on the
+# next sync and `test.yml` goes green on its own -- at which point requiring it becomes a real
+# option. Until then this gate says something true about the thing this repository is responsible
+# for, which is more than a red one would.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # THE JOB NAME IS THE BRANCH-PROTECTION CONTEXT. Protection keys on the JOB, never the workflow:
+  # naming the workflow blocks every pull request forever, silently, because no such context ever
+  # reports. Renaming this is a paired operation -- move the protected context in the same change.
+  fork-checks:
+    name: hardening and syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The hardener is this fork's own code and upstream has never seen it. Not path-filtered:
+      # a change anywhere can break what it asserts, and the point of a required check is that it
+      # reports on every pull request.
+      - name: Hardening self-test
+        run: python3 .github/scripts/test_security_harden.py
+
+      # Every hook this plugin installs runs on Devon's machine on Claude Code events, so a shell
+      # file that does not parse is a broken hook, not a style problem. `bash -n` parses without
+      # executing. The tree list matches the one `upstream-sync.yml` validates after hardening.
+      - name: Shell syntax
+        run: |
+          rc=0
+          count=0
+          while IFS= read -r -d '' f; do
+            count=$((count + 1))
+            if ! bash -n "$f" 2>/tmp/synerr; then
+              echo "::error file=$f::invalid bash syntax"
+              sed 's/^/    /' /tmp/synerr
+              rc=1
+            fi
+          done < <(find hooks .claude-plugin/hooks .claude/hooks bin scripts \
+                     -type f \( -name '*.sh' -o -name '*.bash' \) -print0 2>/dev/null)
+          echo "checked ${count} shell files"
+          # A sweep that matched nothing is not a pass. If the directories are ever renamed this
+          # check would silently verify an empty set, which is the shape of a control that has
+          # stopped controlling.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::the shell sweep matched no files; the tree layout has moved"
+            exit 1
+          fi
+          exit "$rc"
