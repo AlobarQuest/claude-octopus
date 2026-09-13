@@ -1,6 +1,127 @@
 # Changelog
 
-## [Unreleased]
+## [11.5.0] - 2026-09-12
+
+### Added
+
+- `/octo:guide` finds commands from your installed version. `/octo:auto help`
+  uses the same catalog without contacting a provider.
+- New local installation tools show provider readiness, validate active Claude
+  and Codex plugin caches, repair broken stable links, run offline plugin-file
+  checks, and export a filtered workflow summary for another supported host.
+- Host-scoped install metadata now records Claude and Codex separately and
+  refreshes when the loaded root, version, install scope, or context profile
+  changes.
+- Context profiles keep optional reinforcement hooks off in `core`, enable them
+  for active workflows in `orchestration`, and allow every profile-managed
+  context hook in `full`. Safety and lifecycle hooks remain active in every
+  profile.
+
+### Changed
+
+- Installation diagnostics use the shared Provider Registry readiness result
+  instead of inferring authentication from the presence of a CLI executable.
+- Doctor and the new installation tools use a lightweight CLI path that avoids
+  starting workflow state, event logs, or provider probes.
+- Unknown `octopus` CLI commands now return a usage error with exit code 2
+  instead of printing help and returning success.
+
+### Fixed
+
+- Cache checks inspect the active plugin even when its host cache is absent.
+  Repairs validate their target and preserve modified or unowned wrappers.
+- Installation records recover after interrupted writes and retain separate
+  Claude and Codex entries during concurrent updates.
+- Handoff exports preserve existing directory permissions and use project
+  decisions and active blockers. Exports are summaries, not resumable sessions.
+- Optional post-tool hooks receive the host session identity and cover Read,
+  WebFetch, and Grep events. Core mode still leaves these optional hooks off.
+- `octopus explain` reaches the saved-run inspector, and `sys-setup` resolves
+  to setup.
+- Package lifecycle tests use isolated state and the candidate artifact instead
+  of uninstalling the user plugin or testing the latest remote version.
+
+## [11.4.2] - 2026-09-11
+
+### Changed
+
+- Keep private development material out of public plugin releases
+
+## [11.4.1] - 2026-09-10
+
+### Changed
+
+- Fix doctor diagnostics for non-interactive agent checks and recurring failure reports
+
+## [11.4.0] - 2026-09-10
+
+### Added
+
+- Premium `/octo:auto` routes now run one bounded cross-provider peer check
+  after an eligible single-owner result. Budget and Standard routes keep their
+  existing single-owner path, and workflows that already use councils, debates,
+  crossfire, parallel work, or full review are not double-reviewed. Use
+  `OCTOPUS_PREMIUM_PEER_CHECK=off` to disable the automatic addition.
+
+## [11.3.0] - 2026-09-08
+
+### Fixed
+
+- Council blind-seat detection now catches two further "reviewed nothing"
+  evasions that were counting toward `met: true`: (1) summary paraphrase — an
+  APPROVE that leans on the task summary as confirmation of code-level facts
+  ("the summary confirms …" or the reverse attribution "… as stated in / per the
+  summary", a reported-clean `tsc`/test run standing in for reading the code);
+  and (2) prior-phase deference — deferring to earlier rounds
+  or gates ("given the rigorous validations in previous rounds … I recommend
+  proceeding") instead of reading the artifact. Both are gated on the response
+  citing zero real `path.ext:line` locations, so a genuinely grounded review is
+  never flagged; a bare "based on the provided summary" (as a plan/design review
+  legitimately uses) is deliberately not a trigger, and code terms are matched as
+  whole tokens so a substring like `api` in "capital" is not read as a code
+  claim. Also fixes the existing
+  first-person access-failure check missing an explicit admission whose sentence
+  contained a dotted filename (e.g. `Foo.test.tsx`), whose periods split the
+  sentence and severed the first-person clause from the access-failure clause.
+  Flagged seats are excluded from the approving tally and recorded in
+  `summary.json` `quorum.blind_seats` like any other blind seat.
+- Harden evidence-aware grounding against substring and markdown-boundary false
+  positives, recognize common source/configuration extensions and flexible
+  citation spacing, and validate citation ranges before a seat can count toward
+  quorum.
+
+### Added
+
+- Council `--context-file <path>` (repeatable): inline a referenced artifact
+  (e.g. a working-tree diff) into every seat prompt as untrusted data. Council
+  seats default to `permissionMode: "plan"` with no file tools, so a task that
+  merely names a path cannot be read by the seat — it reviews the surrounding
+  prose and produces an ungrounded verdict. This hands the seat the bytes
+  directly (least-privilege: no file tools, no skip-permissions), control-char
+  sanitized like research context and bounded by `COUNCIL_CONTEXT_MAX_BYTES`
+  (default 128 KiB) with an explicit truncation notice so a partial artifact is
+  never mistaken for the whole. The content is fenced with an unforgeable
+  per-artifact nonce delimiter (same technique as `sanitize_external_content`)
+  and only the sanitized basename is shown, so inlined content or a crafted path
+  cannot break out and forge an authoritative block — safer than a caller
+  inlining a diff into the authoritative task string.
+
+## [11.2.1] - 2026-09-07
+
+### Fixed
+
+- Verify worker process identities before cancellation and retire finished
+  worker registrations, so cancellation skips stale or unverifiable PIDs.
+- Bind cancellation signals to Linux process handles or macOS audit tokens,
+  including escalation after a grace period. Fail closed when native identity
+  checks are unavailable, and preserve processes whose ownership is unknown.
+- Finish cleanup promptly when workers exit, without repeated shell process
+  scans or an unconditional grace-period delay. Verify workflow registrations
+  in one batch instead of launching a verifier repeatedly for each worker.
+- Route the legacy release command through the maintained release workflow.
+- Recover collected probe results when interruption leaves no synthesis marker.
+- Resolve workflow model summaries with the configured provider, phase and role.
+- Preserve unattended mode in Jenkins and hosts that disable background tasks.
 
 ## [11.2.0] - 2026-09-07
 
@@ -738,7 +859,7 @@ See [the v11 migration notes](docs/MIGRATING-V11.md) and
 - **Command Code CLI provider** (`commandcode`, `commandcode-research`, `commandcode-fast`) — native provider with an isolated `env -i` environment, JSON result parsing, and role-scoped permission modes (`plan` by default, `yolo` only for implementer and developer roles). Configured via `COMMAND_CODE_API_KEY`, `OCTOPUS_COMMANDCODE_BIN`, `OCTOPUS_COMMANDCODE_MAX_TURNS`. Thanks to @Jhacarreiro.
 - **`review.finding` lifecycle events** (oco-aek) — one per structured finding, carrying severity, file, line, category, confidence and title. Finding *detail* is deliberately excluded: it can be long and can quote source. Emission is idempotent per findings file, because `render_terminal_report` also runs on the inline-comment fallback path and would otherwise double-count every finding.
 - **`synthesis.start` / `synthesis.end` events** (oco-aek) bracketing the design-review reduce step, with elapsed time, output size, and whether the synthesis produced anything. Previously only per-agent dispatch was visible and the synthesis boundary was not. This completes the structured lifecycle event vocabulary.
-- `docs/roadmaps/2026-07-28-control-plane-decomposition.md` — breaks the `oco-fgg` control-plane epic into three claimable children with ready-to-run `bd create` commands, a recommended order, and a record of which roadmap bullets the event work has now closed.
+- The control-plane roadmap now breaks the `oco-fgg` epic into three claimable children with a recommended order and records which roadmap bullets the event work has closed.
 
 
 ## [9.56.1] - 2026-07-27
@@ -1096,7 +1217,7 @@ Claude Code 2026 compatibility layer release.
 
 - `scripts/helpers/audit-provider-contracts.sh` release-gate audit for provider drift: provider states must stay `available|missing|degraded`, qwen auth must fail closed when OAuth cannot be validated, stale free-tier setup guidance must not reappear, and provider version floors must remain env-overridable.
 - `scripts/lib/events.sh` opt-in JSONL event emitter plus `check-providers.sh` `provider.status` events when `OCTO_EVENT_LOG` is set. Normal provider-check stdout is unchanged.
-- `docs/roadmaps/2026-06-13-next-minor-major.md` captures the June 2026 Claude Code plugin research and maps it into the next minor and major Octopus direction.
+- June 2026 Claude Code plugin research was captured and mapped into the next minor and major Octopus direction.
 
 ### Fixed
 
