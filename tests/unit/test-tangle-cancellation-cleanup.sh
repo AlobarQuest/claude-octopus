@@ -19,6 +19,7 @@ source "$PROJECT_ROOT/scripts/lib/events.sh"
 source "$PROJECT_ROOT/scripts/lib/review.sh"
 # shellcheck source=/dev/null
 source "$PROJECT_ROOT/scripts/lib/workflows.sh"
+source "$PROJECT_ROOT/scripts/lib/pid-ledger.sh"
 
 test_suite "Tangle cancellation cleanup (#900)"
 
@@ -58,11 +59,9 @@ else
 fi
 
 test_case "frozen cancellation never signals its own worker group"
-self_guard_definition="$(declare -f review_kill_process_tree_frozen)"
-if grep -Fq '^[1-9][0-9]*$' <<< "$self_guard_definition" \
-   && grep -Fq 'root_pid" != "1' <<< "$self_guard_definition" \
-   && grep -Fq 'root_pid" == "$$' <<< "$self_guard_definition" \
-   && grep -Fq 'current_pgid' <<< "$self_guard_definition"; then
+self_guard_rc=0
+review_kill_process_tree_frozen "$$" 2>/dev/null || self_guard_rc=$?
+if [[ "$self_guard_rc" != 0 && "$OCTO_PROCESS_CLEANUP_RESULT" == unverified ]]; then
     test_pass
 else
     test_fail "cancellation helper lacks orchestrator PID/group self-protection"
@@ -70,8 +69,7 @@ fi
 
 test_case "PID ledger pruning uses the spawn ledger lock"
 prune_definition="$(declare -f _octopus_tangle_prune_pid_ledger)"
-if grep -Fq 'flock -x' <<< "$prune_definition" \
-   && grep -Fq '${PID_FILE}.lock' <<< "$prune_definition"; then
+if grep -Fq 'octopus_pid_prune' <<< "$prune_definition"; then
     test_pass
 else
     test_fail "Tangle PID ledger pruning is not serialized with spawn appends"
@@ -80,12 +78,13 @@ fi
 test_case "PID ledger pruning stops when lock acquisition fails"
 PID_FILE="$TEST_TMP_DIR/lock-failure-pids"
 printf '%s\n' '101:codex:tangle-lock-failure-0' '202:qwen:other-task' > "$PID_FILE"
-flock() { return 1; }
+saved_prune_impl="$(declare -f octopus_pid_prune)"
+octopus_pid_prune() { return 1; }
 set +e
 _octopus_tangle_prune_pid_ledger 'lock-failure'
 lock_failure_rc=$?
 set -e
-unset -f flock
+eval "$saved_prune_impl"
 if [[ "$lock_failure_rc" -ne 0 ]] \
    && grep -q 'tangle-lock-failure-0' "$PID_FILE" \
    && grep -q 'other-task' "$PID_FILE"; then
@@ -169,7 +168,7 @@ task_group="900001"
 task_id="tangle-${task_group}-0"
 result_file="$RESULTS_DIR/codex-${task_id}.md"
 printf '# Agent: codex\n# Task ID: %s\n\n## Output\npartial output\n' "$task_id" > "$result_file"
-printf '%s:%s:%s\n' "$worker_pid" "codex" "$task_id" > "$PID_FILE"
+octopus_pid_register "$worker_pid" codex "$task_id" >/dev/null
 
 # Exercise the signal handoff window: the worker reached the authoritative PID
 # ledger before spawn_agent_capture_pid returned it to the in-memory array.
@@ -231,7 +230,7 @@ else
     test_fail "provider survived cancellation before PID ledger handoff"
 fi
 
-test_case "frozen cancellation kills a worker group after its leader exits"
+test_case "exited group leader is not authority to signal an orphan group"
 group_child_pid_file="$TEST_TMP_DIR/group-child.pid"
 group_late_write="$TEST_TMP_DIR/group-late-write"
 monitor_was_enabled=false
@@ -251,15 +250,16 @@ wait "$group_leader_pid" 2>/dev/null || true
 group_child_pid="$(cat "$group_child_pid_file" 2>/dev/null || true)"
 
 review_kill_process_tree_frozen "$group_leader_pid"
+orphan_cleanup_result="$OCTO_PROCESS_CLEANUP_RESULT"
 sleep 1.1
 
 if [[ -n "$group_child_pid" ]] \
    && ! process_is_running "$group_child_pid" \
-   && [[ ! -e "$group_late_write" ]]; then
+   && [[ -e "$group_late_write" && "$orphan_cleanup_result" == already-exited ]]; then
     test_pass
 else
     kill -KILL "$group_child_pid" 2>/dev/null || true
-    test_fail "provider group survived after its recorded leader exited"
+    test_fail "cancellation inferred ownership from an exited group leader"
 fi
 
 test_case "tangle signal handler maps TERM to exit 143"
@@ -288,7 +288,7 @@ else
     test_fail "top-level orchestrator still swallows INT/TERM without cancellation and exit"
 fi
 
-test_case "targeted kill ignores a dead or recycled PID"
+test_case "targeted kill ignores a nonexistent PID"
 if declare -F kill_agents >/dev/null 2>&1; then
     unset -f kill_agents
 fi

@@ -24,11 +24,18 @@ while [[ "$_octo_early_index" -lt "${#_octo_early_args[@]}" ]]; do
             break ;;
     esac
 done
-if [[ "$_octo_early_command" == "explain" ]] || \
-   [[ "$_octo_early_command" == "status" && "${_octo_early_args[$((_octo_early_index + 1))]:-}" == "--run" ]]; then
-    OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
-fi
-unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
+case "$_octo_early_command" in
+    guide|doctor|capabilities|cache-check|check-cache|security-audit|repair|handoff|profile|install-state)
+        OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
+        ;;
+    explain)
+        OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
+        ;;
+    status)
+        [[ "${_octo_early_args[$((_octo_early_index + 1))]:-}" == "--run" ]] && \
+            OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
+        ;;
+esac
 
 # Resolve the physical path (pwd -P) so SCRIPT_DIR points at the real install
 # directory even when the script is invoked through the ~/.claude-octopus/plugin
@@ -37,6 +44,49 @@ unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
 # at itself (ELOOP). See #371.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Diagnostics and repair do not need the 70+ workflow libraries loaded below.
+# Dispatch them before those libraries initialize state, event logs, or probes.
+if [[ "${BASH_SOURCE[0]}" == "${0}" && "$_octo_early_index" -eq 0 ]]; then
+    _octo_early_tail=("${_octo_early_args[@]:1}")
+    case "$_octo_early_command" in
+        guide) exec python3 "${SCRIPT_DIR}/guide.py" "${_octo_early_tail[@]}" ;;
+        auto)
+            if [[ "${#_octo_early_tail[@]}" -eq 1 ]]; then
+                case "${_octo_early_tail[0]}" in
+                    help|list|commands|capabilities|options|workflows)
+                        exec python3 "${SCRIPT_DIR}/guide.py" list ;;
+                esac
+            fi
+            ;;
+        doctor) exec bash "${SCRIPT_DIR}/doctor.sh" "${_octo_early_tail[@]}" ;;
+        capabilities) exec bash "${SCRIPT_DIR}/capabilities.sh" "${_octo_early_tail[@]}" ;;
+        cache-check|check-cache) exec bash "${SCRIPT_DIR}/cache-check.sh" "${_octo_early_tail[@]}" ;;
+        security-audit) exec bash "${SCRIPT_DIR}/security-audit.sh" "${_octo_early_tail[@]}" ;;
+        repair) exec bash "${SCRIPT_DIR}/repair.sh" "${_octo_early_tail[@]}" ;;
+        handoff) exec bash "${SCRIPT_DIR}/handoff.sh" "${_octo_early_tail[@]}" ;;
+        profile) exec bash "${SCRIPT_DIR}/profile.sh" "${_octo_early_tail[@]}" ;;
+        install-state)
+            # shellcheck source=lib/lifecycle.sh
+            source "${SCRIPT_DIR}/lib/lifecycle.sh"
+            case "${_octo_early_tail[0]:-show}" in
+                record)
+                    [[ "${#_octo_early_tail[@]}" -eq 1 ]] || { printf 'Usage: %s install-state [show|record]\n' "$(basename "$0")" >&2; exit 2; }
+                    octo_lifecycle_record_install
+                    printf 'Install state recorded at %s\n' "$OCTO_LIFECYCLE_STATE_FILE"
+                    ;;
+                show|status|--json)
+                    [[ "${#_octo_early_tail[@]}" -le 1 ]] || { printf 'Usage: %s install-state [show|record]\n' "$(basename "$0")" >&2; exit 2; }
+                    octo_lifecycle_state_json
+                    ;;
+                *) printf 'Unknown install-state action: %s\n' "${_octo_early_tail[0]}" >&2; exit 2 ;;
+            esac
+            exit 0
+            ;;
+    esac
+    unset _octo_early_tail
+fi
+unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
 source "${SCRIPT_DIR}/lib/plugin-root.sh" 2>/dev/null || true
 
 # Self-heal: ensure the stable symlink exists for LLM Bash tool access.
@@ -135,6 +185,7 @@ source "${SCRIPT_DIR}/agent-teams-bridge.sh"
 source "${SCRIPT_DIR}/lib/common.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/utils.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/state-root.sh"
+source "${SCRIPT_DIR}/lib/lifecycle.sh"
 source "${SCRIPT_DIR}/lib/session-id.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/similarity.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/models.sh" 2>/dev/null || true
@@ -174,6 +225,7 @@ source "${SCRIPT_DIR}/lib/plugin-update.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/doctor.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/quota-watcher.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/agent-sync.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/automatic-peer.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/persona-loader.sh" 2>/dev/null || true
 
 # Error tracking & UX progress (v9.7.x extraction)
@@ -1314,7 +1366,7 @@ ERROR_CODES=(
 # Non-interactive execution for GitHub Actions and audit logging
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CI_MODE="${CI:-false}"
+# Preserve the host/CI detection above until init_ci_mode applies CLI defaults.
 AUDIT_LOG="${WORKSPACE_DIR:-$HOME/.claude-octopus}/audit.log"
 
 # Initialize CI mode from environment
@@ -1970,62 +2022,16 @@ SETUP_CONFIG_FILE="$WORKSPACE_DIR/.setup-complete"
 
 # v8.13.0: One-command release cycle
 do_release() {
-    local version
-    version=$(jq -r '.version' "$SCRIPT_DIR/../.claude-plugin/plugin.json")
-    local tag="v$version"
-
-    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${MAGENTA}  Claude Octopus Release: $tag${NC}"
-    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${NC}"
-
-    # Step 1: Validate
-    echo -e "\n${BLUE}Step 1: Validating...${NC}"
-    bash "$SCRIPT_DIR/validate-release.sh" || { echo "Validation failed"; return 1; }
-
-    # Step 2: Ensure tag exists and points to HEAD
-    echo -e "\n${BLUE}Step 2: Tagging...${NC}"
-    local head_sha
-    head_sha=$(git rev-parse HEAD)
-    local tag_sha
-    tag_sha=$(git rev-list -n 1 "$tag" 2>/dev/null || echo "")
-    if [[ "$tag_sha" != "$head_sha" ]]; then
-        git tag -d "$tag" 2>/dev/null || true
-        git tag "$tag"
-        echo -e "${GREEN}✓ Tag $tag -> $(git rev-parse --short HEAD)${NC}"
-    else
-        echo -e "${GREEN}✓ Tag $tag already at HEAD${NC}"
+    if [[ $# -ne 2 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || -z "${2//[[:space:]]/}" ]]; then
+        printf 'Usage: orchestrate.sh release <version> "<summary>"\n' >&2
+        return 2
     fi
-
-    # Step 3: Pull --rebase to incorporate any remote changes
-    echo -e "\n${BLUE}Step 3: Syncing with remote...${NC}"
-    git fetch origin main --tags 2>/dev/null
-    git rebase origin/main 2>/dev/null || {
-        echo -e "${RED}Rebase conflict. Resolve manually, then re-run.${NC}"
-        return 1
-    }
-
-    # Step 4: Re-tag after rebase (HEAD may have changed)
-    local new_head
-    new_head=$(git rev-parse HEAD)
-    if [[ "$new_head" != "$head_sha" ]]; then
-        git tag -d "$tag" 2>/dev/null || true
-        git tag "$tag"
-        echo -e "${GREEN}✓ Re-tagged after rebase: $tag -> $(git rev-parse --short HEAD)${NC}"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        printf 'Would run release.sh for v%s: %s\n' "$1" "$2"
+        return 0
     fi
-
-    # Step 5: Push tag (force, to handle existing remote tags)
-    echo -e "\n${BLUE}Step 4: Pushing tag...${NC}"
-    git push origin "$tag" --force --no-verify 2>/dev/null
-    echo -e "${GREEN}✓ Tag pushed${NC}"
-
-    # Step 6: Push main
-    echo -e "\n${BLUE}Step 5: Pushing main...${NC}"
-    git push origin main --no-verify
-    echo -e "${GREEN}✓ Branch pushed${NC}"
-
-    echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}  ✅ Released $tag${NC}"
-    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+    # release.sh owns branch validation, CI, merge, tagging and marketplace sync.
+    bash "$SCRIPT_DIR/release.sh" "$@"
 }
 
 # [EXTRACTED to lib/doctor.sh]
@@ -2158,7 +2164,9 @@ show_status() {
     local total=0
 
     echo -e "${BLUE}Active Agents:${NC}"
-    while IFS=: read -r pid agent task_id; do
+    local pid agent task_id identity
+    while IFS=: read -r pid agent task_id identity; do
+        [[ -z "$identity" ]] || agent="$(octopus_pid_agent_name "$agent")"
         ((total++)) || true
         if kill -0 "$pid" 2>/dev/null; then
             echo -e "  ${GREEN}●${NC} PID $pid - $agent ($task_id) - RUNNING"
@@ -2220,52 +2228,33 @@ show_status() {
 
 kill_agents() {
     local target="${1:-}"
+    local pid agent task_id identity
 
     if [[ ! -f "$PID_FILE" ]]; then
         log WARN "No PID file found"
         return
     fi
 
-    if [[ "$target" == "all" || -z "$target" ]]; then
-        log INFO "Killing all tracked agents..."
-        while IFS=: read -r pid agent task_id; do
-            if [[ ! "$pid" =~ ^[1-9][0-9]*$ || "$pid" == "1" ]]; then
-                log WARN "Skipping invalid tracked PID: $pid"
-                continue
-            fi
-            if kill -0 "$pid" 2>/dev/null; then
-                if declare -F review_kill_process_tree_frozen >/dev/null 2>&1; then
-                    review_kill_process_tree_frozen "$pid"
-                else
-                    kill "$pid" 2>/dev/null || true
-                fi
-                wait "$pid" 2>/dev/null || true
-                log INFO "Killed $agent ($pid)"
-            fi
-        done < "$PID_FILE"
-        : > "$PID_FILE"
-    else
-        log INFO "Killing agent: $target"
-        while IFS=: read -r pid agent task_id; do
-            if [[ "$pid" == "$target" || "$task_id" == "$target" ]]; then
-                if [[ ! "$pid" =~ ^[1-9][0-9]*$ || "$pid" == "1" ]]; then
-                    log WARN "Skipping invalid tracked PID: $pid"
-                    continue
-                fi
-                if ! kill -0 "$pid" 2>/dev/null; then
-                    log WARN "Agent $agent ($pid) is no longer running"
-                    continue
-                fi
-                if declare -F review_kill_process_tree_frozen >/dev/null 2>&1; then
-                    review_kill_process_tree_frozen "$pid"
-                else
-                    kill "$pid" 2>/dev/null || true
-                fi
-                wait "$pid" 2>/dev/null || true
-                log INFO "Killed $agent ($pid)"
-            fi
-        done < "$PID_FILE"
-    fi
+    while IFS=: read -r pid agent task_id identity; do
+        [[ -z "$identity" ]] || agent="$(octopus_pid_agent_name "$agent")"
+        [[ -z "$target" || "$target" == all || "$pid" == "$target" || "$task_id" == "$target" ]] || continue
+        if [[ ! "$pid" =~ ^[1-9][0-9]*$ || "$pid" == "1" ]]; then
+            log WARN "Skipping invalid tracked PID: $pid"
+            continue
+        fi
+        if ! octopus_pid_matches "$pid" "$identity"; then
+            log WARN "Skipping stale or unverifiable agent registration: $agent ($pid)"
+        elif declare -F review_kill_process_tree_frozen >/dev/null 2>&1; then
+            review_kill_process_tree_frozen "$pid" "$identity" || return 1
+            wait "$pid" 2>/dev/null || true
+            log INFO "Killed $agent ($pid)"
+        else
+            log ERROR "Process-tree cancellation helper unavailable"
+            return 1
+        fi
+        # Remove only the snapshot entry, preserving concurrent registrations.
+        octopus_pid_retire "$pid" "$task_id" "$identity" || return 1
+    done < "$PID_FILE"
 }
 
 clean_workspace() {
@@ -2328,7 +2317,7 @@ init_ci_mode
 validate_autonomy_mode || exit $?
 
 # Artifact-only run inspection must not invoke even provider version probes.
-OCTOPUS_ARTIFACT_READ_ONLY=false
+OCTOPUS_ARTIFACT_READ_ONLY="$OCTOPUS_EARLY_ARTIFACT_READ_ONLY"
 if [[ "${1:-}" == "explain" ]] || \
    [[ "${1:-}" == "status" && "${2:-}" == "--run" ]]; then
     OCTOPUS_ARTIFACT_READ_ONLY=true
@@ -2646,7 +2635,7 @@ case "$COMMAND" in
         # Auto-detect task group and prompt from marker files if not provided
         if [[ -z "$synth_task_group" ]]; then
             # Find the most recent marker file
-            latest_marker=$(ls -t "$RESULTS_DIR"/probe-needs-synthesis-*.marker 2>/dev/null | head -1)
+            latest_marker=$(octopus_latest_probe_file "$RESULTS_DIR" 'probe-needs-synthesis-*.marker')
 
             if [[ -n "$latest_marker" && -f "$latest_marker" ]]; then
                 # shellcheck disable=SC1090
@@ -2658,7 +2647,7 @@ case "$COMMAND" in
 
             # If still no task group, find most recent probe results
             if [[ -z "$synth_task_group" ]]; then
-                latest_result=$(ls -t "$RESULTS_DIR"/*-probe-*-*.md 2>/dev/null | head -1)
+                latest_result=$(octopus_latest_probe_file "$RESULTS_DIR" '*-probe-*-*.md')
                 if [[ -n "$latest_result" ]]; then
                     # Extract task_group from filename pattern: agent-probe-TASKGROUP-N.md
                     synth_task_group=$(basename "$latest_result" | sed -E 's/.*-probe-([0-9]+)-.*/\1/')
@@ -2902,10 +2891,48 @@ case "$COMMAND" in
         preflight_check
         ;;
     release)
-        do_release
+        do_release "$@"
         ;;
     doctor)
         do_doctor "$@"
+        ;;
+    guide)
+        python3 "${SCRIPT_DIR}/guide.py" "$@"
+        ;;
+    capabilities)
+        bash "${SCRIPT_DIR}/capabilities.sh" "$@"
+        ;;
+    cache-check|check-cache)
+        bash "${SCRIPT_DIR}/cache-check.sh" "$@"
+        ;;
+    security-audit)
+        bash "${SCRIPT_DIR}/security-audit.sh" "$@"
+        ;;
+    repair)
+        bash "${SCRIPT_DIR}/repair.sh" "$@"
+        ;;
+    handoff)
+        bash "${SCRIPT_DIR}/handoff.sh" "$@"
+        ;;
+    profile)
+        bash "${SCRIPT_DIR}/profile.sh" "$@"
+        ;;
+    install-state)
+        case "${1:-show}" in
+            record)
+                [[ $# -eq 1 ]] || { printf 'Usage: %s install-state [show|record]\n' "$(basename "$0")" >&2; exit 2; }
+                octo_lifecycle_record_install
+                printf 'Install state recorded at %s\n' "$OCTO_LIFECYCLE_STATE_FILE"
+                ;;
+            show|status|--json)
+                [[ $# -le 1 ]] || { printf 'Usage: %s install-state [show|record]\n' "$(basename "$0")" >&2; exit 2; }
+                octo_lifecycle_state_json
+                ;;
+            *)
+                printf 'Unknown install-state action: %s\n' "$1" >&2
+                exit 2
+                ;;
+        esac
         ;;
     update-plugin)
         octo_plugin_update_run "$PLUGIN_DIR" "$OCTOPUS_HOST"
@@ -2986,8 +3013,15 @@ case "$COMMAND" in
         ;;
     auto)
         source "${SCRIPT_DIR}/lib/auto-route.sh" 2>/dev/null || true
-        [[ $# -lt 1 ]] && { log ERROR "Usage: auto <prompt>"; exit 1; }
-        auto_route "$*"
+        _auto_selected_workflow=""
+        if [[ "${1:-}" == "--workflow" ]]; then
+            [[ $# -ge 2 ]] || { log ERROR "Usage: auto [--workflow <token>] <prompt>"; exit 1; }
+            _auto_selected_workflow="$2"
+            shift 2
+        fi
+        [[ $# -lt 1 ]] && { log ERROR "Usage: auto [--workflow <token>] <prompt>"; exit 1; }
+        auto_route "$*" "$_auto_selected_workflow"
+        unset _auto_selected_workflow
         ;;
     parallel)
         parallel_execute "${1:-}"
@@ -3270,10 +3304,10 @@ case "$COMMAND" in
         _perplexity_ok="false"; [[ -n "${PERPLEXITY_API_KEY:-}" ]] && _perplexity_ok="true"
 
         # Model resolution for key roles
-        _model_researcher=$(get_agent_model "researcher" 2>/dev/null || echo "unknown")
-        _model_implementer=$(get_agent_model "implementer" 2>/dev/null || echo "unknown")
-        _model_reviewer=$(get_agent_model "reviewer" 2>/dev/null || echo "unknown")
-        _model_synthesizer=$(get_agent_model "synthesizer" 2>/dev/null || echo "unknown")
+        _model_researcher=$(octopus_workflow_role_model "$_init_workflow" researcher 2>/dev/null || echo "unknown")
+        _model_implementer=$(octopus_workflow_role_model "$_init_workflow" implementer 2>/dev/null || echo "unknown")
+        _model_reviewer=$(octopus_workflow_role_model "$_init_workflow" reviewer 2>/dev/null || echo "unknown")
+        _model_synthesizer=$(octopus_workflow_role_model "$_init_workflow" synthesizer 2>/dev/null || echo "unknown")
 
         # Capabilities
         _agent_teams="${SUPPORTS_AGENT_TEAMS:-false}"

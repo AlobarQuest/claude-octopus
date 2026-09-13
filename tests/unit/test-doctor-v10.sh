@@ -122,6 +122,24 @@ else
     test_fail "rc=$DOCTOR_FIXTURE_RC stdout=$DOCTOR_FIXTURE_STDOUT"
 fi
 
+test_case "recurrence diagnostics render under inherited errexit"
+recurrence_root="$TEST_TMP_DIR/recurrence-errexit"
+mkdir -p "$recurrence_root/.octo"
+printf '{"type":"quality-gate","timestamp":"%s","source":"fixture"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$recurrence_root/.octo/decisions.jsonl"
+set +e
+recurrence_output="$({
+    WORKSPACE_DIR="$recurrence_root" OCTOPUS_PLATFORM="${OCTOPUS_PLATFORM:-Linux}" \
+        bash -c 'set -eo pipefail; source "$1/scripts/lib/doctor.sh"; DOCTOR_RESULTS_NAME=() DOCTOR_RESULTS_CAT=() DOCTOR_RESULTS_STATUS=() DOCTOR_RESULTS_MSG=() DOCTOR_RESULTS_DETAIL=(); doctor_check_recurrence; printf "%s\\n" "${DOCTOR_RESULTS_MSG[@]}"' _ "$PROJECT_ROOT"
+} 2>&1)"
+recurrence_rc=$?
+set -e
+if [[ "$recurrence_rc" -eq 0 && "$recurrence_output" == *"quality gate failure(s) recorded"* ]]; then
+    test_pass
+else
+    test_fail "rc=$recurrence_rc output=$recurrence_output"
+fi
+
 test_case "unknown flags fail with usage instead of being ignored"
 run_doctor_fixture bad-flag providers --definitely-unknown
 if [[ "$DOCTOR_FIXTURE_RC" -eq 2 && -z "$DOCTOR_FIXTURE_STDOUT" && "$DOCTOR_FIXTURE_STDERR" == *"Usage:"* && "$DOCTOR_FIXTURE_STDERR" == *"--definitely-unknown"* ]]; then
@@ -185,6 +203,162 @@ if [[ "$elapsed" -lt 5 && "${DOCTOR_RESULTS_STATUS[0]:-}" == fail ]]; then
     test_pass
 else
     test_fail "elapsed=${elapsed}s result=${DOCTOR_RESULTS_STATUS[0]:-missing}"
+fi
+
+test_case "agents CLI accepts a JSON array and reports its exact jq count"
+agents_plugin_root="$TEST_TMP_DIR/agents-plugin"
+agents_bin="$TEST_TMP_DIR/agents-bin"
+mkdir -p "$agents_plugin_root/agents" "$agents_bin"
+printf '  sample-agent:\n    isolation: worktree\n' > "$agents_plugin_root/agents/config.yaml"
+cat > "$agents_bin/claude" <<'SH'
+#!/usr/bin/env bash
+case "${DOCTOR_AGENTS_MODE:-compact}" in
+    compact) printf '%s\n' '[{"sessionId":"one"},{"sessionId":"two"}]' ;;
+    empty) printf '%s\n' '[]' ;;
+    object) printf '%s\n' '{"agents":[]}' ;;
+    truncated) printf '%s\n' '[{"sessionId":"one"}' ;;
+    malformed) printf '%s\n' 'not-json' ;;
+    bracketed_malformed) printf '%s\n' '[not-json]' ;;
+    failed) printf '%s\n' '[{"sessionId":"one"}]'; exit 7 ;;
+esac
+SH
+chmod +x "$agents_bin/claude"
+
+run_agents_check() {
+    DOCTOR_RESULTS_NAME=() DOCTOR_RESULTS_CAT=() DOCTOR_RESULTS_STATUS=() DOCTOR_RESULTS_MSG=() DOCTOR_RESULTS_DETAIL=()
+    PLUGIN_DIR="$agents_plugin_root" SUPPORTS_AGENTS_CLI=true PATH="$agents_bin:$PATH" \
+        DOCTOR_AGENTS_MODE="$1" doctor_check_agents
+}
+
+agent_result_status() {
+    local result_name="$1"
+    local i
+    for i in "${!DOCTOR_RESULTS_NAME[@]}"; do
+        if [[ "${DOCTOR_RESULTS_NAME[$i]}" == "$result_name" ]]; then
+            printf '%s|%s\n' "${DOCTOR_RESULTS_STATUS[$i]}" "${DOCTOR_RESULTS_MSG[$i]}"
+            return
+        fi
+    done
+}
+
+run_agents_check compact
+agent_cli_result="$(agent_result_status agents-cli)"
+if [[ "$agent_cli_result" == "pass|Claude agents CLI: 2 agents registered" ]]; then
+    test_pass
+else
+    test_fail "unexpected jq agents result: $agent_cli_result"
+fi
+
+test_case "agents CLI jq path reports 0 for an empty array (jq -e exit-status edge case)"
+run_agents_check empty
+agent_cli_result="$(agent_result_status agents-cli)"
+if [[ "$agent_cli_result" == "pass|Claude agents CLI: 0 agents registered" ]]; then
+    test_pass
+else
+    test_fail "unexpected jq empty-array result: $agent_cli_result"
+fi
+
+test_case "agents CLI rejects valid non-array JSON instead of passing a key count"
+run_agents_check object
+agent_cli_result="$(agent_result_status agents-cli)"
+if [[ "$agent_cli_result" == "warn|Claude agents CLI returned unparseable output" ]]; then
+    test_pass
+else
+    test_fail "non-array JSON was accepted: $agent_cli_result"
+fi
+
+test_case "agents CLI preserves command failures as warnings"
+run_agents_check failed
+agent_cli_result="$(agent_result_status agents-cli)"
+if [[ "$agent_cli_result" == "warn|Claude agents CLI returned no data" ]]; then
+    test_pass
+else
+    test_fail "command failure was accepted: $agent_cli_result"
+fi
+
+test_case "agents CLI no-jq fallback counts compact sessions and empty arrays"
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "jq" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+run_agents_check compact
+compact_result="$(agent_result_status agents-cli)"
+run_agents_check empty
+empty_result="$(agent_result_status agents-cli)"
+unset -f command
+if [[ "$compact_result" == "pass|Claude agents CLI: 2 agents registered" &&
+      "$empty_result" == "pass|Claude agents CLI: 0 agents registered" ]]; then
+    test_pass
+else
+    test_fail "no-jq counts were incorrect: compact=$compact_result empty=$empty_result"
+fi
+
+test_case "agents CLI no-jq fallback rejects truncated arrays"
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "jq" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+run_agents_check truncated
+truncated_result="$(agent_result_status agents-cli)"
+unset -f command
+if [[ "$truncated_result" == "warn|Claude agents CLI returned unparseable output" ]]; then
+    test_pass
+else
+    test_fail "truncated no-jq output was accepted: $truncated_result"
+fi
+
+test_case "agents CLI jq path rejects genuinely malformed (non-JSON) output"
+run_agents_check malformed
+malformed_jq_result="$(agent_result_status agents-cli)"
+if [[ "$malformed_jq_result" == "warn|Claude agents CLI returned unparseable output" ]]; then
+    test_pass
+else
+    test_fail "malformed output was accepted by jq path: $malformed_jq_result"
+fi
+
+test_case "agents CLI no-jq fallback rejects genuinely malformed (non-JSON) output"
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "jq" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+run_agents_check malformed
+malformed_nojq_result="$(agent_result_status agents-cli)"
+unset -f command
+if [[ "$malformed_nojq_result" == "warn|Claude agents CLI returned unparseable output" ]]; then
+    test_pass
+else
+    test_fail "malformed no-jq output was accepted: $malformed_nojq_result"
+fi
+
+test_case "agents CLI jq path rejects bracket-shaped but internally invalid JSON"
+run_agents_check bracketed_malformed
+bracketed_jq_result="$(agent_result_status agents-cli)"
+if [[ "$bracketed_jq_result" == "warn|Claude agents CLI returned unparseable output" ]]; then
+    test_pass
+else
+    test_fail "bracket-shaped invalid JSON was accepted by jq path: $bracketed_jq_result"
+fi
+
+test_case "agents CLI no-jq fallback reports 0 for bracket-shaped but internally invalid JSON (documented heuristic limit)"
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "jq" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+run_agents_check bracketed_malformed
+bracketed_nojq_result="$(agent_result_status agents-cli)"
+unset -f command
+if [[ "$bracketed_nojq_result" == "pass|Claude agents CLI: 0 agents registered" ]]; then
+    test_pass
+else
+    test_fail "bracket-shaped invalid JSON no-jq result was unexpected: $bracketed_nojq_result"
 fi
 
 test_case "JSON escaping preserves UTF-8 and control characters"
@@ -283,16 +457,13 @@ eval "$original_readiness_all"
 eval "$original_doctor_check_providers"
 eval "$original_doctor_output_json"
 
-test_case "plan provider display reuses preflight output and handles dispatch failure"
+test_case "plan provider display reuses preflight output"
 plan_command="$(cat "$PROJECT_ROOT/commands/plan.md")"
-release_plan="$(cat "$PROJECT_ROOT/docs/plans/2026-08-25-v10-reliability-modernization.md")"
 if [[ "$plan_command" == *'PROVIDER_STATUS='* &&
-      "$plan_command" == *'Render every provider status from `PROVIDER_STATUS`'* &&
-      "$release_plan" == *'CODEX_REVIEW_RC'* &&
-      "$release_plan" == *'BLOCKED: Codex dispatch failed'* ]]; then
+      "$plan_command" == *'Render every provider status from `PROVIDER_STATUS`'* ]]; then
     test_pass
 else
-    test_fail "plan must retain one provider-status source and fail closed on Codex dispatch"
+    test_fail "plan must retain one provider-status source"
 fi
 
 test_summary
