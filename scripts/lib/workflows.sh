@@ -1203,8 +1203,13 @@ build_tangle_subtask_prompt() {
         return 64
     fi
 
-    local repo_context migration_safety
+    local repo_context migration_safety execution_scope_guidance
     repo_context=$(tangle_build_repo_context_block "$assigned_subtask")
+    if [[ "$(tangle_write_scope_mode)" == "adaptive" ]]; then
+        execution_scope_guidance='- For [CODING] work, Files:/Creates: are initial ownership hints. You may expand to safe repository paths necessary for the original task; record every expansion in the final output under "## Scope Expansions". Reads: remains read-only context unless adaptive expansion is explicitly required and reported.'
+    else
+        execution_scope_guidance='- For [CODING] work, treat Files: paths/directories as the exclusive write-scope authority for existing/anchored paths and Creates: paths as exclusive authorization for new artifacts. Reads: is read-only context and never grants write permission. The resolved repository context is lookup guidance only; it does not grant permission to edit additional files; do not edit files clearly owned by another subtask or broaden the declared scope.'
+    fi
     if [[ "${OCTOPUS_TANGLE_ALLOW_DB_APPLY:-false}" == "true" ]]; then
         migration_safety="- External migration application is explicitly authorized for this run. Never rename, delete, or rewrite a migration after any database has applied its version, and prove the applied history still matches the files on disk."
     else
@@ -1223,8 +1228,9 @@ ${repo_context}
 Execution instructions:
 - Treat the original task as authoritative for requirements, explicit file targets, acceptance criteria, and forbidden changes.
 - Complete the assigned subtask without dropping original constraints that apply to it.
+$(tangle_read_scope_guidance)
 - For [CODING] work, edit the repository files directly in the current worktree. Do not only describe a plan or paste code snippets.
-- For [CODING] work, treat Files: paths/directories as the exclusive write-scope authority for existing/anchored paths and Creates: paths as exclusive authorization for new artifacts. Reads: is read-only context and never grants write permission. The resolved repository context is lookup guidance only; it does not grant permission to edit additional files; do not edit files clearly owned by another subtask or broaden the declared scope.
+${execution_scope_guidance}
 - If the subtask creates a new exported component, command, event type, route, hook, or helper, wire it into at least one production call site unless the original task explicitly asks for an isolated artifact.
 - Tests alone are not integration evidence. User-facing features must be reachable from the relevant user flow or the subtask must report a blocker.
 Migration safety:
@@ -1541,18 +1547,53 @@ tangle_resolve_write_scope_files() {
 }
 
 
+tangle_write_scope_mode() {
+    case "${OCTOPUS_TANGLE_WRITE_SCOPE_MODE:-strict}" in
+        adaptive) printf '%s\n' adaptive ;;
+        *) printf '%s\n' strict ;;
+    esac
+}
+
+tangle_require_execution_boundary() {
+    [[ "$(tangle_write_scope_mode)" == "adaptive" ]] || return 0
+
+    # Adaptive mode is only safe when the provider is forced through the
+    # filesystem boundary. Probe first, then publish the boundary requirement
+    # so a failed capability check cannot leave stale state in the caller.
+    unset OCTOPUS_TANGLE_EXECUTION_BOUNDARY
+    if ! declare -F octopus_tangle_execution_boundary_probe >/dev/null 2>&1; then
+        log ERROR "Adaptive Tangle dispatch refused: execution-boundary probe is unavailable"
+        return 125
+    fi
+    if ! octopus_tangle_execution_boundary_probe; then
+        log ERROR "Adaptive Tangle dispatch refused: no enforceable filesystem boundary is available"
+        return 125
+    fi
+    export OCTOPUS_TANGLE_EXECUTION_BOUNDARY=true
+}
+
 tangle_build_repo_context_block() {
     local assigned_subtask="$1"
     local repo_root
     repo_root=$(tangle_resolve_repo_root) || return 0
     local resolved
     resolved=$(tangle_resolve_repo_context_files "$assigned_subtask")
+    local scope_mode scope_guidance
+    scope_mode=$(tangle_write_scope_mode)
+    if [[ "$scope_mode" == "adaptive" ]]; then
+        scope_guidance="- Files:/Creates: declare initial ownership and coordination scope, not an exclusive write jail. If the task requires another safe path inside the repository, you may edit it when necessary to complete the original task.
+- Do not edit paths outside the repository, unsafe/symlink escape paths, secrets, credentials, runtime state, or files explicitly forbidden by the original task.
+- Prefer not to modify files clearly owned by another subtask; if necessary, make the smallest change and report it under ## Scope Expansions with the reason.
+- If the additional path would require a protected/external/destructive action, report a blocker instead."
+    else
+        scope_guidance="- The subtask's Files: clause is the only write authority. Use the resolved files below to locate a concrete target for an approximate declared path and to read supporting context.
+- Never edit a resolved file outside the subtask's declared Files: scope. Report a blocker instead.
+- If none of the resolved files fit, inspect the tracked file list and report the blocker."
+    fi
     cat <<EOF
 Repository context for this subtask:
 - The worktree is the source of truth. Do not invent repository layout from generic names.
-- The subtask's Files: clause is the only write authority. Use the resolved files below to locate a concrete target for an approximate declared path and to read supporting context.
-- Never edit a resolved file outside the subtask's declared Files: scope. Report a blocker instead.
-- If none of the resolved files fit, inspect the tracked file list and report the blocker.
+${scope_guidance}
 
 Tracked files, first 200:
 $(git -C "$repo_root" ls-files 2>/dev/null | sed -n '1,200p')
@@ -1560,6 +1601,58 @@ $(git -C "$repo_root" ls-files 2>/dev/null | sed -n '1,200p')
 Resolved relevant files to inspect/edit for this subtask:
 ${resolved:-<none resolved>}
 EOF
+}
+
+# Read context never grants write authority.
+tangle_read_scope_mode() {
+    case "${OCTOPUS_TANGLE_READ_SCOPE_MODE:-strict}" in
+        strict|contextual) printf "%s\n" "${OCTOPUS_TANGLE_READ_SCOPE_MODE:-strict}" ;;
+        *) echo "Invalid OCTOPUS_TANGLE_READ_SCOPE_MODE (expected strict or contextual)" >&2; return 64 ;;
+    esac
+}
+
+tangle_read_scope_is_allowed() {
+    local scope="${1:-}" mode repo_root
+    mode=$(tangle_read_scope_mode) || return 1
+    repo_root=$(tangle_resolve_repo_root 2>/dev/null) || return 1
+    if [[ "$mode" == strict ]]; then
+        tangle_scope_is_safe_relative_path "$scope" || return 1
+    fi
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 "${BASH_SOURCE[0]%/*}/../tangle-read-scope.py" "$repo_root" "$scope" "$mode"
+}
+
+tangle_read_scope_guidance() {
+    local mode
+    mode=$(tangle_read_scope_mode) || return 1
+    printf "Read context policy: %s.\n" "$mode"
+    if [[ "$mode" == contextual ]]; then
+        printf "%s\n" "- Reads: may name repository-relative paths, absolute paths within the repository, or absolute paths within caller-authorized context entries below. Directories authorize descendants; files authorize only themselves."
+        printf "%s\n" "- Do not infer read roots from task prose or widen them to parent directories. External context is always read-only, including in adaptive write mode."
+        printf "%s\n" "Caller-authorized context entries:" "${OCTOPUS_TANGLE_CONTEXTUAL_READ_ROOTS:-<none>}"
+    else
+        printf "%s\n" "- Reads: must use safe repository-relative paths. External task references do not grant filesystem read authority."
+    fi
+    printf "%s\n" "- Never read credentials, .env files, private keys, auth stores or Git metadata, including through symlinks or recursive scans. Reads: never grants write permission."
+    printf "%s\n" "- This is a declaration/prompt policy, not an OS sandbox. Do not bypass it with another tool."
+}
+
+tangle_validate_read_scopes() {
+    local subtask="$1" scopes scope
+    [[ "$(tangle_structured_clause_count "$subtask" "Reads")" -le 1 ]] || {
+        echo "subtask has multiple Reads clauses"; return 1;
+    }
+    if tangle_scope_clause_has_parenthetical_prose "$subtask" "Reads"; then
+        echo "subtask has descriptive prose inside Reads: scope"; return 1
+    fi
+    scopes=$(tangle_extract_read_scopes "$subtask")
+    while IFS= read -r scope; do
+        [[ -n "$scope" ]] || continue
+        if ! tangle_read_scope_is_allowed "$scope"; then
+            echo "unsafe Reads scope ${scope} for read mode $(tangle_read_scope_mode)"
+            return 1
+        fi
+    done <<< "$scopes"
 }
 
 tangle_scope_is_safe_relative_path() {
@@ -1641,6 +1734,26 @@ tangle_scope_has_ambiguous_basename() {
         [[ "$count" -gt 1 ]] && return 0
     done < <(git -C "$repo_root" ls-files 2>/dev/null)
     return 1
+}
+
+tangle_adaptive_scope_path_is_safe() {
+    local path="$1" path_lower repo_root
+
+    # Adaptive evidence is still constrained to ordinary repository paths.
+    # In particular, never turn a protected/runtime path or a symlink escape
+    # into an apparently successful scope expansion.
+    tangle_scope_is_safe_relative_path "$path" || return 1
+    path_lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+    case "$path_lower" in
+        .claude-octopus|.claude-octopus/*|.octo|.octo/*) return 1 ;;
+    esac
+    repo_root=$(tangle_resolve_repo_root 2>/dev/null) || return 1
+    [[ -d "$repo_root" ]] || return 1
+    tangle_scope_has_symlink_component "$path" && return 1
+    # Expansion cannot authorize paths the shared credential policy forbids
+    # reading. Force repository-only validation even with external read grants.
+    OCTOPUS_TANGLE_READ_SCOPE_MODE=strict tangle_read_scope_is_allowed "$path" || return 1
+    return 0
 }
 
 tangle_scope_is_known_or_explicit_new_file() {
@@ -1788,6 +1901,8 @@ tangle_reformat_decomposition() {
     local repo_file_map="${4:-}"
     local reformat_prompt="Reformat the previous Octopus task decomposition. Do not add analysis.
 
+$(tangle_read_scope_guidance)
+
 Required output format, exactly one subtask per line:
 1. [CODING] Short title — Files: relative/file.js, another/file.js — Task: specific coding work
 2. [REASONING] Short title — Task: specific reasoning/review work
@@ -1856,6 +1971,8 @@ tangle_redecompose() {
     local original_task="$1" previous_output="$2" reason="$3" repo_file_map="${4:-}" design_resolution="${5:-}"
     local prompt="The previous attempt did not produce a usable Octopus task decomposition. Decompose the original task again from first principles.
 
+$(tangle_read_scope_guidance)
+
 Return only numbered lines. Every [CODING] line must include Files: and/or Creates:, Reads: is read-only, coding scopes must be disjoint, and preserve the original deliverable.
 
 ${repo_file_map}
@@ -1893,6 +2010,8 @@ tangle_decomposition_adequacy_response_valid() {
 tangle_decomposition_adequacy_review() {
     local original_task="$1" subtasks="$2" repo_file_map="${3:-}" design_resolution="${4:-}" planner_decisions="${5:-}"
     local prompt="Review whether this decomposition can materialize the original deliverable. Check coverage, scope coherence, artifact creation, and scope discipline. Reads: never grants write permission.
+
+$(tangle_read_scope_guidance)
 
 Return exactly VERDICT: PASS or FAIL, REASONS:, and SCOPE_REVIEW: NONE or actionable MOVE_TO_READS/REMOVE_WRITE/ADD_WRITE lines.
 
@@ -1938,6 +2057,8 @@ tangle_reconsideration_response_valid() {
 tangle_reconsider_decomposition() {
     local original_task="$1" previous_decomposition="$2" adequacy_review="$3" repo_file_map="${4:-}" design_resolution="${5:-}"
     local prompt="Reconsider this decomposition after an independent adequacy review. For every SCOPE_REVIEW recommendation, explicitly ACCEPT or REJECT it with a reason. Preserve the original deliverable, keep coding scopes disjoint, and return only DECISIONS: followed by DECOMPOSITION: with numbered subtasks.
+
+$(tangle_read_scope_guidance)
 
 ${repo_file_map}
 Design-review resolution: ${design_resolution:-[none]}
@@ -2012,6 +2133,7 @@ tangle_effective_write_scopes() {
 
 tangle_validate_parallel_write_scopes() {
     local subtasks="$1"
+    tangle_read_scope_mode >/dev/null || return 1
     local task_index=0
     local coding_count=0
     local existing_scopes=()
@@ -2024,6 +2146,11 @@ tangle_validate_parallel_write_scopes() {
         local subtask
         subtask=$(echo "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//')
         ((task_index++)) || true
+        local read_reason
+        if ! read_reason=$(tangle_validate_read_scopes "$subtask"); then
+            echo "subtask ${task_index}: ${read_reason}"
+            return 1
+        fi
 
         if [[ "$subtask" =~ \[REASONING\] ]]; then
             if ! tangle_task_clause_is_valid "$subtask"; then
@@ -2057,22 +2184,12 @@ tangle_validate_parallel_write_scopes() {
         fi
 
         local clause_name
-        for clause_name in Files Creates Reads; do
+        for clause_name in Files Creates; do
             if tangle_scope_clause_has_parenthetical_prose "$subtask" "$clause_name"; then
                 echo "coding subtask ${task_index} has descriptive prose inside ${clause_name}: scope; move descriptions into Task:"
                 return 1
             fi
         done
-
-        local read_scopes
-        read_scopes=$(tangle_extract_read_scopes "$subtask")
-        while IFS= read -r declared_scope; do
-            [[ -z "$declared_scope" ]] && continue
-            if ! tangle_scope_is_safe_relative_path "$declared_scope"; then
-                echo "coding subtask ${task_index} has unsafe Reads scope '${declared_scope}'"
-                return 1
-            fi
-        done <<< "$read_scopes"
 
         local declared_scope
         while IFS= read -r declared_scope; do
@@ -4188,6 +4305,8 @@ $(git -C "$repo_root" ls-files 2>/dev/null | sed -n 1,200p)
     fi
 
     local decompose_prompt="Decompose this task into subtasks that can be executed in parallel.
+
+$(tangle_read_scope_guidance)
 Each subtask should be:
 - Self-contained and independently verifiable
 - Clear about inputs and expected outputs
@@ -4340,17 +4459,36 @@ Every [CODING] line must include at least one same-line Files: or Creates: claus
         fi
         echo -e "${CYAN}Planner scope decisions:${NC}"
         echo "$planner_decisions"
-        if ! adequacy_review=$(tangle_decomposition_adequacy_review "$resolved_prompt" "$subtasks" "$repo_file_map" "$design_review_synthesis" "$planner_decisions") || \
-           ! tangle_decomposition_adequacy_verdict "$adequacy_review"; then
-            adequacy_reason=$(tangle_decomposition_adequacy_reasons "$adequacy_review")
-            log ERROR "Decomposition remains semantically inadequate after one planner reconsideration: ${adequacy_reason:-malformed verdict}"
+        local second_adequacy_review_rc=0
+        if adequacy_review=$(tangle_decomposition_adequacy_review "$resolved_prompt" "$subtasks" "$repo_file_map" "$design_review_synthesis" "$planner_decisions"); then
+            :
+        else
+            second_adequacy_review_rc=$?
+        fi
+        if [[ "$second_adequacy_review_rc" -ne 0 ]] || \
+           [[ -z "${adequacy_review//[[:space:]]/}" ]] || \
+           ! tangle_decomposition_adequacy_response_valid "$adequacy_review"; then
+            log ERROR "Second decomposition adequacy review did not complete or was malformed; refusing implementation spawn"
             return 1
+        fi
+        if ! tangle_decomposition_adequacy_verdict "$adequacy_review"; then
+            adequacy_reason=$(tangle_decomposition_adequacy_reasons "$adequacy_review")
+            if [[ "$(tangle_write_scope_mode)" == "adaptive" ]]; then
+                log WARN "Decomposition remains semantically imperfect after planner reconsideration (${adequacy_reason:-malformed verdict}); continuing in adaptive write-scope mode and relying on implementation diff/review/CI gates"
+            else
+                log ERROR "Decomposition remains semantically inadequate after one planner reconsideration: ${adequacy_reason:-malformed verdict}"
+                return 1
+            fi
         fi
     fi
     tangle_scope_manifest=$(tangle_scope_manifest_digest "$subtasks") || {
         log ERROR "Unable to seal the final Tangle scope manifest before provider dispatch"
         return 1
     }
+
+    if ! tangle_require_execution_boundary; then
+        return 125
+    fi
 
     # Coding providers must run behind a parent-owned filesystem boundary.
     export OCTOPUS_TANGLE_EXECUTION_BOUNDARY=true
@@ -4645,8 +4783,7 @@ tangle_authorized_read_scopes() {
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         tangle_line_is_numbered_subtask "$line" || continue
-        [[ "$line" =~ \[CODING\] ]] || continue
-        subtask=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//; s/\[CODING\][[:space:]]*//')
+        subtask=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//; s/\[(CODING|REASONING)\][[:space:]]*//')
         tangle_extract_read_scopes "$subtask"
     done <<< "$subtasks" | sed '/^$/d' | sort -u
 }
@@ -4693,36 +4830,75 @@ tangle_validate_results_with_scope_contract() {
     local baseline_head="${5:-}" scope_manifest_digest="${6:-}"
     local worktree_before_state_file="${7:-}"
     local validation_file="${RESULTS_DIR:-${HOME}/.claude-octopus/results}/tangle-validation-${task_group}.md"
-    local authorized read_only violations="" current_manifest_digest base_rc=0
+    local authorized read_only violations="" adaptive_scope_evidence="" integrity_violations="" current_manifest_digest base_rc=0
     authorized=$(tangle_authorized_write_scopes "$subtasks")
     read_only=$(tangle_authorized_read_scopes "$subtasks")
     if [[ -n "${TANGLE_WORKTREE_BEFORE_STATE_DIGEST:-}" && -n "$worktree_before_state_file" ]]; then
         local state_digest
         state_digest=$(tangle_file_digest "$worktree_before_state_file" 2>/dev/null || true)
         if [[ "$state_digest" != "$TANGLE_WORKTREE_BEFORE_STATE_DIGEST" ]]; then
-            violations="The parent-owned worktree state snapshot changed before final validation."
+            integrity_violations="The parent-owned worktree state snapshot changed before final validation."
         fi
     fi
-    if [[ -z "$violations" ]] && ! violations=$(tangle_changed_paths_outside_write_scopes "$subtasks" "$worktree_before_file" "$baseline_head" "$worktree_before_state_file"); then
-        violations="Unable to verify final worktree changes against immutable start HEAD."
+    local scope_violations=""
+    if scope_violations=$(tangle_changed_paths_outside_write_scopes "$subtasks" "$worktree_before_file" "$baseline_head" "$worktree_before_state_file"); then
+        while IFS= read -r path; do
+            [[ -n "$path" ]] || continue
+            if [[ "$(tangle_write_scope_mode)" == "adaptive" ]] && tangle_adaptive_scope_path_is_safe "$path"; then
+                adaptive_scope_evidence="${adaptive_scope_evidence}${path}"$'\n'
+            else
+                [[ -z "$violations" ]] || violations="${violations}"$'\n'
+                if [[ "$(tangle_write_scope_mode)" == "adaptive" ]]; then
+                    violations="${violations}Unsafe adaptive scope path: ${path}."
+                else
+                    violations="${violations}${path}"
+                fi
+            fi
+        done <<< "$scope_violations"
+    else
+        [[ -z "$integrity_violations" ]] || integrity_violations="${integrity_violations}"$'\n'
+        integrity_violations="${integrity_violations}Unable to verify final worktree changes against immutable start HEAD."
     fi
     if [[ -n "$scope_manifest_digest" ]]; then
         current_manifest_digest=$(tangle_scope_manifest_digest "$subtasks" 2>/dev/null || true)
         if [[ -z "$current_manifest_digest" || "$current_manifest_digest" != "$scope_manifest_digest" ]]; then
-            [[ -z "$violations" ]] || violations="${violations}"$'\n'
-            violations="${violations}The parent-owned scope manifest changed before final validation."
+            [[ -z "$integrity_violations" ]] || integrity_violations="${integrity_violations}"$'\n'
+            integrity_violations="${integrity_violations}The parent-owned scope manifest changed before final validation."
         fi
+    fi
+    if [[ -n "$integrity_violations" ]]; then
+        [[ -z "$violations" ]] || violations="${violations}"$'\n'
+        violations="${violations}${integrity_violations}"
     fi
     TANGLE_SCOPE_CONTRACT_VIOLATIONS="$violations"
     export TANGLE_SCOPE_CONTRACT_VIOLATIONS
     if [[ -n "$violations" ]]; then
         mkdir -p "$(dirname "$validation_file")"
+        if [[ -n "$adaptive_scope_evidence" ]]; then
+            log WARN "Adaptive write-scope expansion detected alongside an integrity failure; refusing normal validation: $(printf '%s' "$adaptive_scope_evidence" | tr '\n' ' ')"
+        fi
         printf '%s\n' '# Tangle Validation Report' '' "**Task Group:** $task_group" '**Status:** FAILED' '**Reason:** deterministic write-scope pre-gate' > "$validation_file"
         tangle_append_write_scope_contract_report "$validation_file" "$authorized" "$read_only" "$violations" "$baseline_head"
+        if [[ -n "$adaptive_scope_evidence" ]]; then
+            {
+                echo ""
+                echo "### Adaptive Write Scope Expansions"
+                echo "Files:/Creates: were initial ownership hints for this run. The following additional repository paths changed and also require review, but integrity validation failed before normal validation/review:"
+                printf '%s\n' "$adaptive_scope_evidence" | sed '/^$/d; s/^/- /'
+            } >> "$validation_file"
+        fi
         return 1
     fi
     validate_tangle_results "$task_group" "$original_prompt" "$worktree_before_file" "$baseline_head" "$worktree_before_state_file" || base_rc=$?
     tangle_append_write_scope_contract_report "$validation_file" "$authorized" "$read_only" "$violations" "$baseline_head"
+    if [[ -n "$adaptive_scope_evidence" ]]; then
+        {
+            echo ""
+            echo "### Adaptive Write Scope Expansions"
+            echo "Files:/Creates: were initial ownership hints for this run. The following additional repository paths changed and must be reviewed with the final diff/CI/PR gates:"
+            printf '%s\n' "$adaptive_scope_evidence" | sed '/^$/d; s/^/- /'
+        } >> "$validation_file"
+    fi
     return "$base_rc"
 }
 

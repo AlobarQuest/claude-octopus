@@ -662,6 +662,17 @@ A SessionStart hook injects the dispatch profile (prompt anti-patterns, judgment
 
 ---
 
+
+## Preflight context summarization
+
+Oversized prompts can be summarized before dispatch. The preflight summarizer receives a budget derived from the target agent effective budget rather than the ordinary synthesizer role quota.
+
+- `OCTOPUS_CONTEXT_SUMMARY_TRIGGER_RATIO` defaults to `110` and controls the summarize trigger as a percentage of the target effective budget.
+- `OCTOPUS_PREFLIGHT_CONTEXT_BUDGET_RATIO` defaults to `125` and scales the preflight input budget from the target budget.
+- `OCTOPUS_PREFLIGHT_CONTEXT_BUDGET_ADDITIVE` defaults to `2048` and provides an additive floor above the target budget.
+
+The effective preflight budget is capped by the summarizer provider input ceiling. `fail` and `truncate` strategies keep exact budget enforcement; the trigger ratio applies only to `summarize`. Preflight summaries are rejected when they drop Tangle machine-consumed anchors present in the original prompt. See `docs/context-budget.md`.
+
 ## Trust, Safety, and Limits
 
 **Command namespace** — Slash commands are namespaced under `/octo:*` and the `octo` natural-language prefix routes through the plugin's intent detection. Lifecycle hooks (session start/end, prompt submit, tool use, compaction, plan mode, worktrees, task lifecycle, idle, config change, permission events) also attach to Claude Code so multi-provider routing, freeze/discipline modes, and the work-queue watcher can function. See `hooks/hooks.json` for the full list. Uninstall removes every hook.
@@ -798,3 +809,7 @@ MIT — see [LICENSE](LICENSE)
 <p align="center">
   <a href="https://github.com/nyldn">nyldn</a> | MIT License | <a href="https://www.reddit.com/r/ClaudeOctopus/">r/ClaudeOctopus</a> | <a href="https://github.com/nyldn/claude-octopus/issues">Report Issues</a>
 </p>
+
+### Tangle external read context
+
+See [Tangle read context](docs/tangle-read-context.md) for the optional `strict`/`contextual` read policy. The upstream default remains `strict`; read authorization never broadens write permission.

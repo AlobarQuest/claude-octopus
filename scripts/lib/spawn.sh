@@ -388,9 +388,17 @@ octopus_tangle_boundary_paths_are_disjoint() {
     return 0
 }
 
+octopus_tangle_execution_boundary_required() {
+    [[ "${phase:-}" == "tangle" ]] || return 1
+    [[ "${OCTOPUS_TANGLE_EXECUTION_BOUNDARY:-false}" == "true" || \
+       "${OCTOPUS_TANGLE_WRITE_SCOPE_MODE:-strict}" == "adaptive" ]]
+}
+
 octopus_tangle_apply_execution_boundary() {
-    [[ "${OCTOPUS_TANGLE_EXECUTION_BOUNDARY:-false}" == "true" ]] || return 0
-    [[ "${phase:-}" == "tangle" ]] || return 0
+    # Adaptive scope expansion is never allowed to rely on the caller's
+    # opt-in flag. Enforce the boundary at the provider dispatch point too,
+    # because this function is also callable outside tangle_develop().
+    octopus_tangle_execution_boundary_required || return 0
 
     local worktree="${OCTOPUS_TANGLE_WORKTREE:-${PROJECT_ROOT:-$PWD}}"
     local physical_worktree results_dir physical_results git_metadata
@@ -410,6 +418,12 @@ octopus_tangle_apply_execution_boundary() {
         esac
         return 125
     }
+    # Publish the boundary state only after the capability probe succeeds.
+    # A rejected adaptive dispatch must not leave a stale success flag in the
+    # caller's environment.
+    if [[ "${OCTOPUS_TANGLE_WRITE_SCOPE_MODE:-strict}" == "adaptive" ]]; then
+        export OCTOPUS_TANGLE_EXECUTION_BOUNDARY=true
+    fi
 
     local -a boundary_cmd
     # Keep the host root read-only so provider executables and credentials
@@ -1026,8 +1040,7 @@ ${heuristic_ctx}"
             log "INFO" "Bounded dispatch (${_eff_timeout}s) uses the supervised provider subprocess; native Agent Teams cannot enforce a wall-clock timeout"
         fi
     fi
-    if [[ "${OCTOPUS_TANGLE_EXECUTION_BOUNDARY:-false}" == "true" && \
-          "${phase:-}" == "tangle" ]]; then
+    if octopus_tangle_execution_boundary_required; then
         # Native Agent Teams cannot inherit the sealed filesystem mounts used
         # by the supervised subprocess path. This applies to reasoning agents
         # too: they must not get an unconfined write-capable working directory.
@@ -1743,23 +1756,37 @@ ${heuristic_ctx}"
 
 # #947: spawn_agent (below) can legitimately block for a while before it ever
 # prints a provider PID, because it runs enforce_context_budget ->
-# summarize_then_dispatch synchronously on an oversized prompt: up to 5
-# summarizer candidates (lib/dispatch.sh's optional OCTOPUS_OVERSIZE_SUMMARIZER
-# plus its 4-candidate fallback chain), each bounded by compute_dynamic_timeout
-# — which OCTOPUS_AGENT_TIMEOUT overrides directly (lib/heartbeat.sh). A fixed
-# 120s wait window (the old 1200-attempt default) could be shorter than a
-# single candidate's own budget, let alone the full chain, so a wrapper that
-# was still legitimately working had its seat discarded by
-# spawn_agent_capture_pid below. Derive the default window from the same
-# per-candidate budget the summarizer chain actually uses, times the
-# worst-case candidate count, so raising OCTOPUS_AGENT_TIMEOUT to help a slow
-# provider can no longer cause its own spawn to be abandoned instead. Falls
-# back to a fixed value if heartbeat.sh (an optional dep of this file) isn't
-# sourced, e.g. a test harness loading only this function. Split out from
-# spawn_agent_capture_pid so the pure derivation is unit-testable without
-# driving the real polling loop.
+# summarize_then_dispatch synchronously on an oversized prompt. Each configured
+# summarizer candidate is bounded by compute_dynamic_timeout — which
+# OCTOPUS_AGENT_TIMEOUT overrides directly (lib/heartbeat.sh). A fixed 120s
+# wait window (the old 1200-attempt default) could be shorter than a single
+# candidate's own budget, so a wrapper that was still legitimately working had
+# its seat discarded by spawn_agent_capture_pid below. Derive the default window
+# from the same per-candidate budget and the configured candidate count, so
+# raising OCTOPUS_AGENT_TIMEOUT to help a slow provider can no longer cause its
+# own spawn to be abandoned instead. Fall back to the historical five-seat
+# estimate when dispatch.sh is not sourced, e.g. a test harness loading only
+# this function. Split out from spawn_agent_capture_pid so the pure derivation
+# is unit-testable without driving the real polling loop.
+_octopus_spawn_summarizer_candidate_count() {
+    local fallback_candidates=5 candidate_count candidates
+    if ! declare -F octo_summarizer_candidates >/dev/null 2>&1; then
+        printf '%s\n' "$fallback_candidates"
+        return 0
+    fi
+
+    if ! candidates="$(octo_summarizer_candidates 2>/dev/null)"; then
+        printf '%s\n' "$fallback_candidates"
+        return 0
+    fi
+    candidate_count="$(printf '%s\n' "$candidates" | awk 'NF { count++ } END { print count + 0 }')"
+    [[ "$candidate_count" =~ ^[1-9][0-9]*$ ]] || candidate_count=1
+    printf '%s\n' "$candidate_count"
+}
+
 _octopus_spawn_pid_wait_default_attempts() {
-    local preflight_candidates=5
+    local preflight_candidates
+    preflight_candidates="$(_octopus_spawn_summarizer_candidate_count)" || preflight_candidates=5
     local preflight_secs=360
     if declare -F compute_dynamic_timeout >/dev/null 2>&1; then
         preflight_secs=$(compute_dynamic_timeout complex 2>/dev/null) || preflight_secs=360
