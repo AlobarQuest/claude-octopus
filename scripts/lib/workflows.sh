@@ -1831,7 +1831,7 @@ tangle_validate_subtask_task_clauses() {
     done <<< "$subtasks"
 }
 
-tangle_decomposition_output_usable() {
+tangle_decomposition_wire_output_usable() {
     local subtasks="${1:-}" parseable_count coding_count line subtask scopes
     tangle_validate_subtask_task_clauses "$subtasks" || return 1
     parseable_count="$(tangle_parseable_subtask_count "$subtasks")"
@@ -1853,6 +1853,28 @@ tangle_decomposition_output_usable() {
         [[ -n "$scopes" ]] || return 1
     done <<<"$subtasks"
     return 0
+}
+
+
+tangle_normalize_decomposition_output() {
+    local raw="${1:-}"
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\n' "$raw" | python3 "${BASH_SOURCE[0]%/*}/../tangle-normalize-decomposition.py"
+}
+
+tangle_materialize_decomposition_output() {
+    local raw="${1:-}" normalized
+    if tangle_decomposition_wire_output_usable "$raw"; then
+        printf '%s\n' "$raw"
+        return 0
+    fi
+    normalized="$(tangle_normalize_decomposition_output "$raw" 2>/dev/null)" || return 1
+    tangle_decomposition_wire_output_usable "$normalized" || return 1
+    printf '%s\n' "$normalized"
+}
+
+tangle_decomposition_output_usable() {
+    tangle_materialize_decomposition_output "${1:-}" >/dev/null
 }
 
 tangle_run_decomposition_fallbacks() {
@@ -1879,19 +1901,49 @@ tangle_run_decomposition_fallbacks() {
     # hosts retain the direct compatibility path, but only after explicit
     # provider names have been validated above.
     if ! declare -F is_agent_available_v2 >/dev/null 2>&1; then
-        if run_agent_sync "$primary_agent" "$prompt" "$timeout_secs" researcher tangle; then
+        local candidate materialized
+        if candidate=$(run_agent_sync "$primary_agent" "$prompt" "$timeout_secs" researcher tangle); then
+            if materialized=$(tangle_materialize_decomposition_output "$candidate"); then
+                printf '%s\n' "$materialized"
+                return 0
+            fi
+        fi
+        if candidate=$(run_agent_sync "$preferred_fallback" "$prompt" "$timeout_secs" researcher tangle); then
+            if materialized=$(tangle_materialize_decomposition_output "$candidate"); then
+                printf '%s\n' "$materialized"
+                return 0
+            fi
+            # Preserve the legacy caller contract when neither provider
+            # returns materializable output: tangle_develop can still route
+            # the successful provider response through first-principles
+            # redecomposition instead of treating a dispatch error as final.
+            printf '%s\n' "$candidate"
             return 0
         fi
-        run_agent_sync "$preferred_fallback" "$prompt" "$timeout_secs" researcher tangle
-        return $?
+        return 1
     fi
 
     # The configured fallback chain is the single dispatch authority. Do not
     # bypass it with a direct retry: an invalid explicit provider must fail
     # closed instead of silently falling through to another agent.
-    run_agent_sync_fallback_chain \
+    local candidate materialized
+    if candidate=$(run_agent_sync_fallback_chain \
         "$primary_agent" "$prompt" "$timeout_secs" researcher tangle \
-        tangle_decomposition_output_usable default "$preferred_fallback"
+        tangle_decomposition_output_usable default "$preferred_fallback"); then
+        if materialized=$(tangle_materialize_decomposition_output "$candidate" 2>/dev/null); then
+            if ! tangle_decomposition_wire_output_usable "$candidate"; then
+                log INFO "Normalized structured Markdown decomposition locally before provider fallback"
+            fi
+            printf '%s\n' "$materialized"
+        else
+            # Preserve the fallback-chain validator contract for callers/tests
+            # that intentionally provide a different semantic validator.
+            printf '%s\n' "$candidate"
+        fi
+        return 0
+    else
+        return $?
+    fi
 }
 
 tangle_reformat_decomposition() {
@@ -1992,9 +2044,24 @@ ${previous_output}"
         log ERROR "Tangle redecomposition requires the configured fallback-chain engine"
         return 1
     fi
-    OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-redecompose-validation" \
+    local candidate materialized
+    if candidate=$(OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-redecompose-validation" \
         run_agent_sync_fallback_chain "$primary" "$prompt" 0 "researcher" "tangle" \
-        tangle_decomposition_output_usable default "$fallback"
+        tangle_decomposition_output_usable default "$fallback"); then
+        if materialized=$(tangle_materialize_decomposition_output "$candidate" 2>/dev/null); then
+            if ! tangle_decomposition_wire_output_usable "$candidate"; then
+                log INFO "Normalized structured Markdown redecomposition locally before returning"
+            fi
+            printf '%s\n' "$materialized"
+        else
+            # Preserve the fallback-chain validator contract for callers/tests
+            # that intentionally provide a different semantic validator.
+            printf '%s\n' "$candidate"
+        fi
+        return 0
+    else
+        return $?
+    fi
 }
 
 tangle_decomposition_adequacy_response_valid() {
