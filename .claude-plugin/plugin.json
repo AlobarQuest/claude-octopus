@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "11.5.0",
-  "description": "v11.5.0 - Find the right command, check your installation, and repair broken plugin links safely. Run /octo:setup.",
+  "version": "11.7.0",
+  "description": "v11.7.0 \u2014 Schema-versioned Tangle planning, consistent Doctor diagnostics, and bounded Premium frontier escalation. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"

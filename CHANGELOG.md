@@ -2,7 +2,45 @@
 
 ## [Unreleased]
 
+## [11.7.0] - 2026-09-19
+
+### Added
+
+- Premium mode can opt into one bounded Fable 5.1 or GPT-6 Astra architecture
+  or strategy escalation per run without turning either model into a default,
+  fallback, council, review, security, or implementation seat (#1023).
+
+### Changed
+
+- Frontier escalation limits now come from the shared model-policy catalog.
+  `/octo:model-config list` shows the active policy and warns when a
+  provider-wide pin disables it. Astra admission also requires a supported
+  Codex CLI and a run ceiling that covers the projected list-price usage for
+  the dispatched prompt.
+
+## [11.6.0] - 2026-09-18
+
+### Added
+
+- Tangle can adapt its write scope to the task and explicitly authorize
+  external read context, making parallel planning safer and more useful
+  (#1043, #1044).
+
+### Changed
+
+- Context summarization now uses the configured feature seats and preserves the
+  target workflow's context budget during preflight (#1042, #1045).
+- Structured Tangle decomposition is normalized before the compatibility
+  fallback path, improving planning reliability across provider output formats
+  (#1046).
+
 ### Fixed
+
+- Doctor now finds the installed plugin and configured workspace when invoked
+  directly or through the early `orchestrate.sh doctor` dispatch, so healthy
+  installations no longer report path-related failures (#1048, #1049).
+- The Tangle quality gate uses the correction-overlay rate so review results
+  reflect the actual corrected output (#1038).
 
 - Council verdict extraction (`_council_parse_final_verdict`) no longer misreads
   a seat's `VERDICT: APPROVE` as `REVISE`, which was systematically corrupting the

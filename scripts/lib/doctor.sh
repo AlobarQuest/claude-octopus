@@ -144,18 +144,36 @@ _doctor_iso_epoch() {
     [[ "$epoch" =~ ^[0-9]+$ ]] && printf '%s\n' "$epoch" || printf '0\n'
 }
 
+# Shared by doctor_check_state and doctor_check_v10_state_health's no-argument
+# fallback: CLAUDE_PLUGIN_DATA > CLAUDE_OCTOPUS_WORKSPACE > WORKSPACE_DIR >
+# ${HOME}/.claude-octopus, with the same leading-"~" normalization
+# resolve_octopus_workspace() (scripts/state-manager.sh) applies to
+# CLAUDE_OCTOPUS_WORKSPACE — doctor.sh doesn't source that resolver (a
+# lighter-weight check path), so this mirrors its tilde handling directly.
+_doctor_resolve_workspace_dir() {
+    local home_base="${HOME:-$PWD}"
+    local workspace="${CLAUDE_PLUGIN_DATA:-${CLAUDE_OCTOPUS_WORKSPACE:-${WORKSPACE_DIR:-${home_base}/.claude-octopus}}}"
+    if [[ "$workspace" == \~* ]]; then
+        workspace="${home_base}${workspace#\~}"
+    fi
+    printf '%s\n' "$workspace"
+}
+
 doctor_check_v10_state_health() {
-    local workspace="${WORKSPACE_DIR:-${HOME}/.claude-octopus}" cache_dir=""
+    # Accepts the already-resolved workspace dir (see doctor_check_state's
+    # CLAUDE_PLUGIN_DATA > CLAUDE_OCTOPUS_WORKSPACE > WORKSPACE_DIR precedence)
+    # so probe-cache/run/PID checks agree with the rest of doctor_check_state
+    # instead of re-deriving a WORKSPACE_DIR-only default that can point at
+    # the wrong directory when CLAUDE_PLUGIN_DATA or CLAUDE_OCTOPUS_WORKSPACE
+    # is set. Falls back to the same precedence when called without one.
+    local workspace="${1:-$(_doctor_resolve_workspace_dir)}"
+    local cache_dir="${workspace%/}/.cache/probe-results"
     local now stale_after snapshot seat_id timestamp _transition epoch
     local running_ids="" running_count=0 stale_count=0 invalid_snapshot_count=0
     local snapshot_rows=""
     local pid_file="${PID_FILE:-${workspace}/pids}" pid _agent task _identity
     local orphan_count=0 stale_pid_count=0
 
-    if type octo_probe_cache_dir >/dev/null 2>&1; then
-        cache_dir="$(octo_probe_cache_dir 2>/dev/null || true)"
-    fi
-    [[ -n "$cache_dir" ]] || cache_dir="${workspace%/}/.cache/probe-results"
     if [[ -d "$cache_dir" && -w "$cache_dir" ]]; then
         doctor_add "probe-cache-writable" "state" "pass" "Probe cache writable" "$cache_dir"
     elif [[ ! -e "$cache_dir" && -d "$workspace" && -w "$workspace" ]]; then
@@ -631,14 +649,16 @@ doctor_check_config() {
     fi
 
     # v9.13: Circuit breaker state check
-    local _cb_dir="${CLAUDE_PLUGIN_DATA:-${WORKSPACE_DIR:-${HOME}/.claude-octopus}}/provider-state"
+    local _cb_dir
+    _cb_dir="$(_doctor_resolve_workspace_dir)/provider-state"
     if [[ -d "$_cb_dir" ]]; then
         local _open_circuits=""
         for _sf in "$_cb_dir"/*.state; do
             [[ -f "$_sf" ]] || continue
             local _prov _state
             _prov=$(basename "$_sf" .state)
-            _state=$(<"$_sf" 2>/dev/null)
+            _state=""
+            IFS= read -r _state <"$_sf" || true
             if [[ "$_state" == "open" ]]; then
                 _open_circuits="${_open_circuits:+$_open_circuits, }$_prov"
             fi
@@ -823,6 +843,7 @@ doctor_check_updates() {
 # --- Category 4: State ---
 doctor_check_state() {
     local workflow_state_file="${STATE_FILE:-}"
+    local workspace_dir; workspace_dir="$(_doctor_resolve_workspace_dir)"
     # state.json integrity
     if [[ -f "$workflow_state_file" ]]; then
         if jq empty "$workflow_state_file" 2>/dev/null; then
@@ -838,13 +859,13 @@ doctor_check_state() {
     fi
 
     # Stale results files (older than 7 days)
-    if [[ -d "${WORKSPACE_DIR}/results" ]]; then
+    if [[ -d "${workspace_dir}/results" ]]; then
         local stale_count
-        stale_count=$(find "${WORKSPACE_DIR}/results" -name "*.md" -type f -mtime +7 2>/dev/null | wc -l | tr -d ' ')
+        stale_count=$(find "${workspace_dir}/results" -name "*.md" -type f -mtime +7 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$stale_count" -gt 0 ]]; then
             doctor_add "stale-results" "state" "warn" \
                 "${stale_count} result file(s) older than 7 days" \
-                "In ${WORKSPACE_DIR}/results — consider cleanup with: orchestrate.sh cleanup"
+                "In ${workspace_dir}/results — consider cleanup with: orchestrate.sh cleanup"
         else
             doctor_add "stale-results" "state" "pass" \
                 "No stale result files" ""
@@ -852,15 +873,15 @@ doctor_check_state() {
     fi
 
     # Workspace dir exists and is writable
-    if [[ -d "$WORKSPACE_DIR" && -w "$WORKSPACE_DIR" ]]; then
+    if [[ -d "$workspace_dir" && -w "$workspace_dir" ]]; then
         doctor_add "workspace-writable" "state" "pass" \
-            "Workspace writable" "$WORKSPACE_DIR"
-    elif [[ -d "$WORKSPACE_DIR" ]]; then
+            "Workspace writable" "$workspace_dir"
+    elif [[ -d "$workspace_dir" ]]; then
         doctor_add "workspace-writable" "state" "fail" \
-            "Workspace not writable" "$WORKSPACE_DIR"
+            "Workspace not writable" "$workspace_dir"
     else
         doctor_add "workspace-writable" "state" "fail" \
-            "Workspace directory missing" "$WORKSPACE_DIR"
+            "Workspace directory missing" "$workspace_dir"
     fi
 
     # Preflight cache staleness
@@ -877,7 +898,7 @@ doctor_check_state() {
             "No preflight cache (will create on first run)" ""
     fi
 
-    doctor_check_v10_state_health
+    doctor_check_v10_state_health "$workspace_dir"
 }
 
 # --- Category 5: Hooks ---
@@ -1631,7 +1652,8 @@ doctor_check_agents() {
 # --- Category 11: Failure Recurrence (v8.34.0 — Idea Meritocracy E46/E47) ---
 # Parses .octo/decisions.jsonl for repeated failure patterns
 doctor_check_recurrence() {
-    local jsonl_file="${WORKSPACE_DIR}/.octo/decisions.jsonl"
+    local jsonl_file
+    jsonl_file="$(_doctor_resolve_workspace_dir)/.octo/decisions.jsonl"
     if [[ ! -f "$jsonl_file" ]]; then
         doctor_add "recurrence-data" "recurrence" "info" \
             "No decision history yet — recurrence detection starts after first workflow" ""

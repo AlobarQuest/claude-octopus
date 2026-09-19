@@ -26,7 +26,7 @@ rewritten.
 | GPT-5.6 Luna | budget Codex alternative | $0.20 / $1.20 |
 | Claude Sonnet 5 | standard Claude orchestration and synthesis | $2 / $10 |
 | Claude Haiku 4.5 | budget Claude work | $1 / $5 |
-| Claude Fable 5.1 | opt-in judgment-class escalation, at most one automatic escalation per command | $10 / $50 |
+| Claude Fable 5.1 | opt-in judgment-class escalation, at most one automatic escalation per run | $10 / $50 |
 | GPT-6 Astra | opt-in OpenAI-family escalation after Sol fails a hard acceptance test | $10 / $50 |
 
 Opus 5 and Fable 5.1 are both Anthropic-family models. GPT-5.6 and Astra are
@@ -38,14 +38,18 @@ independent provider diversity.
 Fable 5.1 earns a seat for ambiguous architecture, difficult product or API
 tradeoffs, long-horizon planning, and final arbitration when Opus 5 has not met
 the acceptance criteria. The `escalate` policies can admit one such dispatch
-per command; direct pins remain the user's responsibility.
+per run; direct pins remain the user's responsibility.
 
 Astra is for a bounded, high-value OpenAI-family escalation after GPT-5.6 Sol
 has failed a difficult acceptance test or a checked-in eval demonstrates a
-material gain. Use an exact `codex:gpt-6-astra` seat or
-`OCTOPUS_CODEX_MODEL=gpt-6-astra`. Do not add Astra to routine implementation,
-review fleets, councils, security passes, tier defaults, or fallback chains.
-Its rollout is limited, and inputs above 272K tokens trigger OpenAI's
+material gain. Use an exact `codex:gpt-6-astra` seat, a provider-wide
+`OCTOPUS_CODEX_MODEL=gpt-6-astra` pin, or configure the Premium tier's bounded
+judgment escalation with `/octo:model-config tier premium codex gpt-6-astra`.
+The bounded path keeps Sol as the normal seat and requires an
+`OCTOPUS_MAX_COST_USD` ceiling that covers the projected list-price usage for
+the prompt. Do not add Astra to routine implementation,
+review fleets, councils, security passes, literal tier defaults, or fallback
+chains. Its rollout is limited, and inputs above 272K tokens trigger OpenAI's
 long-context multipliers for the whole request.
 
 ## Routing rules
@@ -258,12 +262,12 @@ that the extra seats find enough additional defects to justify their time and
 cost.
 
 An Astra trial has stricter admission. Before the run, name the acceptance
-criterion that Sol failed and retain that failed result as evidence. Pin the
-trial to `codex:gpt-6-astra`, which supplies the invocation-scoped escalation
-grant, and set a per-run `OCTOPUS_MAX_COST_USD` ceiling. Do not persist Astra as
-a default, tier route, council seat, review-fleet seat, or fallback. Promote an
-Astra route only after held-out results show a repeatable gain over Sol within
-the stated cost ceiling.
+criterion that Sol failed and retain that result as evidence. Use an exact
+`codex:gpt-6-astra` seat for a one-off trial, or configure the Premium tier's
+bounded judgment escalation after a repeatable gain is established. Both paths
+need a per-run `OCTOPUS_MAX_COST_USD` ceiling that covers the projected
+list-price usage for the prompt. Do not persist Astra as a provider
+default, literal tier route, council seat, review-fleet seat, or fallback.
 
 ## Prompt policy
 
