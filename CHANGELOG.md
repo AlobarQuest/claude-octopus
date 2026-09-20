@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [11.8.0] - 2026-09-19
+
+### Added
+
+- Research runs now preserve a local manifest, source ledger, and verification
+  report so interrupted discovery can resume without repeating completed
+  provider work. Synthesis checks source IDs, quoted text, numeric claims, and
+  independence-aware corroboration before treating evidence as verified.
+- Tangle adequacy and reconsideration, plus design-review seats and synthesis,
+  now use versioned JSON contracts. Automated planning and review therefore
+  exchange validated, machine-readable decisions instead of relying on free
+  text between models.
+
+### Fixed
+
+- Background provider sessions suppress nested automatic routing, avoiding
+  recursive Octopus launches when research invokes Claude Code or Codex.
+- Concurrent lifecycle writers retry when a valid lock disappears between
+  acquisition attempts instead of reporting a false installation failure.
+- Quick research no longer fails when a blind-spot checklist is available, and
+  evidence-processing failures now stop background synthesis cleanly.
+- Snapshot verification now recognizes cited numbers and rendered quoted text,
+  including HTML ampersands, and prevents an unverified synthesis from being
+  presented as complete.
+- Durable discovery carries its unique run ID through every provider child and
+  verified synthesis path, so concurrent runs cannot overwrite one another.
+- Standalone recovery of legacy probe results remains best effort instead of
+  creating a new fail-closed evidence run after the original process exits.
+- Research verification now handles GNU and BSD file-mode probes and portable
+  POSIX quote matching consistently across Linux and macOS.
+- Invalid research-intensity values now fail during option parsing, and turning
+  durable evidence off no longer initializes a fail-closed research run.
+
 ## [11.7.0] - 2026-09-19
 
 ### Added
