@@ -1217,6 +1217,17 @@ enforce_context_budget() {
     if [[ -n "$role" ]]; then
         local proportion budget_whole budget_remainder
         proportion=$(get_role_budget_proportion "$role")
+        if [[ "$phase" == "tangle" && "$role" == "architect" && -n "${OCTOPUS_TANGLE_ADEQUACY_CONTEXT_BUDGET_RATIO:-}" ]]; then
+            local adequacy_ratio
+            adequacy_ratio="$(octo_normalize_context_budget "$OCTOPUS_TANGLE_ADEQUACY_CONTEXT_BUDGET_RATIO" "Tangle adequacy context budget ratio")" || return 2
+            [[ "$adequacy_ratio" -ge 40 && "$adequacy_ratio" -le 100 ]] || { log ERROR "Invalid Tangle adequacy context budget ratio: $adequacy_ratio (expected 40..100)"; return 2; }
+            proportion="$adequacy_ratio"
+        elif [[ "$phase" == "tangle" && "$role" == "researcher" && "${TANGLE_RECONSIDERATION_ACTIVE:-0}" == "1" && -n "${OCTOPUS_TANGLE_RECONSIDERATION_CONTEXT_BUDGET_RATIO:-}" ]]; then
+            local reconsideration_ratio
+            reconsideration_ratio="$(octo_normalize_context_budget "$OCTOPUS_TANGLE_RECONSIDERATION_CONTEXT_BUDGET_RATIO" "Tangle reconsideration context budget ratio")" || return 2
+            [[ "$reconsideration_ratio" -ge 60 && "$reconsideration_ratio" -le 100 ]] || { log ERROR "Invalid Tangle reconsideration context budget ratio: $reconsideration_ratio (expected 60..100)"; return 2; }
+            proportion="$reconsideration_ratio"
+        fi
         budget_whole=$((budget / 100))
         budget_remainder=$((budget % 100))
         budget=$((budget_whole * proportion + budget_remainder * proportion / 100))

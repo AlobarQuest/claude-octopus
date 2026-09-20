@@ -62,6 +62,8 @@ OCTOPUS_RELEASE_SMOKE_MAX_BUDGET_USD	skip	release-smoke harness only; not reacha
 OCTOPUS_RELEASE_SMOKE_PORT	skip	release-smoke harness only; not reachable from unit scope
 OCTOPUS_REQUIRE_ALL	covered-by	test-agent-summary.sh
 OCTOPUS_RESEARCH_BREADTH	skip	changes how many provider seats a research run fans out to
+OCTOPUS_RESEARCH_FETCH	covered-by	test-research-evidence.sh
+OCTOPUS_RESEARCH_FETCH_MAX	covered-by	test-research-evidence.sh
 OCTOPUS_REVIEW_ARCHITECTURE_AGENT	covered-by	test-contextual-review-seat-overrides.sh
 OCTOPUS_REVIEW_CVE_AGENT	covered-by	test-contextual-review-seat-overrides.sh
 OCTOPUS_REVIEW_DEBATER_AGENT	covered-by	test-contextual-review-seat-overrides.sh
@@ -76,6 +78,8 @@ OCTOPUS_ROUTING_POLICY	covered-by	test-routing-evals-v10.sh
 OCTOPUS_RUN_ID	covered-by	test-agent-summary.sh
 OCTOPUS_SENTINEL_ENABLED	covered-by	test-sentinel.sh
 OCTOPUS_TANGLE_ALLOW_DB_APPLY	covered-by	test-tangle-subtask-context.sh
+OCTOPUS_TANGLE_ADEQUACY_CONTEXT_BUDGET_RATIO	covered-by	test-tangle-adequacy-json-v1.sh
+OCTOPUS_TANGLE_RECONSIDERATION_CONTEXT_BUDGET_RATIO	covered-by	test-tangle-reconsideration-json-v1.sh
 OCTOPUS_TANGLE_ALLOW_UNVERIFIED_MIGRATIONS	covered-by	test-tangle-worktree-evidence.sh
 OCTOPUS_TANGLE_CODING_AGENT	covered-by	test-routing-preview.sh
 OCTOPUS_TANGLE_CONTEXTUAL_READ_ROOTS	covered-by	test-tangle-contextual-read-scope.sh

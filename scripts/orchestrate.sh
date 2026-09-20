@@ -214,6 +214,7 @@ source "${SCRIPT_DIR}/lib/secure.sh" 2>/dev/null || true
 # Strict source (no silencing) for libs critical to core workflows — surfaces syntax errors
 source "${SCRIPT_DIR}/lib/providers.sh"
 source "${SCRIPT_DIR}/lib/probe-results.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/research-evidence.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/preflight.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/dispatch.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/progressive.sh" 2>/dev/null || true
@@ -568,7 +569,6 @@ OCTOPUS_BACKEND="api"              # v8.16: Detected backend (api|bedrock|vertex
 AGENT_TEAMS_ENABLED="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}"
 OCTOPUS_SECURITY_V870="${OCTOPUS_SECURITY_V870:-true}"
 OCTOPUS_MAX_COST_USD="${OCTOPUS_MAX_COST_USD:-}"
-
 # POSIX-compatible string case helpers (macOS ships bash 3.2 which lacks ${var^} and ${var,,})
 _ucfirst() { local _c; _c=$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]'); printf '%s' "${_c}${1:1}"; }
 
@@ -2297,6 +2297,10 @@ while [[ $# -gt 0 ]]; do
         --quality-first) FORCE_QUALITY_FIRST=true; shift ;;
         --openrouter-nitro) OPENROUTER_ROUTING_OVERRIDE=":nitro"; shift ;;
         --openrouter-floor) OPENROUTER_ROUTING_OVERRIDE=":floor"; shift ;;
+        --intensity|--intensity=*|--breadth|--breadth=*|--research-run|--research-run=*|--resume-research|--resume-research=*)
+            research_parse_global_option "$@" || { echo "Invalid or missing value for $1" >&2; exit 2; }
+            shift "$RESEARCH_OPTION_SHIFT"
+            ;;
         # Async and tmux visualization flags
         --async) ASYNC_MODE=true; shift ;;
         --no-async) ASYNC_MODE=false; shift ;;
@@ -2384,6 +2388,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             --quality-first) FORCE_QUALITY_FIRST=true; shift ;;
             --openrouter-nitro) OPENROUTER_ROUTING_OVERRIDE=":nitro"; shift ;;
             --openrouter-floor) OPENROUTER_ROUTING_OVERRIDE=":floor"; shift ;;
+            --intensity|--intensity=*|--breadth|--breadth=*|--research-run|--research-run=*|--resume-research|--resume-research=*)
+                if research_parse_global_option "$@"; then
+                    shift "$RESEARCH_OPTION_SHIFT"
+                else
+                    echo "Invalid or missing value for $1" >&2
+                    exit 2
+                fi
+                ;;
             *)
                 _late_args+=("$1")
                 shift
@@ -2469,6 +2481,9 @@ case "$COMMAND" in
             exit 1
         fi
         probe_discover "$*"
+        ;;
+    research-resume|research-verify)
+        research_dispatch_command "$COMMAND" "$@"
         ;;
     probe-single)
         # v8.54.0: Single-agent probe for multi-agentic skill dispatch

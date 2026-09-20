@@ -13,7 +13,7 @@ Every AI model has blind spots. Claude Octopus supports twelve external provider
 <p align="center">
   <a href="https://claude.ai"><img src="https://img.shields.io/badge/Claude-Built_with_AI-c96442?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwbTAgMS44YTEuMiAxLjIgMCAwIDEgLjg1LjM1bDEuNSA0LjVhLjYuNiAwIDAgMCAuMzUuMzVsNC41IDEuNWExLjIgMS4yIDAgMCAxIDAgMi4yN2wtNC41IDEuNWEuNi42IDAgMCAwLS4zNS4zNWwtMS41IDQuNWExLjIgMS4yIDAgMCAxLTIuMjcgMGwtMS41LTQuNWEuNi42IDAgMCAwLS4zNS0uMzVsLTQuNS0xLjVhMS4yIDEuMiAwIDAgMSAwLTIuMjdsNC41LTEuNWEuNi42IDAgMCAwIC4zNS0uMzVsMS41LTQuNUExLjIgMS4yIDAgMCAxIDEyIDMuOCIvPjwvc3ZnPg==&labelColor=333" alt="Built with Claude"></a>
   <a href="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml"><img src="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/Version-11.7.0-blue" alt="Version 11.7.0">
+  <img src="https://img.shields.io/badge/Version-11.8.0-blue" alt="Version 11.8.0">
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.14+_required-blueviolet" alt="Requires Claude Code v2.1.14+">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
@@ -55,7 +55,7 @@ workflows are not double-reviewed. Set `OCTOPUS_PREMIUM_PEER_CHECK=off` to
 disable it.
 
 <!-- BEGIN CURRENT RELEASE -->
-> 🆕 **v11.7.0 — Schema-versioned Tangle planning, consistent Doctor diagnostics, and bounded Premium frontier escalation.**
+> 🆕 **v11.8.0 — Durable evidence-backed research, validated planning and design reviews, and safer concurrent setup.**
 >
 > **Default roster:** Claude Opus 5 leads architecture, planning, security reasoning, and final judgment; GPT-5.6 Sol is the independent implementation/review peer; Claude Sonnet 5 is the standard Claude seat; Fable 5.1 remains an opt-in judgment escalation. Existing model pins and provider configuration still win. See [the routing strategy](docs/MODEL-ROUTING-STRATEGY.md).
 <!-- END CURRENT RELEASE -->
@@ -78,7 +78,7 @@ disable it.
 
 | Version | Best Features |
 |---------|--------------|
-| **v11.7.0** (new) | Schema-versioned Tangle planning, consistent Doctor diagnostics, and bounded Premium frontier escalation. |
+| **v11.8.0** (new) | Durable evidence-backed research, validated planning and design reviews, and safer concurrent setup. |
 | **v9.50** | **Claude Code 2026 compatibility layer** — routines manifest (schedule + GitHub-event automations), SubagentStop quality/cost gate, `/octo:usage` cost attribution, `worktree.bgIsolation` opt-out, Claude Agent SDK seat (introduced with Opus 4.8 and now following the current Opus 5 default), starter skills pack, `/plugin browse` manifest with projected context cost. |
 | **v9.41** | **`/octo:council`** promoted to first-class workflow — structured multi-LLM deliberation with goal modes, adversarial/red-team styles, benchmark-aware persona routing, quorum and critical-veto gates, budget preflight, and gated worktree handoff for approved implementation plans. |
 | **v9** | Up to 10 external provider integrations (Codex, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OrcaRouter, OpenCode, and Grok) alongside the Claude Code host. Structured provider debates and configurable multi-LLM councils. Explicit-only activation by default, with an optional smart router. Agent summary tables show which providers actually contributed. Provider-aware prompt preflight prevents silent oversize failures. Research breadth modes fan out light, standard, or exhaustive investigations. Setup aliases and fuzzy `/octo:*` corrections reduce command friction. Opt-in discipline gates and token compression. Two-stage review. Circuit breakers with automatic provider recovery inside active workflows. Cursor + OpenCode + Codex cross-compatibility. `bin/octopus` CLI. 182 Claude Code capability flags through v2.1.219, including Opus 5, Sonnet 5, and dynamic workflow awareness. |
@@ -818,6 +818,18 @@ MIT — see [LICENSE](LICENSE)
 <p align="center">
   <a href="https://github.com/nyldn">nyldn</a> | MIT License | <a href="https://www.reddit.com/r/ClaudeOctopus/">r/ClaudeOctopus</a> | <a href="https://github.com/nyldn/claude-octopus/issues">Report Issues</a>
 </p>
+
+### Design review JSON contracts
+
+Design-review seats and synthesis use versioned JSON v1 contracts for all model-to-model data. Historical free text is accepted only through a deprecated compatibility wrapper that materializes canonical JSON before downstream use. See [Design review JSON contracts v1](docs/design-review-json-contract.md) and the schemas in `schemas/design-review-*-v1.schema.json`.
+
+### Tangle reconsideration JSON contract
+
+Planner reconsideration uses a versioned JSON v1 contract: explicit accept/reject decisions for every adequacy scope recommendation plus a nested decomposition JSON v1 object. The historical `DECISIONS:/DECOMPOSITION:` response remains a deprecated compatibility fallback. See [Tangle reconsideration JSON v1](docs/tangle-reconsideration-contract.md) and [`schemas/tangle-reconsideration-v1.schema.json`](schemas/tangle-reconsideration-v1.schema.json).
+
+### Tangle adequacy review JSON contract
+
+Tangle adequacy review uses a versioned JSON v1 contract and renders validated reviews into the historical internal text format consumed by planner reconsideration. The textual `VERDICT:/REASONS:/SCOPE_REVIEW:` form remains a deprecated compatibility fallback. See [Tangle adequacy review JSON v1](docs/tangle-adequacy-contract.md) and [`schemas/tangle-adequacy-v1.schema.json`](schemas/tangle-adequacy-v1.schema.json).
 
 ### Tangle decomposition JSON contract
 

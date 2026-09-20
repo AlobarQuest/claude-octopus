@@ -158,6 +158,7 @@ probe_synthesis_append_excerpt() {
 
 build_probe_synthesis_context() {
     local task_group="$1"
+    local provider_results_dir="${2:-$RESULTS_DIR}"
     local max_file="${OCTOPUS_PROBE_SYNTHESIS_FILE_CHARS:-24000}"
     local max_total="${OCTOPUS_PROBE_SYNTHESIS_CONTEXT_CHARS:-120000}"
 
@@ -192,7 +193,7 @@ build_probe_synthesis_context() {
             score=$(score_result_file "$ranked_file")
             probe_synthesis_append_excerpt "$ranked_file" "$max_file" "$score"
             ((result_count++)) || true
-        done < <(rank_results_by_signals "$RESULTS_DIR" "probe-${task_group}")
+        done < <(rank_results_by_signals "$provider_results_dir" "probe-${task_group}")
     } > "$tmp_context"
 
     local total_size
@@ -216,7 +217,7 @@ build_probe_fallback_synthesis() {
     local result_count="$2"
     local usable_results="$3"
     local total_content_size="$4"
-    local compact_context="$5"
+    local prompt_summary="${original_prompt//$'\n'/ }"
 
     cat <<EOF
 Automated probe synthesis unavailable.
@@ -225,16 +226,15 @@ Automated probe synthesis unavailable.
 The synthesis provider did not produce a coherent discovery summary. This fallback is intentionally compact and does not attach full raw probe artifacts.
 
 ## Source Coverage
-- Usable research threads included: ${result_count}
-- Usable results reported by probe: ${usable_results}
-- Raw source bytes considered: ${total_content_size}
+- Usable research threads included: ${result_count} [inference]
+- Usable results reported by probe: ${usable_results} [inference]
+- Raw source bytes considered: ${total_content_size} [inference]
 - Full raw artifacts remain available in RESULTS_DIR for manual inspection.
 
-## Original Question
-${original_prompt}
+## Original Question: ${prompt_summary}
 
-## Compact Source Context
-${compact_context}
+## Raw Artifacts
+Raw provider artifacts remain available in RESULTS_DIR for manual inspection. [inference]
 EOF
 }
 
@@ -396,8 +396,15 @@ $(<"$raw_concat")"
 synthesize_probe_results() {
     local task_group="$1"
     local original_prompt="$2"
+    local prompt_summary="${original_prompt//$'\n'/ }"
     local usable_results="${3:-0}"  # v7.19.0 P1.1: Accept usable result count
     local synthesis_file="${RESULTS_DIR}/probe-synthesis-${task_group}.md"
+
+    if [[ "${OCTOPUS_RESEARCH_EVIDENCE:-false}" == "true" ]] \
+       && declare -F research_synthesis_prepare >/dev/null 2>&1; then
+        research_synthesis_prepare "$task_group" "$original_prompt" || return 1
+    fi
+    local provider_results_dir="${RESEARCH_PROVIDER_RESULTS_DIR:-$RESULTS_DIR}"
 
     log INFO "Synthesizing research findings..."
 
@@ -406,7 +413,7 @@ synthesize_probe_results() {
     local results=""
     local result_count=0
     local total_content_size=0
-    for result in "$RESULTS_DIR"/*-probe-${task_group}-*.md; do
+    for result in "$provider_results_dir"/*-probe-${task_group}-*.md; do
         [[ -f "$result" ]] || continue
         probe_result_file_is_usable "$result" || { log DEBUG "Skipping $result (unusable probe output)"; continue; }
         type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$result" && { log DEBUG "Skipping $result (provider rejection)"; continue; }
@@ -439,7 +446,8 @@ synthesize_probe_results() {
     # v8.49.0: Rank results by quality signals before synthesis.
     # Keep the synthesis prompt bounded; full raw files remain on disk.
     local compact_results
-    if compact_results=$(build_probe_synthesis_context "$task_group") && [[ -n "$compact_results" ]]; then
+    if compact_results=$(build_probe_synthesis_context "$task_group" "$provider_results_dir") \
+       && [[ -n "$compact_results" ]]; then
         results="$compact_results"
     else
         results="# Compact Probe Synthesis Context"$'\n\n'"No bounded probe excerpts could be collected. Inspect RESULTS_DIR for raw artifacts."
@@ -448,6 +456,11 @@ synthesize_probe_results() {
     # Use the Google seat (agy, post Gemini-CLI sunset #524) for intelligent synthesis
     # v8.49.0: Enhanced prompt with structured output, minority opinion preservation,
     # and relevance-aware weighting (inspired by Crawl4AI content filtering patterns)
+    local evidence_catalog=""
+    if declare -F research_source_catalog >/dev/null 2>&1; then
+        evidence_catalog=$(research_source_catalog 2>/dev/null || true)
+    fi
+
     local synthesis_prompt="Synthesize these research findings into a coherent discovery summary.
 
 Original Question: $original_prompt
@@ -459,7 +472,10 @@ Sources are pre-ranked by quality score (best first). However:
 - Short but specific findings may be MORE valuable than lengthy general analysis
 - Minority opinions and dissenting views MUST be preserved — they often contain critical insights
 - Concrete examples (code, file paths, commands) outweigh abstract discussion
-- Every factual claim must cite its source provider/file or be explicitly marked [inference]
+- Every factual claim must cite one or more catalog IDs as [source:S001] or be explicitly marked [inference]
+- Quotes and numeric claims must cite a catalog source whose snapshot contains the exact quote or number
+- Count independent evidence groups, not citation count. Sources with the same independence key are one voice
+- Never call duplicated or syndicated sources consensus; consensus requires at least two independence keys
 - Failed or rejected provider outputs were excluded and must not be cited as evidence
 
 Structure your synthesis as:
@@ -469,6 +485,9 @@ Structure your synthesis as:
 4. **Gaps** — What's still unknown and needs more research
 5. **Priority Matrix** — Rank findings by impact (High/Medium/Low) and effort (Low/Medium/High) in a table
 6. **Recommended Approach** — Specific next steps based on findings
+
+Evidence catalog (the only valid source IDs):
+${evidence_catalog:-No external evidence catalog is available. Mark factual conclusions [inference].}
 
 Research findings:
 $results"
@@ -492,19 +511,29 @@ $results"
     fi
     if [[ -z "$synthesis" ]]; then
         log WARN "Synthesis failed, using compact fallback"
-        synthesis=$(build_probe_fallback_synthesis "$original_prompt" "$result_count" "$usable_results" "$total_content_size" "$results")
+        synthesis=$(build_probe_fallback_synthesis "$original_prompt" "$result_count" "$usable_results" "$total_content_size")
     fi
 
-    cat > "$synthesis_file" << EOF
+    local draft_file="$synthesis_file"
+    if declare -F research_synthesis_select_draft >/dev/null 2>&1; then
+        research_synthesis_select_draft "$synthesis_file" "$task_group" || return 1
+        draft_file="$RESEARCH_SYNTHESIS_DRAFT_FILE"
+    fi
+
+    cat > "$draft_file" << EOF
 # PROBE Phase Synthesis
 ## Discovery Summary - $(date)
-## Original Task: $original_prompt
+## Original Task: $prompt_summary
 
 $synthesis
 
 ---
-*Synthesized from $result_count research threads (task group: $task_group)*
+*Synthesized from $result_count research threads (task group: $task_group)* [inference]
 EOF
+
+    if declare -F research_synthesis_publish >/dev/null 2>&1; then
+        research_synthesis_publish "$draft_file" "$synthesis_file" || return 1
+    fi
 
     log INFO "Synthesis complete: $synthesis_file"
 
