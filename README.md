@@ -819,6 +819,10 @@ MIT — see [LICENSE](LICENSE)
   <a href="https://github.com/nyldn">nyldn</a> | MIT License | <a href="https://www.reddit.com/r/ClaudeOctopus/">r/ClaudeOctopus</a> | <a href="https://github.com/nyldn/claude-octopus/issues">Report Issues</a>
 </p>
 
+### Design review JSON contracts
+
+Design-review seats and synthesis use versioned JSON v1 contracts for all model-to-model data. Historical free text is accepted only through a deprecated compatibility wrapper that materializes canonical JSON before downstream use. See [Design review JSON contracts v1](docs/design-review-json-contract.md) and the schemas in `schemas/design-review-*-v1.schema.json`.
+
 ### Tangle reconsideration JSON contract
 
 Planner reconsideration uses a versioned JSON v1 contract: explicit accept/reject decisions for every adequacy scope recommendation plus a nested decomposition JSON v1 object. The historical `DECISIONS:/DECOMPOSITION:` response remains a deprecated compatibility fallback. See [Tangle reconsideration JSON v1](docs/tangle-reconsideration-contract.md) and [`schemas/tangle-reconsideration-v1.schema.json`](schemas/tangle-reconsideration-v1.schema.json).
