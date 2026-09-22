@@ -176,6 +176,9 @@ check_deps() {
             warnings+=("document-skills:document-skills plugin — PDF/DOCX/PPTX/XLSX export (optional, needed for /octo:km)")
         fi
     fi
+    if command -v deja >/dev/null 2>&1; then
+        ok+=("deja:deja companion detected")
+    fi
 
     # Output
     echo "=== DEPENDENCY CHECK ==="

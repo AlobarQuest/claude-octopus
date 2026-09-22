@@ -189,8 +189,153 @@ test_agentmemory_bridge_no_ops_when_server_missing() {
         || test_fail "expected 'false' when server missing, got: $out"
 }
 
+DEJA="$PROJECT_ROOT/scripts/deja-bridge.sh"
+
+# A stand-in for the deja binary, so detection and the search mapping are
+# exercised without deja installed or any real session history read.
+_deja_stub() {
+    local stub="${TEST_TMP_DIR}/deja-stub/deja"
+    mkdir -p "$(dirname "$stub")"
+    cat >"$stub" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "search" ]]; then
+if [[ -n "${DEJA_STUB_DELAY:-}" ]]; then
+    sleep "$DEJA_STUB_DELAY"
+fi
+if [[ -n "${DEJA_STUB_JSON:-}" ]]; then
+    printf '%s\n' "$DEJA_STUB_JSON"
+    exit 0
+fi
+cat <<'JSON'
+{"schema_version":2,"tier":"exact","total":1,"hits":[{"session":{"harness":"codex","id":"abc123","project":"myapp","title":"pool exhausted under load","started":"2026-01-02T03:04:05Z","updated":"2026-01-02T03:10:00Z"},"count":2,"snippets":["raised max_client_conn","transaction mode"],"score":1.5,"tier":"exact"}]}
+JSON
+fi
+SH
+    chmod +x "$stub"
+    printf '%s' "$stub"
+}
+
+test_deja_bridge_exists() {
+    test_case "deja-bridge.sh exists and is executable"
+    [[ -x "$DEJA" ]] && test_pass || test_fail "deja-bridge.sh missing or not +x"
+}
+
+test_backends_detects_deja_registered() {
+    test_case "auto detects deja when its MCP server is registered and the CLI is present"
+    local tmp_settings stub out
+    stub=$(_deja_stub)
+    tmp_settings=$(mktemp)
+    cat >"$tmp_settings" <<JSON
+{"mcpServers": {"deja": {"command": "$stub", "args": ["mcp"]}}}
+JSON
+    # shellcheck disable=SC1090
+    out=$(OCTOPUS_MEMORY_BACKEND=auto CLAUDE_SETTINGS_FILE="$tmp_settings" DEJA_BIN="$stub" \
+          HOME="${TEST_TMP_DIR}/empty-home" bash -c "source '$MEM'; memory_backends" | tr '\n' ',' | sed 's/,$//')
+    rm -f "$tmp_settings"
+    [[ "$out" == "deja,claude-mem" ]] \
+        && test_pass \
+        || test_fail "expected deja,claude-mem got: $out"
+}
+
+test_backends_detects_deja_plugin() {
+    test_case "auto detects deja when its Claude Code plugin is enabled"
+    local tmp_settings stub out
+    stub=$(_deja_stub)
+    tmp_settings=$(mktemp)
+    cat >"$tmp_settings" <<'JSON'
+{"enabledPlugins": {"deja-vu@deja-vu": true}}
+JSON
+    # shellcheck disable=SC1090
+    out=$(OCTOPUS_MEMORY_BACKEND=auto CLAUDE_SETTINGS_FILE="$tmp_settings" DEJA_BIN="$stub" \
+          HOME="${TEST_TMP_DIR}/empty-home" bash -c "source '$MEM'; memory_backends" | head -1)
+    rm -f "$tmp_settings"
+    [[ "$out" == "deja" ]] \
+        && test_pass \
+        || test_fail "expected deja first, got: $out"
+}
+
+test_backends_skips_deja_without_cli() {
+    test_case "a registered deja without the CLI on PATH is not selected"
+    local tmp_settings out
+    tmp_settings=$(mktemp)
+    cat >"$tmp_settings" <<'JSON'
+{"mcpServers": {"deja": {"command": "deja", "args": ["mcp"]}}}
+JSON
+    # shellcheck disable=SC1090
+    out=$(OCTOPUS_MEMORY_BACKEND=auto CLAUDE_SETTINGS_FILE="$tmp_settings" DEJA_BIN="this-binary-does-not-exist" \
+          HOME="${TEST_TMP_DIR}/empty-home" bash -c "source '$MEM'; memory_backends" | head -1)
+    rm -f "$tmp_settings"
+    [[ "$out" == "claude-mem" ]] \
+        && test_pass \
+        || test_fail "expected claude-mem first, got: $out"
+}
+
+test_deja_bridge_no_ops_when_cli_missing() {
+    test_case "deja-bridge no-ops gracefully without the CLI"
+    local avail found
+    avail=$(DEJA_BIN="this-binary-does-not-exist" "$DEJA" available)
+    found=$(DEJA_BIN="this-binary-does-not-exist" "$DEJA" search "anything" 5)
+    [[ "$avail" == "false" && -z "$found" ]] \
+        && test_pass \
+        || test_fail "expected 'false' and no results when CLI missing, got: $avail / $found"
+}
+
+test_deja_bridge_search_maps_hits() {
+    test_case "deja-bridge search returns a JSON array of sessions"
+    command -v jq >/dev/null 2>&1 || { test_skip "jq not installed"; return; }
+    local stub out
+    stub=$(_deja_stub)
+    out=$(DEJA_BIN="$stub" "$DEJA" search "pool exhausted" 5 myapp)
+    [[ "$(printf '%s' "$out" | jq -r '.[0].session_id + " " + .[0].harness + " " + .[0].source')" == "abc123 codex deja" ]] \
+        && test_pass \
+        || test_fail "unexpected search output: $out"
+}
+
+test_deja_bridge_search_skips_relevance_tier() {
+    test_case "deja-bridge search returns nothing when deja only has nearest matches"
+    command -v jq >/dev/null 2>&1 || { test_skip "jq not installed"; return; }
+    local stub out
+    stub=$(_deja_stub)
+    sed -i.bak 's/"tier":"exact"/"tier":"relevance"/g' "$stub" && rm -f "$stub.bak"
+    out=$(DEJA_BIN="$stub" "$DEJA" search "pool exhausted" 5 myapp)
+    [[ -z "$out" || "$out" == "[]" ]] \
+        && test_pass \
+        || test_fail "expected no results for a relevance-tier answer, got: $out"
+}
+
+test_deja_bridge_search_rejects_incomplete_sessions() {
+    test_case "deja-bridge ignores hits without a session id and harness"
+    command -v jq >/dev/null 2>&1 || { test_skip "jq not installed"; return; }
+    local stub out payload
+    stub=$(_deja_stub)
+    payload='{"schema_version":2,"tier":"exact","hits":[{"session":{"title":"incomplete"},"snippets":["not a usable session"]}]}'
+    out=$(DEJA_BIN="$stub" DEJA_STUB_JSON="$payload" "$DEJA" search "anything" 5)
+    [[ -z "$out" || "$out" == "[]" ]] \
+        && test_pass \
+        || test_fail "expected incomplete sessions to be ignored, got: $out"
+}
+
+test_deja_bridge_search_is_bounded_without_external_timeout() {
+    test_case "deja-bridge enforces DEJA_TIMEOUT with the portable supervisor"
+    command -v jq >/dev/null 2>&1 || { test_skip "jq not installed"; return; }
+    local stub out started elapsed
+    stub=$(_deja_stub)
+    started=$(date +%s)
+    out=$(DEJA_BIN="$stub" DEJA_TIMEOUT=1 DEJA_STUB_DELAY=5 "$DEJA" search "anything" 5)
+    elapsed=$(( $(date +%s) - started ))
+    if [[ -z "$out" && "$elapsed" -lt 4 ]]; then
+        test_pass
+    else
+        test_fail "expected timeout before 4s with no output, got ${elapsed}s / $out"
+    fi
+}
+
 test_contract_file_exists
 test_mcp_bridge_exists
+test_deja_bridge_exists
+test_deja_bridge_search_skips_relevance_tier
+test_deja_bridge_search_rejects_incomplete_sessions
+test_deja_bridge_search_is_bounded_without_external_timeout
 test_agentmemory_bridge_exists
 test_claude_mem_bridge_still_exists
 test_primitives_defined
@@ -204,5 +349,10 @@ test_scope_uses_repo_basename
 test_scope_env_override_wins
 test_mcp_bridge_no_ops_when_cli_missing
 test_agentmemory_bridge_no_ops_when_server_missing
+test_backends_detects_deja_registered
+test_backends_detects_deja_plugin
+test_backends_skips_deja_without_cli
+test_deja_bridge_no_ops_when_cli_missing
+test_deja_bridge_search_maps_hits
 
 test_summary
