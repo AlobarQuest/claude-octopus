@@ -10,6 +10,13 @@
 
 ### Fixed
 
+- Select the PID-ledger Python interpreter by native process-control capability
+  instead of trusting the first `python3` on `PATH`. Doctor reports the selected
+  interpreter, and `OCTOPUS_PYTHON` provides an explicit, validated override.
+  Provider dispatch still exits 74 without launching a model when worker
+  registration cannot be made safe.
+- Treat a macOS audit-token permission result as an exited process when a second
+  identity check confirms that the process disappeared during signal delivery.
 - Council no longer recurses and hangs when the host runtime is not Claude Code
   (e.g. a Codex conductor). With `--providers claude,agy` the `claude` seat is
   dispatched as a real `claude -p` subprocess; run inside a governed worktree
