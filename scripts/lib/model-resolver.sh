@@ -61,16 +61,19 @@ fi
 
 # Current-model pickers. Explicit user pins/configuration are resolved before
 # these fallbacks, and OCTOPUS_OPUS_MODEL remains the final Opus-specific pin.
-# Opus 5 requires Claude Code v2.1.219+; Sonnet 5 requires v2.1.197+.
+# Opus 5.5 requires Claude Code v2.1.280+; Opus 5 requires v2.1.219+;
+# Sonnet 5 requires v2.1.197+.
 # Claude Fable 5.1 (Mythos-class, $10/$50 MTok, 1M ctx) remains opt-in only:
-# pin OCTOPUS_OPUS_MODEL=claude-fable-5-1. Never auto-selected — 2x Opus 5 cost,
+# pin OCTOPUS_OPUS_MODEL=claude-fable-5-1. Never auto-selected — $10/$50 per MTok,
 # and Anthropic retains prompts/outputs up to 30 days for safety classifiers.
 opus_default_model() {
     if [[ -n "${OCTOPUS_OPUS_MODEL:-}" ]]; then
         echo "$OCTOPUS_OPUS_MODEL"
         return 0
     fi
-    if [[ "${SUPPORTS_OPUS_5:-false}" == "true" ]]; then
+    if [[ "${SUPPORTS_OPUS_5_5:-false}" == "true" ]]; then
+        echo "claude-opus-5-5"
+    elif [[ "${SUPPORTS_OPUS_5:-false}" == "true" ]]; then
         echo "claude-opus-5"
     elif [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" ]]; then
         echo "claude-opus-4.8"
@@ -350,7 +353,7 @@ _octo_eval_model_for_class() {
         codex:premium|codex:review|codex:security) printf '%s\n' "gpt-5.6-sol" ;;
         claude:mechanical) printf '%s\n' "claude-haiku-4.5" ;;
         claude:balanced) printf '%s\n' "claude-sonnet-5" ;;
-        claude:premium|claude:review|claude:security) printf '%s\n' "claude-opus-5" ;;
+        claude:premium|claude:review|claude:security) opus_default_model ;;
         *) return 1 ;;
     esac
 }

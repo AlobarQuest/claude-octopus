@@ -34,7 +34,7 @@ Claude Octopus coordinates **twelve external AI integrations** alongside its bui
 |----------|----------|------------------|-------------|
 | **Codex CLI** | `codex exec --model gpt-5.6-sol` | GPT-5.6 Sol/Terra/Luna | ChatGPT OAuth or your `OPENAI_API_KEY` |
 | **Antigravity CLI** | `agy --print --sandbox` | `default`/`agy/default`, or an exact label from `agy models` | Your Antigravity CLI auth |
-| **Claude** | Built-in | Claude Sonnet 5 / Opus 5 | Your Claude Code subscription or API account |
+| **Claude** | Built-in | Claude Sonnet 5 / Opus 5.5, with Opus 5 fallback | Your Claude Code subscription or API account |
 | **Perplexity** | API-only | Sonar Pro / Sonar | Your `PERPLEXITY_API_KEY` |
 | **OpenRouter** | API-only | 100+ models (GLM-5, Kimi K2.5, DeepSeek R1, etc.) | Your `OPENROUTER_API_KEY` |
 | **OrcaRouter** | API-only | Namespaced Claude models via an OpenAI-compatible gateway | Your `ORCAROUTER_API_KEY` |
@@ -54,15 +54,17 @@ Role defaults follow the accepted [frontier model routing strategy](./MODEL-ROUT
 
 | Role                 | Default Model         | Why                                                                 |
 |----------------------|-----------------------|---------------------------------------------------------------------|
-| `architect`          | Claude Opus 5         | Architecture, planning, product and UI judgment                     |
-| `strategist`         | Claude Opus 5         | Premium arbitration, architecture tradeoffs                         |
-| `security-reviewer`  | Claude Opus 5         | Adversarial reasoning                                               |
+| `architect`          | Claude Opus 5.5       | Architecture, planning, product and UI judgment                     |
+| `strategist`         | Claude Opus 5.5       | Premium arbitration, architecture tradeoffs                         |
+| `security-reviewer`  | Claude Opus 5.5       | Adversarial reasoning                                               |
 | `code-reviewer`      | GPT-5.6 Sol           | Independent edge-case and implementation review                     |
 | `reviewer` (alias)   | → `code-reviewer`     | Back-compat for v9.28 callers                                       |
 | `implementer`        | GPT-5.6 Sol           | Terminal-heavy execution, iterative patch/test loops                |
-| `implementer-heavy`  | Claude Opus 5         | Opt-in only; greenfield / large refactors / UI-heavy builds         |
+| `implementer-heavy`  | Claude Opus 5.5       | Opt-in only; greenfield / large refactors / UI-heavy builds         |
 | `synthesizer`        | Claude Sonnet 5       | Standard aggregator price/quality                                   |
 | `researcher`         | Antigravity           | Independent broad research + synthesis                              |
+
+Opus 5.5 requires Claude Code v2.1.280+; earlier hosts use Opus 5 (v2.1.219+), then Opus 4.8/4.7/4.6.
 
 **Opt-out:** `OCTOPUS_LEGACY_ROLES=1` restores the preserved pre-frontier mapping (GPT-5.5 for architect/reviewer/implementer, Sonnet 4.6 for synthesis, and Opus 4.6 for strategy).
 
@@ -74,7 +76,7 @@ Role defaults follow the accepted [frontier model routing strategy](./MODEL-ROUT
 |----------|-----------|----------|
 | **Codex (OpenAI, GPT-5.6)** | Edge-case hunting, terminal execution, patch/test loops | Code review (`code-reviewer`), default implementation (`implementer`) |
 | **Antigravity (Google)** | Research synthesis, documentation, broad knowledge | Ecosystem research, best practices, alternative perspectives |
-| **Claude (Opus 5)** | Planning, architecture, adversarial reasoning, UI/UX taste | `architect`, `strategist`, `security-reviewer`, `implementer-heavy` |
+| **Claude (Opus 5.5 / Opus 5)** | Planning, architecture, adversarial reasoning, UI/UX taste | `architect`, `strategist`, `security-reviewer`, `implementer-heavy` |
 | **Claude (Sonnet 5)** | Aggregation, final synthesis, workhorse summarization | `synthesizer`; included where the user's Claude Code subscription covers it |
 | **Perplexity** | Live web search, CVE lookups, current docs | Discover phase research, dependency analysis |
 | **OpenRouter** | Access to 100+ models, cost routing | Alternative perspectives, budget-conscious workflows |

@@ -570,13 +570,13 @@ SUPPORTS_ENTER_WORKTREE_SWITCH=false    # v9.42: Claude Code v2.1.157+ (EnterWor
 SUPPORTS_TOOL_DECISION_PARAMS_OTEL=false # v9.42: Claude Code v2.1.157+ (tool_decision tool_parameters with OTEL_LOG_TOOL_DETAILS=1)
 SUPPORTS_SONNET_5=false                  # Claude Code v2.1.197+ (claude-sonnet-5)
 SUPPORTS_OPUS_5=false                    # Claude Code v2.1.219+ (claude-opus-5 and default Opus alias)
+SUPPORTS_OPUS_5_5=false
 OCTOPUS_BACKEND="api"              # v8.16: Detected backend (api|bedrock|vertex|foundry)
 AGENT_TEAMS_ENABLED="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}"
 OCTOPUS_SECURITY_V870="${OCTOPUS_SECURITY_V870:-true}"
 OCTOPUS_MAX_COST_USD="${OCTOPUS_MAX_COST_USD:-}"
 # POSIX-compatible string case helpers (macOS ships bash 3.2 which lacks ${var^} and ${var,,})
 _ucfirst() { local _c; _c=$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]'); printf '%s' "${_c}${1:1}"; }
-
 # [EXTRACTED to lib/providers.sh in v9.7.7]
 
 # Claude Code v2.1.10 Integration

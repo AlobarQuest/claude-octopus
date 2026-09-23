@@ -34,6 +34,8 @@ if ! declare -f copilot_is_available >/dev/null 2>&1; then
     source "${_providers_lib_dir}/copilot.sh" 2>/dev/null || true
 fi
 
+: "${SUPPORTS_OPUS_5_5:=false}"
+
 # Keep the Claude Code --bare authentication check from wedging every Octopus
 # command when the CLI is waiting on auth, Keychain, or a broken hook. The
 # dedicated runner keeps its termination grace inside the configured total cap
@@ -558,6 +560,10 @@ detect_claude_code_version() {
         SUPPORTS_OPUS_5=true
     fi
 
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.280" ">="; then
+        SUPPORTS_OPUS_5_5=true
+    fi
+
     log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
     log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
     log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
@@ -605,7 +611,7 @@ detect_claude_code_version() {
     log "INFO" "Bash Session ID Env: $SUPPORTS_BASH_SESSION_ID_ENV"
     log "INFO" "Opus 4.8: $SUPPORTS_OPUS_4_8 | Dynamic Workflows: $SUPPORTS_DYNAMIC_WORKFLOWS | Lean Prompt Default: $SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT"
     log "INFO" "Agent Settings Agent Field: $SUPPORTS_AGENT_SETTINGS_AGENT_FIELD | Skills Auto Plugin Load: $SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD | EnterWorktree Switch: $SUPPORTS_ENTER_WORKTREE_SWITCH | Tool Decision Params OTel: $SUPPORTS_TOOL_DECISION_PARAMS_OTEL"
-    log "INFO" "Sonnet 5: $SUPPORTS_SONNET_5 | Opus 5: $SUPPORTS_OPUS_5"
+    log "INFO" "Sonnet 5: $SUPPORTS_SONNET_5 | Opus 5: $SUPPORTS_OPUS_5 | Opus 5.5: $SUPPORTS_OPUS_5_5"
 
     # v8.29.0: Context window control
     OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
