@@ -397,6 +397,83 @@ tangle_result_latest_status() {
     esac
 }
 
+tangle_result_terminal_outcome() {
+    local result="$1"
+    local status_line=""
+    status_line=$(grep '^## Status:' "$result" 2>/dev/null | tail -1 || true)
+    case "$status_line" in
+        *SUCCESS*)
+            if tangle_result_has_blocker_output "$result"; then
+                echo "blocked"
+            else
+                echo "success"
+            fi
+            ;;
+        *"Execution contract persistence failed"*) echo "persistence_failed" ;;
+        *TIMEOUT*) echo "timeout" ;;
+        *FAILED*) echo "failed" ;;
+        *ERROR*) echo "error" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+tangle_result_paths_outcome_summary() {
+    local result_lines="${1:-}"
+    local expected_task_ids="${2:-}"
+    local success=0 timeout=0 persistence_failed=0 blocked=0 failed=0 error=0 unknown=0
+    local entry result outcome task_id observed_task_ids=""
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        result="${entry#result:}"
+        if [[ ! -f "$result" ]]; then
+            [[ -n "$expected_task_ids" ]] || ((unknown++)) || true
+            continue
+        fi
+        task_id=$(tangle_result_logical_task_id "$result")
+        [[ -z "$task_id" ]] || observed_task_ids+="$task_id"$'\n'
+        outcome=$(tangle_result_terminal_outcome "$result")
+        case "$outcome" in
+            success) ((success++)) || true ;;
+            timeout) ((timeout++)) || true ;;
+            persistence_failed) ((persistence_failed++)) || true ;;
+            blocked) ((blocked++)) || true ;;
+            failed) ((failed++)) || true ;;
+            error) ((error++)) || true ;;
+            *) ((unknown++)) || true ;;
+        esac
+    done <<< "$result_lines"
+
+    # The effective result set contains only artifacts that were written. Keep
+    # the dispatched task identities as the accounting baseline so a missing
+    # artifact remains visible in the terminal summary as an unknown outcome.
+    while IFS= read -r task_id; do
+        [[ -n "$task_id" ]] || continue
+        if ! grep -Fqx "$task_id" <<< "$observed_task_ids"; then
+            ((unknown++)) || true
+        fi
+    done <<< "$expected_task_ids"
+
+    local parts=()
+    [[ "$success" -gt 0 ]] && parts+=("$success succeeded")
+    [[ "$timeout" -gt 0 ]] && parts+=("$timeout timed out")
+    [[ "$persistence_failed" -gt 0 ]] && parts+=("$persistence_failed persistence failed")
+    [[ "$blocked" -gt 0 ]] && parts+=("$blocked blocked")
+    [[ "$failed" -gt 0 ]] && parts+=("$failed failed")
+    [[ "$error" -gt 0 ]] && parts+=("$error errored")
+    [[ "$unknown" -gt 0 ]] && parts+=("$unknown unknown")
+
+    if [[ "${#parts[@]}" -eq 0 ]]; then
+        printf '%s\n' "none"
+        return 0
+    fi
+    local summary="${parts[0]}"
+    local part
+    for part in "${parts[@]:1}"; do
+        summary+=", $part"
+    done
+    printf '%s\n' "$summary"
+}
+
 tangle_quality_retry_limit_value() {
     if declare -f quality_retry_limit >/dev/null 2>&1; then
         quality_retry_limit
@@ -477,6 +554,7 @@ validate_tangle_results() {
     local worktree_before_file="${3:-}"
     local baseline_head="${4:-}"
     local worktree_before_state_file="${5:-}"
+    local expected_task_ids="${6:-}"
     local validation_file="${RESULTS_DIR}/tangle-validation-${task_group}.md"
     local quality_retry_count=0
     local correction_file="${OCTOPUS_TANGLE_VALIDATION_CORRECTION_FILE:-}"
@@ -498,6 +576,9 @@ validate_tangle_results() {
         local hard_gate_retry_feedback=""
         FAILED_SUBTASKS=""  # Reset for this validation pass (string-based)
         TANGLE_HARD_GATE_RETRY_FEEDBACK=""
+
+        local effective_result_files
+        effective_result_files=$(tangle_effective_result_files "$task_group")
 
         local result
         while IFS= read -r result; do
@@ -537,7 +618,10 @@ validate_tangle_results() {
             fi
             results+="$(<"$result")\n\n---\n\n"
             result_outputs+="$(extract_tangle_result_body "$result")"$'\n'
-        done <<< "$(tangle_effective_result_files "$task_group")"
+        done <<< "$effective_result_files"
+
+        local terminal_outcome_summary
+        terminal_outcome_summary=$(tangle_result_paths_outcome_summary "$effective_result_files" "$expected_task_ids")
 
         local worktree_changes=""
         local requires_worktree_changes=false
@@ -748,6 +832,7 @@ $challenge_result
 - Success Rate: ${quality_success_rate}% (threshold: ${tangle_threshold}%)
 - Successful: ${success_count}/${total} result files
 - Failed: ${fail_count}/${total} result files
+- Terminal Outcomes: ${terminal_outcome_summary}
 - Decision Branch: ${quality_branch}
 - Retry Attempts: ${quality_retry_count}/$(tangle_quality_retry_limit_value)
 $(if [[ "$correction_overlay_applied" == "true" ]]; then
@@ -799,7 +884,15 @@ EOF
                     echo -e "${YELLOW}${_BOX_TOP}${NC}"
                     echo -e "${YELLOW}║  🐙 Branching: Retry Path (attempt $quality_retry_count/$retry_limit_display)                    ║${NC}"
                     echo -e "${YELLOW}${_BOX_BOT}${NC}"
-                    log WARN "Quality gate at ${quality_success_rate}%, below ${tangle_threshold}%. Retrying..."
+                    local retry_outcome_summary
+                    retry_outcome_summary=$(tangle_result_paths_outcome_summary "$FAILED_SUBTASKS")
+                    if [[ -n "$hard_gate_retry_feedback" ]]; then
+                        log INFO "Retry reason: hard-gate correction; candidate terminal outcomes: ${retry_outcome_summary}"
+                        log WARN "Hard-gate correction required: $(printf '%s' "$hard_gate_retry_feedback" | tr '\n' ' ') Retrying..."
+                    else
+                        log INFO "Retrying failed subtasks: ${retry_outcome_summary}"
+                        log WARN "Quality gate at ${quality_success_rate}%, below ${tangle_threshold}%. Terminal outcomes: ${terminal_outcome_summary}. Retrying..."
+                    fi
                     # v8.18.0: Lock providers that failed quality gate
                     while IFS= read -r failed_task; do
                         [[ -z "$failed_task" ]] && continue
