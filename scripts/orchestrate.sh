@@ -33,10 +33,7 @@ case "$_octo_early_command" in
     guide|doctor|capabilities|cache-check|check-cache|security-audit|repair|handoff|profile|install-state)
         OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
         ;;
-    explain)
-        OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
-        ;;
-    status)
+    explain|status)
         [[ "${_octo_early_args[$((_octo_early_index + 1))]:-}" == "--run" ]] && \
             OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
         ;;
@@ -49,6 +46,10 @@ esac
 # at itself (ELOOP). See #371.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
+source "${SCRIPT_DIR}/lib/plugin-root.sh" 2>/dev/null || true
+if declare -f octo_require_supported_workflow_host >/dev/null 2>&1; then
+    octo_require_supported_workflow_host "$_octo_early_command" "${_octo_early_args[$((_octo_early_index + 1))]:-}" || exit $?
+fi
 
 # Diagnostics and repair do not need the 70+ workflow libraries loaded below.
 # Dispatch them before those libraries initialize state, event logs, or probes.
@@ -92,8 +93,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" && "$_octo_early_index" -eq 0 ]]; then
     unset _octo_early_tail
 fi
 unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
-source "${SCRIPT_DIR}/lib/plugin-root.sh" 2>/dev/null || true
-
 # Self-heal: ensure the stable symlink exists for LLM Bash tool access.
 # The SessionStart hook normally creates this, but if doctor (or any command)
 # is invoked before the hook fires, the symlink may be missing. (fixes #318)

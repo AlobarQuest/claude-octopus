@@ -70,6 +70,9 @@ octo_stable_shims_status() {
     [[ "$status" != mismatch ]]
 }
 
+# The optional uname argument is a deterministic test seam; production callers
+# intentionally omit it so the current host is detected at invocation time.
+# shellcheck disable=SC2120
 octo_is_windows_git_bash() {
     local uname_s="${1:-}"
     if [[ -z "$uname_s" ]]; then
@@ -77,7 +80,9 @@ octo_is_windows_git_bash() {
     fi
 
     case "$uname_s" in
+        Linux*) return 1 ;;
         MINGW*|MSYS*|CYGWIN*) return 0 ;;
+        Darwin*) return 1 ;;
     esac
 
     [[ "${OS:-}" == "Windows_NT" ]] && {
@@ -85,6 +90,20 @@ octo_is_windows_git_bash() {
         [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == mingw* ]] ||
         [[ "${OSTYPE:-}" == cygwin* ]]
     }
+}
+
+octo_require_supported_workflow_host() {
+    local command_name="${1:-}"
+    local command_arg="${2:-}"
+    octo_is_windows_git_bash || return 0
+    case "$command_name" in
+        ""|-h|--help|help|guide|doctor|capabilities|cache-check|check-cache|security-audit|repair|handoff|profile|install-state)
+            return 0 ;;
+        explain|status)
+            [[ "$command_arg" == "--run" ]] && return 0 ;;
+    esac
+    printf '%s\n' "ERROR: Native Windows is unsupported. Run Claude Octopus inside WSL." >&2
+    return 78
 }
 
 octo_write_stable_script_shim() {

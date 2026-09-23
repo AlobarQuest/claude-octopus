@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Maintain worker registrations under the shared ledger lock."""
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import os
 from pathlib import Path
 import sys
@@ -10,6 +13,20 @@ import tempfile
 sys.dont_write_bytecode = True
 from process_control import (Process, StaleProcess, UnsupportedPlatform,
                              require_native_cancellation_support, snapshot)
+
+NATIVE_WINDOWS_MESSAGE = (
+    "native Windows is unsupported; run Claude Octopus inside WSL"
+)
+LOCKING_UNAVAILABLE_MESSAGE = (
+    "file locking is unavailable on this Python runtime"
+)
+
+
+def require_supported_host():
+    if sys.platform == "win32" or sys.platform.startswith(("cygwin", "msys")):
+        raise UnsupportedPlatform(NATIVE_WINDOWS_MESSAGE)
+    if fcntl is None:
+        raise UnsupportedPlatform(LOCKING_UNAVAILABLE_MESSAGE)
 
 
 def identity(pid):
@@ -53,6 +70,7 @@ def update(path, action, pid, agent, task, token):
 
 
 def main():
+    require_supported_host()
     if sys.argv[1:] == ["capability"]:
         require_native_cancellation_support()
         return 0

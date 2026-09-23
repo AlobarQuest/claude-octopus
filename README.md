@@ -126,6 +126,10 @@ claude plugin install octo@nyldn-plugins
 
 That's it. Setup detects installed providers, shows what's missing, and walks you through configuration. You need **zero** external providers to start — Claude is built in.
 
+**Supported platforms:** Linux and macOS run natively. On Windows, run Claude
+Octopus inside [WSL](#using-cursor-on-wsl); native Git Bash, MSYS2, and Cygwin
+are not supported.
+
 ### Dormant by default
 
 Installing Octopus does not route ordinary prompts, launch provider workflows,
@@ -260,8 +264,10 @@ cd ~/.cursor/claude-octopus/mcp-server && npm install
 
 Restart Cursor. Tools appear in Cursor's AI chat — invoke by asking e.g. "use octopus_discover to research X".
 
+### Using Cursor on WSL
+
 <details>
-<summary>Using Cursor on WSL?</summary>
+<summary>Show Cursor setup steps</summary>
 
 If you're running Cursor on Windows with WSL, clone the repo inside WSL and point the MCP config through `wsl.exe`:
 
