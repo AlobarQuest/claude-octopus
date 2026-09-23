@@ -7,6 +7,40 @@
 - Deja can act as an optional memory backend, letting Octopus search existing
   Claude Code, Codex, and Gemini CLI session history without running a separate
   memory service.
+- Claude Opus 5.5 (`claude-opus-5-5`) joins the model catalog at $4/$20 per
+  MTok. It is eligible for automatic routing, so a `providers.json` default or
+  route that names it is no longer skipped as explicit-only, and `octopus
+  doctor` reports when the installed Claude Code can run it.
+
+### Changed
+
+- Opus seats default to Claude Opus 5.5 on Claude Code v2.1.280 or newer, the
+  minimum version that accepts the model. Older hosts keep Opus 5 and the
+  existing Opus 4.8/4.7/4.6 fallbacks, and explicit `OCTOPUS_OPUS_MODEL` pins
+  and `providers.json` settings still take precedence.
+- Eval-based premium Claude routes use the same version-gated Opus default,
+  instead of remaining pinned to Opus 5 after Opus 5.5 becomes available.
+
+### Fixed
+
+- Select the PID-ledger Python interpreter by native process-control capability
+  instead of trusting the first `python3` on `PATH`. Doctor reports the selected
+  interpreter, and `OCTOPUS_PYTHON` provides an explicit, validated override.
+  Provider dispatch still exits 74 without launching a model when worker
+  registration cannot be made safe.
+- Treat a macOS audit-token permission result as an exited process when a second
+  identity check confirms that the process disappeared during signal delivery.
+- Council no longer recurses and hangs when the host runtime is not Claude Code
+  (e.g. a Codex conductor). With `--providers claude,agy` the `claude` seat is
+  dispatched as a real `claude -p` subprocess; run inside a governed worktree
+  whose project memory (`CLAUDE-OCTO.md`) mandates `/octo:council` for its review
+  gates, that seat re-invoked `orchestrate.sh council` and recursed — leaving empty
+  response files and never writing `summary.json` (`--setting-sources project,local`
+  does not suppress memory files). A council now exports `OCTOPUS_COUNCIL_ACTIVE=1`,
+  which dispatched seats inherit (forwarded across the `env -i` isolation used by
+  codex/agy); a council invocation carrying it is a seat trying to launch a nested
+  council, so it is refused (exit 2) with an instruction to review and emit a single
+  VERDICT instead of recursing. Top-level councils are unaffected.
 
 ## [11.8.1] - 2026-09-21
 

@@ -15,15 +15,20 @@ _octo_early_command=""
 while [[ "$_octo_early_index" -lt "${#_octo_early_args[@]}" ]]; do
     _octo_early_arg="${_octo_early_args[$_octo_early_index]}"
     case "$_octo_early_arg" in
-        -p|--parallel|-t|--timeout|-d|--dir|-a|--autonomy|-q|--quality|--tier|--branch|--on-fail|--provider)
+        -p|--parallel|-t|--timeout|-d|--dir|-a|--autonomy|-q|--quality|--tier|--branch|--on-fail|--provider|--intensity|--breadth|--research-run|--resume-research)
             _octo_early_index=$((_octo_early_index + 2)) ;;
-        -v|--verbose|--debug|-n|--dry-run|-l|--loop|-R|--resume|-Q|--quick|-P|--premium|--no-personas|--skip-smoke-test|--ci|--cost-first|--quality-first|--openrouter-nitro|--openrouter-floor|--async|--no-async|--tmux|--no-tmux)
+        -v|--verbose|--debug|-n|--dry-run|-l|--loop|-R|--resume|-Q|--quick|-P|--premium|--no-personas|--skip-smoke-test|--ci|--cost-first|--quality-first|--openrouter-nitro|--openrouter-floor|--async|--no-async|--tmux|--no-tmux|--intensity=*|--breadth=*|--research-run=*|--resume-research=*)
             _octo_early_index=$((_octo_early_index + 1)) ;;
         *)
             _octo_early_command="$_octo_early_arg"
             break ;;
     esac
 done
+# Refuse recursive council startup before persistent initialization or probes.
+if [[ "$_octo_early_command" == "council" && "${OCTOPUS_COUNCIL_ACTIVE:-}" == "1" ]]; then
+    printf '%s\n' "ERROR: Refusing to start a nested council: this process was spawned by an Octopus council seat dispatch (re-entrancy guard OCTOPUS_COUNCIL_ACTIVE=1). A council seat must review the task and emit a single VERDICT line directly." >&2
+    exit 2
+fi
 case "$_octo_early_command" in
     guide|doctor|capabilities|cache-check|check-cache|security-audit|repair|handoff|profile|install-state)
         OCTOPUS_EARLY_ARTIFACT_READ_ONLY=true
@@ -565,13 +570,13 @@ SUPPORTS_ENTER_WORKTREE_SWITCH=false    # v9.42: Claude Code v2.1.157+ (EnterWor
 SUPPORTS_TOOL_DECISION_PARAMS_OTEL=false # v9.42: Claude Code v2.1.157+ (tool_decision tool_parameters with OTEL_LOG_TOOL_DETAILS=1)
 SUPPORTS_SONNET_5=false                  # Claude Code v2.1.197+ (claude-sonnet-5)
 SUPPORTS_OPUS_5=false                    # Claude Code v2.1.219+ (claude-opus-5 and default Opus alias)
+SUPPORTS_OPUS_5_5=false
 OCTOPUS_BACKEND="api"              # v8.16: Detected backend (api|bedrock|vertex|foundry)
 AGENT_TEAMS_ENABLED="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}"
 OCTOPUS_SECURITY_V870="${OCTOPUS_SECURITY_V870:-true}"
 OCTOPUS_MAX_COST_USD="${OCTOPUS_MAX_COST_USD:-}"
 # POSIX-compatible string case helpers (macOS ships bash 3.2 which lacks ${var^} and ${var,,})
 _ucfirst() { local _c; _c=$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]'); printf '%s' "${_c}${1:1}"; }
-
 # [EXTRACTED to lib/providers.sh in v9.7.7]
 
 # Claude Code v2.1.10 Integration
@@ -3025,7 +3030,8 @@ case "$COMMAND" in
                 fi
                 ;;
         esac
-        unset _spawn_target _spawn_role _spawn_provider
+        _spawn_exit=$?; unset _spawn_target _spawn_role _spawn_provider
+        [[ "$_spawn_exit" -eq 0 ]] || exit "$_spawn_exit"
         ;;
     auto)
         source "${SCRIPT_DIR}/lib/auto-route.sh" 2>/dev/null || true
@@ -3250,6 +3256,8 @@ case "$COMMAND" in
         echo "cost-archive has been removed. Usage data is managed automatically."
         ;;
     council)
+        [[ "${OCTOPUS_COUNCIL_ACTIVE:-}" != "1" ]] || { log ERROR "Refusing to start a nested council (OCTOPUS_COUNCIL_ACTIVE=1)"; exit 2; }
+        export OCTOPUS_COUNCIL_ACTIVE=1
         if ! declare -f council_run >/dev/null 2>&1; then
             log ERROR "Council command unavailable: scripts/lib/council.sh failed to load"
             exit 1
