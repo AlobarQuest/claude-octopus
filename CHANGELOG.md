@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [11.9.1] - 2026-09-24
+
+### Fixed
+
+- `--timeout` now reaches every synchronous provider call. Grasp passed a fixed
+  300-second budget to each seat that the flag could not raise, so a retry with
+  a larger `--timeout` failed the same way. `OCTOPUS_AGENT_TIMEOUT` still takes
+  precedence, calls that run deliberately unbounded stay unbounded, and
+  `--timeout 0` does not remove their bounds. Council seats keep the budget from
+  `--seat-timeout` and `OCTOPUS_COUNCIL_TIMEOUT_<PROVIDER>`.
+- A failed or timed-out constraints seat no longer ends a standalone grasp run
+  before consensus and discards the perspectives already gathered. When every
+  seat fails, grasp now reports that and writes no consensus file.
+- Grasp skips an Antigravity seat already marked quota-dead instead of
+  dispatching it again and waiting through its quota retries. Consensus falls
+  back to Claude when Antigravity is unavailable or returns nothing, and the
+  consensus file records which provider synthesized it.
+- The timeout message recommends `OCTOPUS_AGENT_TIMEOUT` when that variable is
+  set, because it overrides `--timeout`.
+
+## [11.9.0] - 2026-09-23
+
 ### Added
 
 - Deja can act as an optional memory backend, letting Octopus search existing
@@ -23,6 +45,29 @@
 
 ### Fixed
 
+- Process-tree cleanup now retries macOS's identity-bound stop signal while
+  waiting for asynchronous confirmation. Busy hosts no longer reject a valid
+  provider cleanup merely because the first queued stop was not observed.
+- Session handoffs no longer land in the project checkout. The PreCompact and
+  SessionEnd hooks write the handoff beside the workflow state resolved by
+  `octopus state-path` (by default under `~/.claude-octopus/projects/`) instead
+  of leaving an untracked `.octo-continue.md` in the working directory. The
+  resume skill still reads an existing project-root `.octo-continue.md` as a
+  read-only fallback. Handoff writes are private and atomic, and refuse
+  symlinked or shared-writable state paths.
+- Concurrent run-contract updates now wait for an in-progress snapshot to
+  finish instead of failing after the event log's shorter lock window.
+  Filesystem and lock-metadata errors still fail immediately rather than being
+  retried as ordinary contention.
+- The quality-gate reference-integrity check no longer blocks on jq/awk program
+  lines such as `. as $value` embedded in shell scripts, and now strips the
+  `source` keyword correctly so existing `source lib/x.sh` targets are no longer
+  reported as missing.
+- The prompt hook recognises every registered skill (for example
+  `/octo:flow-parallel` and the starter-pack skills) as a known command instead
+  of answering "Unknown command … Did you mean …?", and suggests skills for
+  mistyped names. It reads the command name from the first line of a multi-line
+  prompt, and flags an unknown name even when nothing close to it exists.
 - Select the PID-ledger Python interpreter by native process-control capability
   instead of trusting the first `python3` on `PATH`. Doctor reports the selected
   interpreter, and `OCTOPUS_PYTHON` provides an explicit, validated override.

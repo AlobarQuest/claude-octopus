@@ -59,6 +59,28 @@ octo_run_contract_recovery_path() {
     printf '%s.recovery\n' "$(octo_run_contract_ledger_path)"
 }
 
+_octo_run_contract_lock() {
+    local lock_target="$1" started_at now lock_rc
+    # Event logging is best-effort and may abandon its lock after ~1s. The
+    # run contract is durable execution state, and snapshot publication can
+    # legitimately take longer on slower filesystems, so wait boundedly.
+    local wait_secs=30
+
+    started_at="$(date +%s)" || return 1
+    while :; do
+        if _octo_event_lock "$lock_target"; then
+            return 0
+        else
+            lock_rc=$?
+        fi
+        [[ "$lock_rc" -eq 75 ]] || return "$lock_rc"
+        now="$(date +%s)" || return 1
+        if (( now - started_at >= wait_secs )); then
+            return 1
+        fi
+    done
+}
+
 # A published generation is committed only when both durable snapshots contain
 # the same latest-seat projection as the ledger. This lets recovery distinguish
 # a stale cleanup marker from an append whose snapshot never committed.
@@ -416,7 +438,7 @@ run_contract_snapshot() (
     events_ledger="$(octo_run_contract_events_path)"
     [[ -s "$ledger" || -s "$events_ledger" ]] || return 1
     lock_target="$(octo_run_contract_lock_path)"
-    _octo_event_lock "$lock_target" || return 1
+    _octo_run_contract_lock "$lock_target" || return 1
     trap '_octo_event_unlock "$lock_target"' EXIT
     _octo_run_contract_recover_unlocked || return 1
     output="$(_octo_run_contract_snapshot_unlocked)" || return 1
@@ -512,7 +534,7 @@ run_contract_record_event() (
         '{schema_version:$schema_version, run_id:$run_id, event:$event, timestamp:$timestamp, attributes:$attributes}')" || return 1
 
     lock_target="$(octo_run_contract_lock_path)"
-    _octo_event_lock "$lock_target" || return 1
+    _octo_run_contract_lock "$lock_target" || return 1
     trap '_octo_event_unlock "$lock_target"' EXIT
     _octo_run_contract_recover_unlocked || return 1
     printf '%s\n' "$record" >> "$events_ledger" 2>/dev/null || return 1
@@ -574,7 +596,7 @@ run_contract_transition() (
     run_dir="$(dirname "$ledger")"
     mkdir -p "$run_dir" 2>/dev/null || return 1
     lock_target="$(octo_run_contract_lock_path)"
-    _octo_event_lock "$lock_target" || return 1
+    _octo_run_contract_lock "$lock_target" || return 1
     trap '_octo_event_unlock "$lock_target"' EXIT
     _octo_run_contract_recover_unlocked || return 1
 

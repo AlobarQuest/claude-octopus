@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import json
 import math
@@ -31,6 +34,12 @@ TRANSITIONS = {
     "rechecked": {"rechecked", "verified"},
     "verified": {"rechecked", "verified"},
 }
+NATIVE_WINDOWS_MESSAGE = (
+    "native Windows is unsupported; run Claude Octopus inside WSL"
+)
+LOCKING_UNAVAILABLE_MESSAGE = (
+    "file locking is unavailable on this Python runtime"
+)
 
 
 class SetupError(Exception):
@@ -632,6 +641,12 @@ def operate_legacy(request):
 
 
 def main():
+    if sys.platform == "win32" or sys.platform.startswith(("cygwin", "msys")):
+        print("setup-state: " + NATIVE_WINDOWS_MESSAGE, file=sys.stderr)
+        return 78
+    if fcntl is None:
+        print("setup-state: " + LOCKING_UNAVAILABLE_MESSAGE, file=sys.stderr)
+        return 78
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
     args = parser.parse_args()

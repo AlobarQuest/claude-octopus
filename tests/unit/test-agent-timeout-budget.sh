@@ -35,16 +35,17 @@ else
 fi
 TIMEOUT=600
 
-test_case "tangle implementers receive the phase timeout floor"
+test_case "tangle implementers are unbounded by default but honor explicit budgets"
 if declare -F octopus_effective_agent_timeout >/dev/null 2>&1 && \
-   [[ "$(octopus_effective_agent_timeout 600 tangle implementer)" == "1200" ]] && \
+   [[ "$(octopus_effective_agent_timeout 600 tangle implementer)" == "0" ]] && \
+   [[ "$(OCTOPUS_TIMEOUT_EXPLICIT=1 octopus_effective_agent_timeout 900 tangle implementer)" == "900" ]] && \
    [[ "$(OCTOPUS_TANGLE_TIMEOUT=1500 octopus_effective_agent_timeout 600 tangle implementer)" == "1500" ]] && \
-   [[ "$(OCTOPUS_TANGLE_TIMEOUT=invalid octopus_effective_agent_timeout 600 tangle implementer)" == "1200" ]] && \
-   [[ "$(octopus_effective_agent_timeout 0 tangle implementer)" == "0" ]] && \
+   [[ "$(OCTOPUS_TANGLE_TIMEOUT=0 octopus_effective_agent_timeout 600 tangle implementer)" == "0" ]] && \
+   ! OCTOPUS_TANGLE_TIMEOUT=invalid octopus_effective_agent_timeout 600 tangle implementer >/dev/null 2>&1 && \
    [[ "$(octopus_effective_agent_timeout 600 probe researcher)" == "600" ]]; then
     test_pass
 else
-    test_fail "effective timeout helper is missing or does not preserve phase/unlimited semantics"
+    test_fail "effective timeout helper does not preserve adaptive/unbounded and explicit-budget semantics"
 fi
 
 test_case "retry attempts receive only the remaining wall-clock budget"
@@ -60,7 +61,8 @@ fi
 test_case "spawn retry loop excludes timed-out attempts and reports effective timeout"
 spawn_source="$(cat "$PROJECT_ROOT/scripts/lib/spawn.sh")"
 heartbeat_source="$(cat "$PROJECT_ROOT/scripts/lib/heartbeat.sh")"
-if [[ "$spawn_source" == *'exit_code -ne 124'* ]] && \
+if [[ "$spawn_source" == *'exit_code -ne 76'* ]] && \
+   [[ "$spawn_source" == *'exit_code -ne 124'* ]] && \
    [[ "$spawn_source" == *'exit_code -ne 143'* ]] && \
    [[ "$spawn_source" == *'"$enhanced_prompt" "$_attempt_timeout" "$temp_input"'* ]] && \
    [[ "$heartbeat_source" == *'run_with_timeout "$timeout_secs" "$@" < "$temp_input" > "$raw_output"'* ]] && \
@@ -76,13 +78,23 @@ agent_utils_source="$(cat "$PROJECT_ROOT/scripts/lib/agent-utils.sh")"
 if declare -F octopus_agent_teams_can_honor_timeout >/dev/null 2>&1 && \
    octopus_agent_teams_can_honor_timeout 0 && \
    ! octopus_agent_teams_can_honor_timeout 600 && \
-   [[ "$agent_sync_source" == *'octopus_agent_teams_can_honor_timeout "${TIMEOUT:-0}"'* ]] && \
-   [[ "$agent_utils_source" == *'octopus_agent_teams_can_honor_timeout "${TIMEOUT:-0}"'* ]] && \
-   [[ "$spawn_source" == *'octopus_agent_teams_can_honor_timeout "$_eff_timeout"'* ]] && \
+   [[ "$agent_sync_source" == *'"${TIMEOUT:-0}" "${2:-${phase:-}}" "${3:-${role:-}}"'* ]] && \
+   [[ "$agent_utils_source" == *'octopus_agent_teams_can_honor_timeout "${TIMEOUT:-0}" "$phase" "$role"'* ]] && \
+   [[ "$spawn_source" == *'octopus_agent_teams_can_honor_timeout "$_eff_timeout" "$phase" "$role"'* ]] && \
    [[ "$spawn_source" == *'write_agent_status "$agent_type" "running" "$tokens_in" 0 "Dispatched via Agent Teams" "$_eff_timeout"'* ]]; then
     test_pass
 else
     test_fail "bounded Agent Teams dispatch can bypass the enforceable provider watchdog"
+fi
+
+test_case "Tangle implementers always use the stall-supervised subprocess"
+if ! octopus_agent_teams_can_honor_timeout 0 tangle implementer && \
+   ! octopus_agent_teams_can_honor_timeout 0 tangle implementer-heavy && \
+   octopus_agent_teams_can_honor_timeout 0 review reviewer && \
+   ! SUPPORTS_HOOK_LAST_MESSAGE=true TIMEOUT=0 should_use_agent_teams "claude-sonnet" tangle implementer; then
+    test_pass
+else
+    test_fail "an unbounded Tangle implementer can bypass the stall watchdog through Agent Teams"
 fi
 
 test_case "isolated non-persistence executor enforces an effective phase budget"

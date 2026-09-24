@@ -635,6 +635,20 @@ review_run_agent_sync_progress() {
     return "$rc"
 }
 
+review_strip_external_cli_wrapper() {
+    awk '
+        { lines[NR] = $0 }
+        NF { if (!first) first = NR; last = NR }
+        END {
+            wrapped = (first < last && lines[first] ~ /^<external-cli-output( [^>]*)?>$/ && lines[last] == "</external-cli-output>")
+            for (i = 1; i <= NR; i++) {
+                if (wrapped && (i == first || i == last)) continue
+                print lines[i]
+            }
+        }
+    '
+}
+
 # review_openai_compat_empty_output_retryable: returns true for transient OpenAI-compatible adapter
 # review failures where the CLI exited with Empty output after reconnects. These
 # are usually provider-side transient stream/session failures rather than review
@@ -1007,6 +1021,7 @@ ${malformed_output}
     if ! recovery_output=$(review_run_agent_sync_progress "$agent_type" "$recovery_prompt" "$role" "review" "$label" 2>/dev/null); then
         return 1
     fi
+    recovery_output=$(printf '%s\n' "$recovery_output" | review_strip_external_cli_wrapper)
     local recovered
     recovered=$(review_extract_findings_text "$recovery_output" 2>/dev/null || true)
     [[ -n "$recovered" && "$recovered" != "[]" ]] || return 1
@@ -2169,7 +2184,7 @@ Return ONLY valid JSON with 'findings' array including verdict field."
         }
     fi
     # v9.3.1: Strip markdown fences that LLMs wrap around JSON responses (#188)
-    verified_findings=$(echo "$verified_findings" | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
+    verified_findings=$(echo "$verified_findings" | review_strip_external_cli_wrapper | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
     local normalized_verified_findings
     if normalized_verified_findings=$(printf '%s' "$verified_findings" | review_normalize_findings_json 2>/dev/null); then
         verified_findings="$normalized_verified_findings"
@@ -2190,9 +2205,9 @@ Return ONLY valid JSON with 'findings' array including verdict field."
     if [[ "$debate" != "off" ]]; then
         local debate_candidates
         debate_candidates=$(echo "$confirmed_findings" | \
-            jq '[.[] | select(.verdict == "needs-debate")]' 2>/dev/null || echo "[]")
+            jq '[to_entries[] | select(.value.verdict == "needs-debate") | .value + {debate_id: ("finding-" + (.key | tostring))}]' 2>/dev/null || echo "[]")
         local debate_count
-        if ! debate_count=$(printf '{"findings":%s}' "$debate_candidates" | review_findings_count); then
+        if ! debate_count=$(review_findings_count "$(printf '{"findings":%s}' "$debate_candidates")"); then
             log WARN "review_run: invalid debate candidates; skipping debate gate and preserving confirmed findings"
             debate_count=0
         fi
@@ -2200,7 +2215,7 @@ Return ONLY valid JSON with 'findings' array including verdict field."
             log INFO "review_run: debating $debate_count contested findings"
             local debate_prompt="Challenge these $debate_count contested code review findings. For each, state whether it is a real bug (include) or false positive (exclude). Be adversarial.
 Findings: $(echo "$debate_candidates" | jq -c '.')
-Return JSON: {\"include\": [...finding titles...], \"exclude\": [...finding titles...]}"
+Return JSON: {\"include\": [...debate_id values...], \"exclude\": [...debate_id values...]}. Use only the debate_id values shown above, never finding titles."
             local debate_result debate_provider
             debate_provider="$(review_phase_provider "codex" "implementation-debater")" || return 1
             debate_result=$(review_run_agent_sync_progress "$debate_provider" "$debate_prompt" "implementation-debater" "review" "debate-$(octo_agent_spec_slug "$debate_provider")") && {
@@ -2212,15 +2227,14 @@ Return JSON: {\"include\": [...finding titles...], \"exclude\": [...finding titl
                 debate_result="{\"include\":[],\"exclude\":[]}"
             }
             # v9.3.1: Strip markdown fences from debate result (#188)
-            debate_result=$(echo "$debate_result" | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
-            local exclude_titles
-            exclude_titles=$(echo "$debate_result" | jq -r '.exclude // [] | .[]' 2>/dev/null || true)
-            if [[ -n "$exclude_titles" ]]; then
-                while IFS= read -r title; do
-                    confirmed_findings=$(echo "$confirmed_findings" | \
-                        jq --arg t "$title" '[.[] | select(.title != $t)]' 2>/dev/null || \
-                        echo "$confirmed_findings")
-                done <<< "$exclude_titles"
+            debate_result=$(echo "$debate_result" | review_strip_external_cli_wrapper | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
+            local exclude_ids
+            exclude_ids=$(echo "$debate_result" | jq -c '(.exclude // []) | map(select(type == "string"))' 2>/dev/null || echo "[]")
+            if [[ "$exclude_ids" != "[]" ]]; then
+                confirmed_findings=$(echo "$confirmed_findings" | \
+                    jq --argjson excluded "$exclude_ids" \
+                        '[to_entries[] | ("finding-" + (.key | tostring)) as $id | select(.value.verdict != "needs-debate" or ($excluded | index($id)) == null) | .value]' \
+                        2>/dev/null || echo "$confirmed_findings")
             fi
         fi
     fi
@@ -2247,7 +2261,7 @@ Return ONLY JSON: {\"findings\": [...ranked, deduplicated findings...]}"
     }
 
     # v9.3.1: Strip markdown fences from synthesis result (#188)
-    final_json=$(echo "$final_json" | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
+    final_json=$(echo "$final_json" | review_strip_external_cli_wrapper | sed '/^```json$/d; /^```JSON$/d; /^```$/d')
     local normalized_final_json
     if ! normalized_final_json=$(printf '%s' "$final_json" | review_normalize_findings_json 2>/dev/null); then
         log WARN "review_run: synthesis returned invalid or multi-document findings JSON, using local fallback"
