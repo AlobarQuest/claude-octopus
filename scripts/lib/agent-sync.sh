@@ -1253,6 +1253,43 @@ run_agent_sync_consultative() {
     return "$rc"
 }
 
+# Print the timeout that replaces run_agent_sync's caller value, or return 1
+# when the caller value (or the dynamic default) stands.
+# OCTOPUS_AGENT_TIMEOUT overrides all caller-hardcoded values. Without this,
+# callers passing explicit values (e.g. 300, 600) bypass the dynamic path and
+# the env var has no effect, making it dead code (#410).
+# An explicit --timeout comes next: grasp passed a literal 300 that --timeout
+# could not raise. Read the value captured at parse time, not TIMEOUT: review
+# rewrites TIMEOUT to 0 for its own supervision and quality.sh resets it to
+# 600 in nested processes. Callers passing 0 are deliberately unbounded and
+# keep that contract, and --timeout 0 does not unbound every bounded caller.
+# Council is exempt: it resolves per-seat budgets from --seat-timeout and
+# OCTOPUS_COUNCIL_TIMEOUT_<PROVIDER>, and its seat reaper waits on that same
+# value, so a larger global --timeout would turn clean timeouts into kills.
+octopus_sync_timeout_override() {
+    local caller_timeout="${1:-120}"
+    local phase="${2:-}"
+    local explicit_secs="${OCTOPUS_TIMEOUT_EXPLICIT_SECS:-}"
+
+    # Normalize leading zeroes so --timeout 0600 means 600 rather than being
+    # ignored, and so the value is never read as octal later.
+    while [[ "${#explicit_secs}" -gt 1 && "${explicit_secs#0}" != "$explicit_secs" ]]; do
+        explicit_secs="${explicit_secs#0}"
+    done
+
+    if [[ -n "${OCTOPUS_AGENT_TIMEOUT:-}" && "${OCTOPUS_AGENT_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$OCTOPUS_AGENT_TIMEOUT"
+        return 0
+    fi
+    if [[ "${OCTOPUS_TIMEOUT_EXPLICIT:-0}" == "1" && "$phase" != "council" && \
+          "$explicit_secs" =~ ^[1-9][0-9]*$ && \
+          "$caller_timeout" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s\n' "$explicit_secs"
+        return 0
+    fi
+    return 1
+}
+
 # Synchronous agent execution (for sequential steps within phases)
 run_agent_sync() {
     local agent_type="$1"
@@ -1261,11 +1298,9 @@ run_agent_sync() {
     local role="${4:-}"   # Optional role override
     local phase="${5:-}"  # Optional phase context
 
-    # OCTOPUS_AGENT_TIMEOUT env var overrides all caller-hardcoded values.
-    # Without this, callers passing explicit values (e.g. 300, 600) bypass the
-    # dynamic path and the env var has no effect — making it dead code (#410).
-    if [[ -n "${OCTOPUS_AGENT_TIMEOUT:-}" && "${OCTOPUS_AGENT_TIMEOUT}" =~ ^[0-9]+$ ]]; then
-        timeout_secs="$OCTOPUS_AGENT_TIMEOUT"
+    local _timeout_override
+    if _timeout_override="$(octopus_sync_timeout_override "$timeout_secs" "$phase")"; then
+        timeout_secs="$_timeout_override"
     elif [[ "$timeout_secs" -eq 120 ]]; then
         # v8.19.0: Dynamic timeout calculation (when caller uses default 120)
         local task_type_for_timeout
