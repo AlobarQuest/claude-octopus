@@ -509,4 +509,202 @@ else
     test_fail "verification published outside the unique run path: $verify_output"
 fi
 
+test_case "source extraction drops JSON-escaped whitespace from URLs"
+WORKSPACE_DIR="$tmp_root/escaped-workspace"
+RESULTS_DIR="$tmp_root/escaped-results"
+mkdir -p "$RESULTS_DIR"
+unset RESEARCH_RUN_DIR RESEARCH_RUN_ID RESEARCH_TASK_GROUP RESEARCH_PROMPT RESEARCH_INTENSITY RESEARCH_PROVIDER_RESULTS_DIR
+OCTOPUS_RESEARCH_RUN_ID="escaped-urls"
+OCTOPUS_RESEARCH_RESUME=false
+OCTOPUS_RESEARCH_FETCH_MAX=0
+research_run_begin "1700000007" "escaped URL topic" "standard"
+cat > "$RESULTS_DIR/codex-probe-1700000007-0.md" <<'EOF'
+## Output
+{"message":"alert\nRunbook: https://example.com/runbook.md#error-tracking\n","next":"https://example.org/page\tTabbed"}
+{"escaped":"https://example.net/doc\\nNext","quoted":"https://example.net/quoted\""}
+Runbook: https://example.com/runbook.md#error-tracking
+## Status: SUCCESS
+EOF
+research_collect_sources "1700000007"
+escaped_urls=$(jq -r '.url, .canonical_url' "$RESEARCH_RUN_DIR/sources.jsonl")
+escaped_canonical=$(jq -r '.canonical_url' "$RESEARCH_RUN_DIR/sources.jsonl" | sort | tr '\n' ' ')
+if [[ "$escaped_urls" != *'\'* ]] \
+   && [[ "$escaped_canonical" == "https://example.com/runbook.md https://example.net/doc https://example.net/quoted https://example.org/page " ]]; then
+    test_pass
+else
+    test_fail "escaped whitespace leaked into extracted URLs: $(tr '\n' ' ' <<< "$escaped_urls")"
+fi
+
+test_case "workspace file:line citations verify as local evidence"
+local_root="$tmp_root/local-project"
+elsewhere_root="$tmp_root/elsewhere-project"
+mkdir -p "$local_root/src" "$elsewhere_root/src"
+printf '%s\n' \
+    'import { log } from "./log.js";' \
+    'export function handle(err) {' \
+    '  log.error("unhandled error", { err });' \
+    '  return { status: 500 };' \
+    '}' > "$local_root/src/handler.ts"
+WORKSPACE_DIR="$tmp_root/local-workspace"
+RESULTS_DIR="$tmp_root/local-results"
+mkdir -p "$RESULTS_DIR"
+unset RESEARCH_RUN_DIR RESEARCH_RUN_ID RESEARCH_TASK_GROUP RESEARCH_PROMPT RESEARCH_INTENSITY RESEARCH_PROVIDER_RESULTS_DIR RESEARCH_PROJECT_ROOT
+OCTOPUS_RESEARCH_RUN_ID="local-citations"
+OCTOPUS_RESEARCH_RESUME=false
+OCTOPUS_RESEARCH_FETCH_MAX=0
+PROJECT_ROOT="$local_root" research_run_begin "1700000008" "Audit the handler" "standard"
+unset RESEARCH_RUN_DIR RESEARCH_RUN_ID RESEARCH_TASK_GROUP RESEARCH_PROMPT RESEARCH_INTENSITY RESEARCH_PROVIDER_RESULTS_DIR RESEARCH_PROJECT_ROOT
+OCTOPUS_RESEARCH_RESUME=true
+PROJECT_ROOT="$elsewhere_root" research_run_begin "1700000008" "" "standard"
+OCTOPUS_RESEARCH_RESUME=false
+local_draft="$RESEARCH_RUN_DIR/local-pass.md"
+{
+    printf '%s\n' '# Findings'
+    printf '%s\n' '- Unexpected errors return 500 (`src/handler.ts:4`).'
+    printf '%s\n' '- The handler logs "unhandled error" with the error attached (src/handler.ts:2-4).'
+    printf -- '- The same handler, cited by absolute path, returns 500 (`%s/src/handler.ts:4`).\n' "$local_root"
+} > "$local_draft"
+local_status=0
+(cd "$elsewhere_root" && research_verify_synthesis "$local_draft") || local_status=$?
+if [[ "$local_status" -eq 0 ]] \
+   && jq -e '.status == "passed" and .failures == 0 and .claims_checked == 3' \
+        "$RESEARCH_RUN_DIR/verification.json" >/dev/null \
+   && jq -se '.[0].local_citations == ["src/handler.ts:4"]
+              and .[0].independence_groups == ["local:src/handler.ts"]
+              and .[1].local_citations == ["src/handler.ts:2-4"]
+              and .[2].local_citations == ["src/handler.ts:4"]' \
+        "$RESEARCH_RUN_DIR/claims.jsonl" >/dev/null; then
+    test_pass
+else
+    test_fail "resolvable workspace citations were rejected: $(jq -c '.checks' "$RESEARCH_RUN_DIR/verification.json" 2>/dev/null)"
+fi
+
+test_case "workspace citations fail closed outside the root, past EOF, or on mismatched numbers"
+printf '%s\n' 'outside the workspace' > "$tmp_root/outside.ts"
+ln -sf "../../outside.ts" "$local_root/src/escape.ts"
+local_bad_draft="$RESEARCH_RUN_DIR/local-fail.md"
+{
+    printf '%s\n' '- Unexpected errors return 503 (`src/handler.ts:4`).'
+    printf '%s\n' '- A line past the end of the file (`src/handler.ts:40`).'
+    printf '%s\n' '- A relative path that leaves the workspace (`../outside.ts:1`).'
+    printf '%s\n' '- A symlink that leaves the workspace (`src/escape.ts:1`).'
+    printf '%s\n' '- A file that does not exist (`src/missing.ts:1`).'
+    printf -- '- An absolute path outside the workspace (`%s/outside.ts:1`).\n' "$tmp_root"
+    printf '%s\n' '- A basename that is not a workspace path (`handler.ts:4`).'
+} > "$local_bad_draft"
+local_bad_status=0
+research_verify_synthesis "$local_bad_draft" || local_bad_status=$?
+local_bad_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$local_bad_status" -ne 0 ]] \
+   && [[ "$local_bad_kinds" == "1:number_mismatch 2:missing_citation 3:missing_citation 4:missing_citation 5:missing_citation 6:missing_citation 7:missing_citation " ]]; then
+    test_pass
+else
+    test_fail "unresolvable workspace citations were accepted: $local_bad_kinds"
+fi
+
+test_case "workspace citations to files over the size cap fail closed"
+big_line='  return { status: 500 };'
+{ printf '%s\n' "$big_line"; head -c 400 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$local_root/src/big.ts"
+printf '%s\n' "$big_line" > "$local_root/src/small.ts"
+cap_draft="$RESEARCH_RUN_DIR/local-cap.md"
+{
+    printf '%s\n' '- The oversized file returns 500 (`src/big.ts:1`).'
+    printf '%s\n' '- The small file returns 500 (`src/small.ts:1`).'
+} > "$cap_draft"
+cap_status=0
+OCTOPUS_RESEARCH_MAX_RESPONSE_BYTES=256 research_verify_synthesis "$cap_draft" || cap_status=$?
+cap_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$cap_status" -ne 0 ]] && [[ "$cap_kinds" == "1:missing_citation " ]]; then
+    test_pass
+else
+    test_fail "size cap not enforced: status=$cap_status checks=[$cap_kinds]"
+fi
+
+test_case "each cited workspace file is normalized once per verification"
+cache_draft="$RESEARCH_RUN_DIR/local-cache.md"
+printf '%s\n' \
+    '- The handler logs "unhandled error" and returns "status: 500" (`src/handler.ts:2-4`).' \
+    '- The handler returns "status: 500" (`src/handler.ts:4`).' > "$cache_draft"
+normalization_calls="$RESEARCH_RUN_DIR/normalization-calls"
+: > "$normalization_calls"
+cache_status=0
+(
+    original_normalizer=$(declare -f research_normalize_local_file)
+    eval "${original_normalizer/research_normalize_local_file/research_normalize_local_file_original}"
+    research_normalize_local_file() {
+        printf 'called\n' >> "$normalization_calls"
+        research_normalize_local_file_original "$1"
+    }
+    research_verify_synthesis "$cache_draft"
+) || cache_status=$?
+call_count=$(wc -l < "$normalization_calls" | tr -d '[:space:]')
+if [[ "$cache_status" -eq 0 && "$call_count" -eq 1 ]]; then
+    test_pass
+else
+    test_fail "workspace file normalized $call_count times; verification status=$cache_status"
+fi
+
+test_case "workspace cache budget fails verification and cleans normalized files"
+printf 'alpha evidence %0170d\n' 0 > "$local_root/src/cache-a.ts"
+printf 'beta evidence %0170d\n' 0 > "$local_root/src/cache-b.ts"
+budget_draft="$RESEARCH_RUN_DIR/local-budget.md"
+printf '%s\n' \
+    '- The first file has "alpha evidence" (`src/cache-a.ts:1`).' \
+    '- The second file has "beta evidence" (`src/cache-b.ts:1`).' > "$budget_draft"
+budget_status=0
+OCTOPUS_RESEARCH_MAX_LOCAL_CACHE_BYTES=256 research_verify_synthesis "$budget_draft" || budget_status=$?
+budget_kind=$(jq -r '.checks[].kind' "$RESEARCH_RUN_DIR/verification.json")
+if [[ "$budget_status" -ne 0 && "$budget_kind" == "local_cache_limit" ]] \
+   && ! ls "$RESEARCH_RUN_DIR"/.normalized-local.* >/dev/null 2>&1; then
+    test_pass
+else
+    test_fail "cache budget did not fail cleanly: status=$budget_status checks=[$budget_kind]"
+fi
+
+test_case "zero-padded cache budget is read as decimal"
+padded_status=0
+OCTOPUS_RESEARCH_MAX_LOCAL_CACHE_BYTES=000512 research_verify_synthesis "$budget_draft" || padded_status=$?
+if [[ "$padded_status" -eq 0 ]] \
+   && jq -e '.status == "passed"' "$RESEARCH_RUN_DIR/verification.json" >/dev/null; then
+    test_pass
+else
+    test_fail "zero-padded 512-byte cache budget rejected two in-budget files"
+fi
+
+test_case "local response cap handles padded and overlong values without arithmetic errors"
+cap_error="$RESEARCH_RUN_DIR/local-cap-error.log"
+physical_local_root=$(cd "$local_root" && pwd -P)
+local_cap_status=0
+OCTOPUS_RESEARCH_MAX_RESPONSE_BYTES=999999999999999999999 \
+    research_resolve_local_citation "$physical_local_root" 'src/small.ts:1' \
+    >/dev/null 2> "$cap_error" || local_cap_status=$?
+padded_local_status=0
+OCTOPUS_RESEARCH_MAX_RESPONSE_BYTES=000256 \
+    research_resolve_local_citation "$physical_local_root" 'src/small.ts:1' \
+    >/dev/null 2>> "$cap_error" || padded_local_status=$?
+if [[ "$local_cap_status" -eq 0 && "$padded_local_status" -eq 0 && ! -s "$cap_error" ]]; then
+    test_pass
+else
+    test_fail "overlong response cap caused a local citation error"
+fi
+
+test_case "normalization failure removes earlier cache files"
+normalization_status=0
+(
+    original_normalizer=$(declare -f research_normalize_local_file)
+    eval "${original_normalizer/research_normalize_local_file/research_normalize_local_file_original}"
+    research_normalize_local_file() {
+        [[ "$1" == */cache-b.ts ]] && return 1
+        research_normalize_local_file_original "$1"
+    }
+    research_verify_synthesis "$budget_draft"
+) || normalization_status=$?
+normalization_kind=$(jq -r '.checks[].kind' "$RESEARCH_RUN_DIR/verification.json")
+if [[ "$normalization_status" -ne 0 && "$normalization_kind" == "local_cache_error" ]] \
+   && ! ls "$RESEARCH_RUN_DIR"/.normalized-local.* >/dev/null 2>&1; then
+    test_pass
+else
+    test_fail "normalization failure left cache files: status=$normalization_status checks=[$normalization_kind]"
+fi
+
 test_summary

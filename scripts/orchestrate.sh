@@ -93,12 +93,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" && "$_octo_early_index" -eq 0 ]]; then
     unset _octo_early_tail
 fi
 unset _octo_early_args _octo_early_index _octo_early_arg _octo_early_command
-# Self-heal: ensure the stable symlink exists for LLM Bash tool access.
-# The SessionStart hook normally creates this, but if doctor (or any command)
-# is invoked before the hook fires, the symlink may be missing. (fixes #318)
-# Also handles marketplace installs where the hook may not have fired. (#377)
-if [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" ]] && declare -f octo_ensure_stable_plugin_root >/dev/null 2>&1; then
-    octo_ensure_stable_plugin_root "$PLUGIN_DIR" >/dev/null 2>&1 || true
+# Self-heal the stable symlink for LLM Bash tool access when the SessionStart
+# hook has not run yet or never fires (#318, #377). A development checkout only
+# repairs a missing or broken link; it never takes over a working shared one.
+if [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" ]] && declare -f octo_self_heal_stable_plugin_root >/dev/null 2>&1; then
+    octo_self_heal_stable_plugin_root "$PLUGIN_DIR" >/dev/null 2>&1 || true
 elif [[ "$OCTOPUS_EARLY_ARTIFACT_READ_ONLY" != "true" && ! -e "${HOME}/.claude-octopus/plugin" ]]; then
     mkdir -p "${HOME}/.claude-octopus"
     ln -sfn "$PLUGIN_DIR" "${HOME}/.claude-octopus/plugin"
@@ -111,21 +110,11 @@ OCTOPUS_PLATFORM="$(uname)"
 # Factory's plugin interop resolves ${CLAUDE_PLUGIN_ROOT} automatically,
 # but we detect the host for version checking and env var fallbacks.
 # v9.16.0: Extended for Codex CLI host detection (Direction A)
-if [[ -n "${DROID_PLUGIN_ROOT:-}" ]]; then
-    OCTOPUS_HOST="factory"
-    # Factory provides DROID_PLUGIN_ROOT; ensure CLAUDE_PLUGIN_ROOT is also set
-    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$DROID_PLUGIN_ROOT}"
-elif [[ -n "${CODEX_HOME:-}" || -n "${CODEX_SANDBOX:-}" || -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
-    OCTOPUS_HOST="codex"  # HOST:codex — Codex CLI is the host runtime
-elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-    OCTOPUS_HOST="claude"
-elif [[ "$PLUGIN_DIR" == *"/.codex/"* ]]; then
-    OCTOPUS_HOST="codex"
-elif [[ "$PLUGIN_DIR" == *"/.claude/"* ]]; then
-    OCTOPUS_HOST="claude"
-else
-    OCTOPUS_HOST="standalone"
-fi
+# Runtime markers outrank the CODEX_HOME config hint (lib/host-runtime.sh).
+source "${SCRIPT_DIR}/lib/host-runtime.sh"
+OCTOPUS_HOST="$(octo_detect_host_runtime "$PLUGIN_DIR")"  # HOST:codex when Codex is the host runtime
+# Factory provides DROID_PLUGIN_ROOT; ensure CLAUDE_PLUGIN_ROOT is also set
+[[ "$OCTOPUS_HOST" != "factory" ]] || export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$DROID_PLUGIN_ROOT}"
 
 # Claude Code web/remote sessions should bias toward unattended execution and
 # avoid expensive local terminal affordances unless explicitly re-enabled.

@@ -405,7 +405,16 @@ _octo_build_provider_env_impl() {
             # Claude Code session markers, or the inner `claude` hangs thinking it
             # is a nested child (council/agent-sync seat stalls at 0 bytes until
             # timeout). Strip them; keep the rest of the env (PATH/HOME/auth).
-            PROVIDER_ENV_ARRAY=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH "OCTOPUS_PROVIDER_CHILD=true")
+            # Codex runtime markers are stripped too: under a Codex host they
+            # would make an Octopus run inside this claude child detect Codex
+            # and reuse the outer Codex session (lib/host-runtime.sh).
+            PROVIDER_ENV_ARRAY=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CODEX_THREAD_ID -u CODEX_SESSION_ID -u CODEX_TASK_ID -u CODEX_SANDBOX -u CODEX_PLUGIN_ROOT "OCTOPUS_PROVIDER_CHILD=true")
+            # A CLAUDE_PLUGIN_ROOT inside a Codex plugin cache is also a Codex
+            # host signal (lib/host-runtime.sh); do not hand it to the child.
+            if declare -F _octo_is_codex_plugin_cache >/dev/null 2>&1 && \
+               _octo_is_codex_plugin_cache "${CLAUDE_PLUGIN_ROOT:-}"; then
+                PROVIDER_ENV_ARRAY=(env -u CLAUDE_PLUGIN_ROOT "${PROVIDER_ENV_ARRAY[@]:1}")
+            fi
             if [[ ${#_trace_env[@]} -gt 0 ]]; then
                 PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
             fi

@@ -2,6 +2,171 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `orchestrate.sh --dry-run parallel <tasks.json>` no longer reports every task
+  as a failed spawn. A dry-run spawn prints the command it would run but no
+  provider PID, and parallel execution still waited for one, so each valid task
+  logged a PID error and a failed spawn. The run then aggregated the session's
+  existing results, wrote a failed `parallel-report.json` and exited 1.
+  Dry-run parallel now validates as before and reports each invalid task as
+  skipped, prints one preview per valid task and a dispatch summary, and
+  writes no aggregate or report. It exits 1 only when validation fails or a
+  non-empty task list has no dispatchable task. An empty task list exits 0,
+  as it does in a real run.
+- `orchestrate.sh --dry-run code-review` no longer reports that every review
+  provider failed. Round 1 waited for the same missing PID, so the dry run
+  logged a PID error per reviewer, printed "All N review providers failed",
+  wrote review findings and provider fallback records, and replaced the
+  session's proof packet with a failed one. It now prints one preview per
+  Round 1 reviewer and stops there without opening a proof packet. Past the
+  existing target and fleet checks, it fails only when no reviewer command can
+  be rendered.
+
+## [11.9.6] - 2026-09-29
+
+### Fixed
+
+- Cost examples in commands and skills now use `USD` instead of escaped dollar
+  signs. Claude Code no longer treats them as argument placeholders, and Codex,
+  Cursor and Factory display the prices without a backslash.
+- `/octo:embrace` now uses the newest probe synthesis, grasp consensus, tangle
+  validation and delivery document from the session. Its artifact lookup read
+  only the first glob match, the alphabetically first, and artifact names carry
+  an epoch timestamp, so a session holding more than one used the oldest. The
+  lookup and the debate gate also split an unquoted path, so a results
+  directory containing a space found nothing and the gate stopped with
+  "context artifact missing".
+- Research verification skips workspace citations to files larger than
+  `OCTOPUS_RESEARCH_MAX_RESPONSE_BYTES`, the cap already applied to fetched
+  sources. It also normalizes each cited file once per verification, so
+  repeated quotes do not trigger repeated disk writes. A 16 MiB cache budget
+  bounds total temporary storage and failed normalization removes its files.
+
+## [11.9.5] - 2026-09-29
+
+### Fixed
+
+- Seat spawns no longer fail once a session's seat ledger passes 128 KiB. The
+  run manifest writer handed the whole seat projection and the event list to
+  `jq` as `--argjson` values, one argv string each, which Linux caps at
+  `MAX_ARG_STRLEN` (128 KiB). A session's ledger
+  (`runs/<session-id>/seats.jsonl`) keeps every run's records, so after a few
+  reviews the projection outgrew the cap, `jq` failed with `E2BIG`, every
+  transition rolled back with "Unable to persist planned execution contract",
+  and each run ended with "ALL Round 1 providers failed" until a new session
+  started (#1111). Both ledgers now reach `jq` through `--slurpfile`, so
+  manifest publication no longer depends on the ledger's size; the manifest
+  content is unchanged.
+
+- Provider-level reasoning effort no longer collides with the codex
+  `reasoning` model slot in `providers.json`. The v3.0 config Octopus writes
+  stores a model at `providers.codex.reasoning`, used by the `codex-reasoning`
+  agent and the `security: codex:reasoning` route, while role-based execution
+  profiles (#616) read a `{default, policy}` effort object from the same key.
+  On a v3.0 config that lookup failed silently; storing the object instead made
+  `codex-reasoning` and codex dispatch in the security phase fail with
+  "Invalid configured model". Provider-level effort now lives in
+  `providers.<provider>.reasoning_effort` and
+  `providers.<provider>.reasoning_policy`, and `reasoning` stays the model
+  slot. An effort object already stored at `reasoning` is still honored, and
+  the capability-map lookup now skips non-string values, so the object is
+  never taken for a model name. (#1114)
+- `/octo:auto` requests for parallel work, such as "decompose the auth refactor
+  into parallel work packages", now hand off to `/octo:parallel`, the same as a
+  confirmed `--workflow parallel` choice. Since 11.4.0 the automatic router
+  passed the request text to the tasks-file runner behind
+  `orchestrate.sh parallel`, so these requests stopped with
+  `Tasks file not found: <request>` and exit 1. (#1116)
+- Commands and skills invoked with arguments no longer have their shell and awk
+  code rewritten by Claude Code's `$N` argument substitution. `/octo:embrace
+  lets do it all` rendered the provider banner's `command -v "$1"` as
+  `command -v "do"`, a shell keyword, so every CLI was reported available, and
+  flow-parallel's launch script resolved `dirname "$0"` to the first argument.
+  Shell parameters now use `${N}`, awk fields use `$(N)`, and literal amounts
+  such as cost estimates use Claude Code's `\$` escape. A unit suite rejects any
+  unescaped `$N` in command and skill bodies, the Cursor copies, and the shipped
+  skills. (#1101)
+- `/octo:embrace` debate gates no longer pick their context from the shared
+  `~/.claude-octopus/results/` root. orchestrate.sh writes phase documents to
+  the session's results directory, so `ls -t` over the root found no current
+  document and returned the newest match left by an earlier session. The
+  gates now pass no context file and let orchestrate.sh read its own session
+  directory, and the command uses the document paths the phases log. (#1101)
+- Research about the local codebase can now pass evidence verification. A
+  claim may cite a workspace file as `path:LINE`, `path:START-END` or
+  `path:A,B`. The citation counts when the file exists inside the workspace
+  root recorded in the run manifest and every cited line exists, and quotes and
+  numbers in the claim must then appear in that file. Before, every claim
+  without a web `[source:S###]` ID failed, so a probe that researched the
+  repository could never publish its synthesis. (#1102)
+- URLs harvested from provider output no longer keep a JSON-escaped `\n`, `\r`
+  or `\t`, or a trailing backslash. (#1102)
+- Probe synthesis reads as much of each provider artifact as the synthesizer's
+  context budget allows (for example `OCTOPUS_CLAUDE_CONTEXT_BUDGET`). The
+  fixed limits of 24000 bytes per artifact and 120000 in total cut Codex
+  answers off after their prompt echo. `OCTOPUS_PROBE_SYNTHESIS_FILE_CHARS` and
+  `OCTOPUS_PROBE_SYNTHESIS_CONTEXT_CHARS` still pin either limit. (#1102)
+- `orchestrate.sh --dry-run fan-out` no longer reports every agent as a failed
+  spawn. A dry-run spawn prints the command it would run but no provider PID,
+  and fan-out still waited for one, so it logged a PID error and a failed spawn
+  for each agent and then an empty "All agents spawned" list. Dry-run fan-out
+  now prints one preview per agent and stops there; an agent whose command
+  cannot be rendered is still reported. (#1113)
+
+## [11.9.4] - 2026-09-28
+
+### Fixed
+
+- An exported `CODEX_HOME` no longer makes Octopus treat a Claude Code session
+  as a Codex host. Host detection read `CODEX_HOME`, a config location that is
+  often set globally, as proof that Codex was running, so council marked codex
+  seats host-native and could lose quorum on a single dissent, as in #1103.
+  Detection now relies on the markers Codex sets for every command it runs
+  (`CODEX_THREAD_ID`, `CODEX_SESSION_ID`), plus `CODEX_SANDBOX` under the macOS
+  sandbox, `CODEX_PLUGIN_ROOT`, and a plugin root inside a Codex plugin cache.
+  Claude Code's runtime markers (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+  `CLAUDE_CODE_SESSION_ID`) also identify Claude Code, so a development checkout
+  run from its Bash tool is no longer reported as standalone. `CODEX_HOME` is
+  now only a last hint.
+- `orchestrate.sh`, lifecycle reporting and plugin updates share one host
+  detector. Lifecycle now reports Factory, and Codex hosts it previously
+  reported as Claude, and records its install state once more after upgrading.
+- Claude seats dispatched from a Codex host no longer inherit Codex's session
+  markers or Codex plugin roots.
+
+## [11.9.3] - 2026-09-27
+
+### Fixed
+
+- On native Windows, Codex no longer opens a Git Bash window for every Octopus
+  hook call. Codex runs hook commands through `cmd.exe`, which passed each bare
+  `.sh` path to the Windows file association, so windows accumulated until
+  Codex had to be closed (#1104). Every hook now declares a `commandWindows`
+  override that exits without starting a shell. Codex uses it on Windows;
+  Claude Code ignores the key and keeps its existing hook behavior. Native
+  Windows remains unsupported; run Octopus inside WSL. Linux, macOS and WSL are
+  unaffected.
+
+## [11.9.2] - 2026-09-25
+
+### Fixed
+
+- Council now dispatches Claude seats when Claude Code is the host, or when a
+  council started from a terminal is taken for one because of the install path.
+  Before, every Claude seat was marked host-native and wrote a placeholder, so a
+  default `claude,codex,agy` council had two voters and a single `REVISE` broke
+  quorum before cross-critique (#1103). Codex-within-Codex and Windows/Git Bash
+  keep the recursion guard, and extra seats now go to a provider that can
+  respond before a host-native one.
+- Running `orchestrate.sh` or a provider check from a development checkout no
+  longer repoints the machine-wide `~/.claude-octopus/plugin` link, which made
+  every other live session run that checkout's unreleased code. A working
+  link now moves only to a root the host supplied (`CLAUDE_PLUGIN_ROOT`) or to
+  an installed copy of the same or a newer version. A checkout still repairs a
+  missing or broken link, and an older installed copy no longer moves the link
+  backwards.
+
 ## [11.9.1] - 2026-09-24
 
 ### Fixed
