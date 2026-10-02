@@ -16,6 +16,23 @@
 
 ### Fixed
 
+- The Perplexity provider now uses the Agent API directly. Sonar chat
+  completions support ended on 2026-09-27; Perplexity is gradually
+  reformulating synchronous and streaming Sonar calls as Agent API requests.
+  `perplexity_execute` posts to `/v1/agent`. The prompt goes in `input`,
+  the research system text in `instructions`, and `OCTOPUS_PERPLEXITY_MAX_TOKENS` in
+  `max_output_tokens`. `sonar` and `sonar-pro` map to the `fast` preset,
+  `sonar-reasoning-pro` to `low` and `sonar-deep-research` to `high`, as
+  Perplexity's migration guide recommends; a bare preset name passes through,
+  with Perplexity's preset tools. Explicitly selecting `xhigh` enables
+  Perplexity's remote code sandbox, web search and finance search. A
+  `provider/model` id such as `perplexity/sonar` is sent as `model` with
+  the `web_search` tool. Any other value is refused before a request is sent.
+  Only completed responses without an API error can write an answer.
+  The Sources list preserves `search_results` IDs, including source-typed
+  markers such as `[web:1]`. Annotation URLs without a reliable result ID
+  appear as unnumbered links. The quota probe uses the same endpoint with
+  tool calls disabled.
 - Review and brainstorm advisors read provider answers from completed result files
   and permit Team mode dispatch. Codex guards allow supported noninteractive
   subcommands and help requests while continuing to reject interactive prompts.

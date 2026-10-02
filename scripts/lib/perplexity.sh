@@ -347,10 +347,17 @@ orcarouter_execute() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PERPLEXITY SONAR API (v8.24.0 - Issue #22)
+# PERPLEXITY AGENT API (v8.24.0 - Issue #22; Agent API since Sonar retirement)
 # Web-grounded research provider — live internet search with citations
 # Env: PERPLEXITY_API_KEY required
-# Models: sonar-pro (deep research), sonar (fast search)
+# Endpoint: POST https://api.perplexity.ai/v1/agent. Sonar chat completions
+#   support ended on 2026-09-27; synchronous calls are gradually reformulated
+#   as Agent API requests. This provider uses the Agent API directly.
+# Models: sonar-pro, sonar (mapped to Agent API presets per Perplexity's
+#   migration guide), a bare preset (fast|low|medium|high|xhigh), or an explicit
+#   provider/model id such as perplexity/sonar (sent with the web_search tool).
+#   Presets inherit Perplexity's tools; explicitly choosing xhigh enables
+#   Perplexity's remote code sandbox as well as web and finance search.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 perplexity_execute() {
@@ -368,9 +375,33 @@ perplexity_execute() {
         return 1
     fi
 
-    [[ "$VERBOSE" == "true" ]] && log DEBUG "Perplexity Sonar request: model=$model" || true
+    # Map the configured model onto an Agent API request target. Legacy Sonar ids
+    # take the presets Perplexity's migration guide recommends (sonar and
+    # sonar-pro -> fast, sonar-reasoning-pro -> low, sonar-deep-research -> high).
+    # An explicit provider/model id is sent as "model" together with the
+    # web_search tool, because direct-model requests only search when the tool is
+    # present; presets carry their own tools.
+    local target_field target_value tools_json=""
+    case "$model" in
+        sonar|sonar-pro)            target_field="preset"; target_value="fast" ;;
+        sonar-reasoning-pro)        target_field="preset"; target_value="low" ;;
+        sonar-deep-research)        target_field="preset"; target_value="high" ;;
+        fast|low|medium|high|xhigh) target_field="preset"; target_value="$model" ;;
+        *)
+            if [[ "$model" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$ ]]; then
+                target_field="model"; target_value="$model"
+                tools_json=',
+  "tools": [{"type": "web_search"}]'
+            else
+                log ERROR "Perplexity: model '$model' has no Agent API mapping (use sonar, sonar-pro, a preset such as fast, or a provider/model id)"
+                return 1
+            fi
+            ;;
+    esac
 
-    # Build JSON payload — Perplexity uses OpenAI-compatible chat completions API
+    [[ "$VERBOSE" == "true" ]] && log DEBUG "Perplexity Agent API request: model=$model ${target_field}=${target_value}" || true
+
+    # Build JSON payload for the Agent API (input + instructions replace messages)
     local escaped_prompt
     escaped_prompt=$(json_escape "$prompt")
 
@@ -383,12 +414,10 @@ perplexity_execute() {
     local payload
     payload=$(cat << EOF
 {
-  "model": "$model",
-  "messages": [
-    {"role": "system", "content": "You are a research assistant with live web access. Provide detailed, factual answers with citations. Always include source URLs when referencing specific information."},
-    {"role": "user", "content": "$escaped_prompt"}
-  ],
-  "max_tokens": ${max_tokens}
+  "${target_field}": "${target_value}",
+  "instructions": "You are a research assistant with live web access. Provide detailed, factual answers with citations. Always include source URLs when referencing specific information.",
+  "input": "$escaped_prompt",
+  "max_output_tokens": ${max_tokens}${tools_json}
 }
 EOF
 )
@@ -398,7 +427,7 @@ EOF
     # captures them; --max-time bounds hung connections. A failed or empty
     # request previously fell through silently and produced an empty result
     # file with "(no output captured)" and no actionable error (bug 260609).
-    response=$(curl -sS --max-time "${OCTOPUS_PERPLEXITY_TIMEOUT:-120}" -X POST "https://api.perplexity.ai/chat/completions" \
+    response=$(curl -sS --max-time "${OCTOPUS_PERPLEXITY_TIMEOUT:-120}" -X POST "https://api.perplexity.ai/v1/agent" \
         -H "Authorization: Bearer ${PERPLEXITY_API_KEY}" \
         -H "Content-Type: application/json" \
         -H "Connection: keep-alive" \
@@ -412,17 +441,43 @@ EOF
         return 1
     fi
 
-    # Extract content from OpenAI-compatible nested path .choices[0].message.content.
-    # See openrouter_execute_model above — same bug, same fix (issue #307).
+    # Only a completed run with no API error may supply a successful answer.
+    # Failed and incomplete runs can still contain partial output_text parts.
     local content=""
     if command -v jq &>/dev/null; then
-        content=$(printf '%s' "$response" | jq -re '.choices[0].message.content // empty' 2>/dev/null) || content=""
+        content=$(printf '%s' "$response" | jq -re '
+            select(type == "object" and .status == "completed" and .error == null)
+            | .output | select(type == "array")
+            | [.[] | select(.type == "message") | .content | select(type == "array")
+                | .[] | select(.type == "output_text") | .text | select(type == "string")]
+            | join("\n\n") | select(length > 0)' 2>/dev/null) || content=""
     fi
 
-    # Extract citations if available (Perplexity-specific field)
+    # Map annotation URLs to search-result IDs without renumbering them.
+    # When no reliable ID exists, list the URL without a numbered label.
+    # Read the answer from stdin JSON rather than putting it in process arguments.
     local citations=""
     if command -v jq &>/dev/null; then
-        citations=$(echo "$response" | jq -r '.citations // [] | to_entries[] | "[\(.key + 1)] \(.value)"' 2>/dev/null) || true
+        citations=$(printf '%s' "$response" | jq -r '
+            select(type == "object" and .status == "completed" and .error == null)
+            | select(.output | type == "array")
+            | ([.output[] | select(.type == "message") | .content | select(type == "array")
+                | .[] | select(.type == "output_text") | .text | select(type == "string")]
+                | join("\n\n")) as $text
+            | [.output[]? | select(.type == "message") | .content[]? | .annotations[]? | select(.type == "url_citation") | .url] as $cited
+            | ($cited | map(select(type == "string" and length > 0))) as $urls
+            | [.output[]? | select(.type == "search_results") | .results[]?
+                | select(.url | type == "string" and length > 0)] as $results
+            | (if ($urls | length) > 0 then
+                [$urls[] as $url | ($results | map(select(.url == $url))) as $matches
+                    | if ($matches | length) > 0 then $matches[] else {url: $url} end]
+                else $results end)
+            | map({url, id: (.id | if type == "number" and . > 0 and floor == . then tostring
+                elif type == "string" and test("^[1-9][0-9]*$") then . else null end)})
+            | reduce .[] as $source ([]; if any(.[]; . == $source) then . else . + [$source] end)
+            | .[] | .id as $id | if $id == null then "- \(.url)"
+                elif ($text | contains("[web:\($id)]")) then "[web:\($id)] \(.url)"
+                else "[\(.id)] \(.url)" end' 2>/dev/null) || true
     fi
 
     if [[ -z "$content" ]]; then
@@ -440,9 +495,9 @@ EOF
             log ERROR "Perplexity error: ${_ppx_err}"
             return 1
         fi
-        # Content missing but no parseable error — surface the raw body and fail
+        # No completed answer and no parseable error: surface the body and fail
         # so the agent is marked FAILED instead of "succeeding" with JSON noise.
-        log ERROR "Perplexity response had no message content ($model)"
+        log ERROR "Perplexity response was not a completed answer ($model)"
         echo "$response"
         return 1
     else
