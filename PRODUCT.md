@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-29
+last_reviewed: 2026-10-02
 ---
 
 # PRODUCT.md
@@ -77,17 +77,17 @@ Frontier AI models will remain individually overconfident for the foreseeable fu
 
 ## Evidence
 
-**Traction (as of 2026-09-29):**
+**Traction (as of 2026-10-02):**
 - GitHub stars: 4,048
 - GitHub forks: 380
 - Local CI parity: `make ci-local` runs the same smoke, unit, and integration suites as CI
-- Version: 11.9.6 (active release cadence)
+- Version: 11.10.0 (active release cadence)
 - Runtimes supported: Claude Code, Codex CLI, Command Code CLI, Cursor (MCP), Antigravity CLI
 
 **Measured Impact:**
 - 75% consensus gate: quantifiable disagreement detection before production
 - Token compression (`bin/octo-compress`): ~7,300 tokens saved per session
-- 182 Claude Code capability flags tracked through v2.1.219
+- 185 Claude Code capability flags tracked through v2.1.284
 
 ## Claude Code 2026 Compatibility Layer (v9.50.0)
 
