@@ -15,7 +15,12 @@
 #   "IneligibleTierError"       — gemini-cli after Google sunset Gemini Code
 #                                 Assist free-tier OAuth. Permanent for that
 #                                 auth mode, not a transient quota window.
-OCTOPUS_QUOTA_PATTERN=${OCTOPUS_QUOTA_PATTERN:-'QUOTA_EXHAUSTED|TerminalQuotaError|exhausted your capacity|insufficient_quota|HTTP 401|Individual quota reached|IneligibleTierError'}
+#   "ERROR: You've hit your usage limit" — codex CLI on a ChatGPT plan whose
+#                                 usage window is spent, account-wide; it names a
+#                                 "try again at" time. Anchored to the CLI's own
+#                                 error line so a transcript that greps a file
+#                                 quoting the message does not match.
+OCTOPUS_QUOTA_PATTERN=${OCTOPUS_QUOTA_PATTERN:-'QUOTA_EXHAUSTED|TerminalQuotaError|exhausted your capacity|insufficient_quota|HTTP 401|Individual quota reached|IneligibleTierError|^ERROR: You.ve hit your usage limit'}
 
 # Session-scoped "this provider is quota/auth-dead" cache (oco-cbb). When a
 # terminal quota/auth error is seen at dispatch, the provider is marked here so
@@ -220,6 +225,20 @@ stop_quota_watcher() {
     wait "$watcher_pid" 2>/dev/null || true
 }
 
+# The watcher only acts while the provider is alive and after two polls, so a
+# CLI that prints a terminal quota error and exits at once (codex does) was
+# never marked and every later seat was dispatched into the same failure.
+# After a failed exit no provider backoff can still land, so one match is
+# terminal.
+quota_watcher_mark_after_exit() {
+    local exit_code="$1" temp_err="$2" temp_out="$3" provider="${4:-}"
+    [[ -n "$provider" && "$exit_code" =~ ^[0-9]+$ && "$exit_code" -ne 0 ]] || return 0
+    octo_quota_is_dead "$provider" && return 0
+    quota_watcher_has_match "$temp_err" "$temp_out" || return 0
+    log "WARN" "[$provider] quota/terminal error in output after exit $exit_code; marking quota-dead for this session"
+    octo_quota_mark_dead "$provider"
+}
+
 # octo_provider_probe <provider>
 # Opt-in proactive health check for API-key providers (perplexity, openrouter).
 # Only called when OCTOPUS_PREFLIGHT_PROBE=1. Result is session-cached via the
@@ -243,13 +262,14 @@ octo_provider_probe() {
     case "$provider" in
         perplexity)
             [[ -n "${PERPLEXITY_API_KEY:-}" ]] || return 0
-            # Minimal POST: single-token completion to validate the key cheaply.
+            # Minimal POST to the Agent API: one output token and no tool calls
+            # (so no billed web search) to validate the key cheaply.
             http_code=$(curl -s -o /dev/null -w "%{http_code}" \
                 --max-time 10 \
-                -X POST "https://api.perplexity.ai/chat/completions" \
+                -X POST "https://api.perplexity.ai/v1/agent" \
                 -H "Authorization: Bearer ${PERPLEXITY_API_KEY}" \
                 -H "Content-Type: application/json" \
-                -d '{"model":"sonar","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+                -d '{"preset":"fast","input":"hi","max_output_tokens":1,"max_tool_calls":0}' \
                 2>/dev/null) || curl_exit=$?
             ;;
         openrouter)

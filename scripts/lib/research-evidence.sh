@@ -364,6 +364,14 @@ research_synthesis_publish() {
     research_run_update "complete" "completed" "synthesis=$synthesis_file"
 }
 
+research_synthesis_repairable_findings() {
+    local report="$1"
+    [[ -r "$report" ]] && command -v jq >/dev/null 2>&1 || return 0
+    jq -r '.checks[]
+        | select(.kind | IN("missing_citation", "unresolved_local_citation", "unknown_source", "false_consensus", "number_mismatch", "quote_mismatch"))
+        | "- line \(.line) [\(.kind)]: \(.detail)"' "$report" 2>/dev/null || true
+}
+
 research_url_parts() {
     local url="$1"
     local re='^https://([^/?#]+)(/[^?#]*)?(\?[^#]*)?([#].*)?$'
@@ -553,6 +561,7 @@ research_physical_path() {
 
 research_local_citation_tokens() {
     printf '%s\n' "$1" \
+        | sed -E 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' \
         | grep -Eo '[A-Za-z0-9_.@+~/-]*[./][A-Za-z0-9_.@+~/-]*:[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*' \
         | awk '!seen[$0]++ { print length($0) "\t" $0 }' | sort -rn | cut -f2- || true
 }
@@ -605,9 +614,31 @@ research_source_field() {
 
 research_extract_numbers() {
     local line="$1"
-    # Do not mistake ordered-list markers ("1." / "2)") for factual values.
-    line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*([-*+][[:space:]]*)?[0-9]+[.)][[:space:]]*//')
-    printf '%s\n' "$line" | grep -Eo '[0-9]+([.,][0-9]+)*%?' | sort -u || true
+    # Do not mistake ordered-list markers ("1." / "2)" / "**3.**") for
+    # factual values.
+    line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*([-*+][[:space:]]*)?(\*\*|__|\*|_)?[0-9]+[.)](\*\*|__|\*|_)?[[:space:]]+//')
+    printf '%s\n' "$line" | research_numeric_claims | sort -u || true
+}
+
+research_numeric_claims() {
+    LC_ALL=C awk '{
+        line = $0; pos = 1; id_end = -1
+        while (match(substr(line, pos), /[0-9]+([.,][0-9]+)*%?/)) {
+            start = pos + RSTART - 1; len = RLENGTH; pos = start + len
+            before = substr(line, 1, start - 1); after = substr(line, pos)
+            match(before, /[0-9A-Za-z]*$/); word = substr(before, RSTART)
+            match(after, /^[0-9A-Za-z]*/); word = word substr(line, start, len) substr(after, 1, RLENGTH)
+            hyphen_word = ""
+            if (match(before, /[0-9A-Za-z]+-$/)) hyphen_word = substr(before, RSTART, RLENGTH - 1)
+            if (before ~ /([A-Za-z_#]|\302\247)$/ || hyphen_word ~ /^[A-Za-z]/ \
+                || (start == id_end + 1 && before ~ /-$/) \
+                || (length(word) >= 7 && length(word) <= 40 && word ~ /^[0-9a-f]*[a-f][0-9a-f]*$/)) {
+                id_end = pos
+                continue
+            }
+            print substr(line, start, len)
+        }
+    }'
 }
 
 research_number_in_snapshot() {
@@ -698,6 +729,85 @@ research_normalize_snapshot() {
         | tr '\n\r\t' '   ' | sed 's/[[:space:]][[:space:]]*/ /g'
 }
 
+research_has_annotated_inference_marker() {
+    # An annotation must close outside literal source text and cannot borrow a
+    # nested label's closing bracket. Bare markers retain their existing rules.
+    local marker marker_pattern='^\[inference([^[:alpha:]]|$)'
+    local lexical_line="$1" word_apostrophe_pattern="^(.*[[:alnum:]])'([[:alnum:]].*)$"
+    # Classify in-word apostrophes in the shell's text locale before
+    # byte scanning. Possessives remain text even inside a quoted literal.
+    while [[ "$lexical_line" =~ $word_apostrophe_pattern ]]; do
+        lexical_line="${BASH_REMATCH[1]}\\'${BASH_REMATCH[2]}"
+    done
+    # Flag ordinary following tokens in the text locale. The byte scanner
+    # cannot classify a UTF-8 first byte as alnum; punctuation gets no flag.
+    lexical_line=$(printf '%s\n' "$lexical_line" | sed -E "s/([sS])'([[:space:]]+)([[:alnum:]])/\\1'\\2A\\3/g")
+    while IFS= read -r marker; do
+        [[ "$marker" =~ $marker_pattern ]] && return 0
+    done < <(printf '%s\n' "$lexical_line" | LC_ALL=C awk '
+        {
+            depth=0; candidate=0; quote=""; ticks=0; possessive=0; found=0
+            size=split($0, chars, "")
+            for (i=1; i<=size; i++) {
+                c=chars[i]
+                if (c == "\\") { i++; continue }
+                if (ticks == 0 && quote != "" && c == quote) { quote=""; continue }
+                if (ticks == 0 && quote == "" && (c == "\"" || c == "\047")) {
+                    # A terminal s possessive introduces an ordinary word or
+                    # number, not a label or punctuation after whitespace.
+                    # Closed pairs around labels take priority over ambiguous
+                    # possessive readings, including a later s apostrophe.
+                    if (c == "\047" && depth == 0 && chars[i-1] ~ /[sS]/ &&
+                        chars[i+1] ~ /[[:space:]]/) {
+                        next_word=i+1
+                        while (chars[next_word] ~ /[[:space:]]/) next_word++
+                        if (chars[next_word] ~ /[[:alnum:]]/) {
+                            if (possessive && found && starts[found] > possessive) {
+                                while (found && starts[found] > possessive) found--
+                                possessive=0
+                            } else if (!possessive) possessive=i
+                            continue
+                        }
+                    }
+                    # Any unescaped apostrophe outside a label or ordinary
+                    # quote closes a provisional span. Defer emitting labels
+                    # so that closing it revokes all enclosed exemptions.
+                    if (c == "\047" && possessive && depth == 0) {
+                        while (found && starts[found] > possessive) found--
+                        possessive=0
+                        continue
+                    }
+                    quote=c; continue
+                }
+                if (quote == "" && c == "`") {
+                    run=1
+                    while (chars[i+run] == "`") run++
+                    if (ticks == 0) ticks=run
+                    else if (ticks == run) ticks=0
+                    i+=run-1; continue
+                }
+                if (quote != "" || ticks != 0) continue
+                if (c == "[") {
+                    if (depth == 0) {
+                        delimiter=chars[i+10]
+                        candidate=(substr($0,i,10) == "[inference" && delimiter != "" && delimiter != "]")
+                        start=i
+                    } else candidate=0
+                    depth++
+                } else if (c == "]" && depth > 0) {
+                    if (depth == 1 && candidate) {
+                        starts[++found]=start
+                        markers[found]=substr($0,start,i-start+1)
+                    }
+                    depth--
+                }
+            }
+            for (j=1; j<=found; j++) print markers[j]
+        }
+    ')
+    return 1
+}
+
 research_verify_synthesis() {
     local draft="$1" run_dir="${RESEARCH_RUN_DIR:?}"
     local sources="$run_dir/sources.jsonl" claims="$run_dir/claims.jsonl"
@@ -706,7 +816,7 @@ research_verify_synthesis() {
     local claim_count=0 failures=0 warnings=0 line_no=0 line plain_line ids id invalid groups group unique_groups
     local in_fence=false
     local snapshot normalized number quote numbers quotes score source_json groups_json
-    local project_root token resolved local_refs local_files local_ref local_json evidence_file
+    local project_root token resolved local_refs local_files local_ref local_json evidence_file unresolved_refs
     local local_index cached_index cache_bytes cached_bytes=0 cache_error=false
     local max_cache_bytes="${OCTOPUS_RESEARCH_MAX_LOCAL_CACHE_BYTES:-16777216}"
     [[ "$max_cache_bytes" =~ ^[0-9]{1,15}$ ]] || max_cache_bytes=16777216
@@ -732,10 +842,17 @@ research_verify_synthesis() {
         [[ "$line" == \#* || "$line" == '---'* ]] && continue
         ids=$(printf '%s\n' "$line" | grep -Eo '\[source:S[0-9]{3}\]' | sed 's/\[source:\(.*\)\]/\1/' | sort -u || true)
         plain_line=$(printf '%s\n' "$line" | sed 's/\[source:S[0-9][0-9][0-9]\]//g')
-        local_refs=""; local_files=""
+        local_refs=""; local_files=""; unresolved_refs=false
         while IFS= read -r token; do
             [[ -n "$token" ]] || continue
-            resolved=$(research_resolve_local_citation "$project_root" "$token") || continue
+            if ! resolved=$(research_resolve_local_citation "$project_root" "$token"); then
+                [[ "$token" != //* && "${token%:*}" == *[A-Za-z]* ]] || continue
+                plain_line=${plain_line//$token/}
+                unresolved_refs=true
+                failures=$((failures + 1))
+                printf 'unresolved_local_citation|%s|%s\n' "$line_no" "$token" >> "$findings"
+                continue
+            fi
             plain_line=${plain_line//$token/}
             local_refs="${local_refs}${resolved%%|*}:${token##*:}"$'\n'
             local_files="${local_files}${resolved#*|}"$'\n'
@@ -744,8 +861,9 @@ research_verify_synthesis() {
         local_files=$(printf '%s' "$local_files" | awk '!seen[$0]++')
         numbers=$(research_extract_numbers "$plain_line")
         quotes=$(printf '%s\n' "$plain_line" | awk '{ s=$0; while (match(s, /"[^"][^"][^"][^"]+"/)) { print substr(s,RSTART+1,RLENGTH-2); s=substr(s,RSTART+RLENGTH) } }')
-        if [[ -z "$ids" && -z "$local_refs" && ( -n "$numbers" || -n "$quotes" ) \
-              && "$line" != *"[inference]"* && "$line" != *"[opinion"* ]]; then
+        if [[ -z "$ids" && -z "$local_refs" && "$unresolved_refs" == "false" && ( -n "$numbers" || -n "$quotes" ) \
+              && "$line" != *"[inference]"* && "$line" != *"[opinion"* ]] \
+           && ! research_has_annotated_inference_marker "$line"; then
             failures=$((failures + 1))
             printf 'missing_citation|%s|%s\n' "$line_no" "$line" >> "$findings"
             continue
@@ -756,6 +874,7 @@ research_verify_synthesis() {
             [[ -n "$id" ]] || continue
             if ! grep -c '"source_id":"'"$id"'"' "$sources" >/dev/null 2>&1; then
                 invalid=true
+                failures=$((failures + 1))
                 printf 'unknown_source|%s|%s\n' "$line_no" "$id" >> "$findings"
                 continue
             fi

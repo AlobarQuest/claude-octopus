@@ -144,6 +144,21 @@ if assert_contains "$cmd" "--tool-policy none" "Atlas readonly persona policy"; 
     test_pass
 fi
 
+test_case "Cheaper Inference review dispatch disables model tools"
+cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="ci-review-no-tools" PWD="/tmp/octo-cwd" CHEAPER_INFERENCE_MODEL="gpt-5.4-mini" get_agent_command cheaperinference-agent review code-reviewer 2>/dev/null)
+if assert_contains "$cmd" "--provider cheaperinference" "Cheaper Inference provider" &&
+   assert_contains "$cmd" "--model gpt-5.4-mini" "Cheaper Inference model" &&
+   assert_contains "$cmd" "--tool-policy none" "Cheaper Inference review tool policy"; then
+    test_pass
+fi
+
+test_case "Cheaper Inference dispatch fails closed without a model"
+if HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="ci-no-model" PWD="/tmp/octo-cwd" CHEAPER_INFERENCE_MODEL="" OCTOPUS_CHEAPERINFERENCE_MODEL="" OPENAI_COMPAT_MODEL="" get_agent_command cheaperinference-agent implementation implementer >/dev/null 2>&1; then
+    test_fail "expected cheaperinference-agent without a model to be rejected"
+else
+    test_pass
+fi
+
 test_case "write-capable tool-loop roles retain tools"
 generic_cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="compat-write-tools" PWD="/tmp/octo-cwd" OPENAI_COMPAT_MODEL="vendor/model-fast" get_agent_command openai-compatible-agent implementation implementer 2>/dev/null)
 atlas_cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="atlas-write-tools" PWD="/tmp/octo-cwd" ATLASCLOUD_MODEL="qwen/model" get_agent_command atlascloud-agent implementation implementer 2>/dev/null)
@@ -295,6 +310,82 @@ else
     test_fail "provider namespace bypassed the Astra Chat Completions guard"
 fi
 
+
+test_case "GPT-6 Chat Completions validates effort and tools before any request"
+if HELPER="$HELPER" python3 - <<'PYTEST'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("chat_model_contract", os.environ["HELPER"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+seen = []
+class Response:
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def read(self): return b'{"choices":[{"message":{"content":"ok"}}]}'
+def fake_request(req, timeout):
+    seen.append(json.loads(req.data))
+    return Response()
+mod.open_credentialed_request = fake_request
+def call(model, effort, policy):
+    return mod.api_call("https://example.invalid/v1", "key", model, {}, [], reasoning_effort=effort, tool_policy=policy, max_retries=1)
+for model in ("gpt-6-astra", "gpt-6.1-sol"):
+    for transport in (model, "openai/" + model, "openrouter:openai/" + model, "openai/" + model + ":nitro", "openrouter:openai/" + model + ":floor"):
+        for effort, policy in ((None, "auto"), ("high", "auto"), ("none", "none"), ("minimal", "none")):
+            before = len(seen)
+            try: call(transport, effort, policy)
+            except ValueError: pass
+            else: raise AssertionError((transport, effort, policy, "invalid request admitted"))
+            assert len(seen) == before, "validation happened after transport"
+        call(transport, "high", "none")
+        assert "temperature" not in seen[-1] and "tools" not in seen[-1], seen[-1]
+        assert seen[-1]["reasoning_effort"] == "high", seen[-1]
+for model in ("gpt-6-sol", "gpt-6-luna"):
+    for transport in (model, "openai/" + model, "openrouter:openai/" + model, "openai/" + model + ":nitro"):
+        for effort in (None, "high"):
+            before = len(seen)
+            try: call(transport, effort, "auto")
+            except ValueError: pass
+            else: raise AssertionError((transport, effort, "reasoning with tools admitted"))
+            assert len(seen) == before
+        call(transport, "none", "auto")
+        assert seen[-1]["reasoning_effort"] == "none" and seen[-1]["tools"], seen[-1]
+        assert seen[-1]["temperature"] == 0, seen[-1]
+        call(transport, None, "none")
+        assert "temperature" not in seen[-1] and "reasoning_effort" not in seen[-1], seen[-1]
+call("gpt-6.1-sol-preview", None, "auto")
+assert seen[-1]["temperature"] == 0 and seen[-1]["tools"], seen[-1]
+PYTEST
+then
+    test_pass
+else
+    test_fail "GPT-6 request guard allowed unsupported tools, effort, or sampling"
+fi
+
+test_case "GPT-6 required none effort cannot be dropped after gateway rejection"
+if HELPER="$HELPER" python3 - <<'PYTEST'
+import importlib.util, io, os, urllib.error
+spec = importlib.util.spec_from_file_location("required_chat_effort", os.environ["HELPER"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+seen = []
+def reject(req, timeout):
+    seen.append(req)
+    raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"error":"unsupported parameter reasoning_effort"}'))
+mod.open_credentialed_request = reject
+for model in ("gpt-6-sol", "openai/gpt-6-luna:nitro"):
+    before = len(seen)
+    try:
+        mod.api_call("https://example.invalid/v1", "key", model, {}, [], reasoning_effort="none", tool_policy="auto")
+    except RuntimeError as error:
+        assert "gateway rejected required reasoning_effort=none" in str(error), error
+    else: raise AssertionError("required reasoning effort was dropped")
+    assert len(seen) == before + 1, "invalid retry reached the gateway"
+PYTEST
+then
+    test_pass
+else
+    test_fail "gateway rejection dropped required none effort or hid the cause"
+fi
 
 test_case "openai-compatible-agent main treats unset and zero as provider default"
 if HELPER="$HELPER" python3 - <<'PYTEST'
@@ -776,8 +867,12 @@ if os.name != "posix":
 helper = os.environ["HELPER"]
 
 with tempfile.TemporaryDirectory() as cwd:
+    # Background shells can pass SIG_IGN to Python. Exercise that inheritance,
+    # then make this worker receive KeyboardInterrupt before its child starts.
+    inherited_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     worker = os.fork()
     if worker == 0:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         spec = importlib.util.spec_from_file_location("openai_compatible_agent_process_interrupt", helper)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -787,9 +882,13 @@ import time
 from pathlib import Path
 
 Path("ready").write_text("1")
-for _ in range(200):
-    sys.stdout.write("chunk\\n")
-    sys.stdout.flush()
+deadline = time.monotonic() + 2
+while not Path("release").exists() and time.monotonic() < deadline:
+    try:
+        sys.stdout.write("chunk\\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
     time.sleep(0.01)
 Path("late-interrupt").write_text("late")
 """
@@ -799,6 +898,7 @@ Path("late-interrupt").write_text("late")
         except KeyboardInterrupt:
             os._exit(42)
         os._exit(0)
+    signal.signal(signal.SIGINT, inherited_handler)
     ready = Path(cwd, "ready")
     deadline = time.monotonic() + 2
     while not ready.exists() and time.monotonic() < deadline:
@@ -816,6 +916,8 @@ Path("late-interrupt").write_text("late")
         os.waitpid(worker, 0)
         raise AssertionError("supervisor did not exit after interruption")
     assert os.waitstatus_to_exitcode(status) == 42, status
+    # A surviving child can now write, even if pipe closure stopped its output.
+    Path(cwd, "release").write_text("1")
     time.sleep(0.5)
     assert not Path(cwd, "late-interrupt").exists()
 PYTEST

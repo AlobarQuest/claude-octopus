@@ -21,6 +21,7 @@ _model_resolver_load_error() {
     fi
 }
 source "${_model_resolver_lib_dir}/provider-registry.sh" || { _model_resolver_load_error "failed to load provider-registry.sh"; return 1 2>/dev/null || exit 1; }
+source "${_model_resolver_lib_dir}/cheaperinference.sh" || return 1
 source "${_model_resolver_lib_dir}/kimi-model-name.sh" || { _model_resolver_load_error "failed to load kimi-model-name.sh"; return 1 2>/dev/null || exit 1; }
 if ! declare -f octo_model_cache_file >/dev/null 2>&1; then
     source "${_model_resolver_lib_dir}/model-cache-path.sh" 2>/dev/null || true
@@ -62,7 +63,7 @@ fi
 # Current-model pickers. Explicit user pins/configuration are resolved before
 # these fallbacks, and OCTOPUS_OPUS_MODEL remains the final Opus-specific pin.
 # Opus 5.5 requires Claude Code v2.1.280+; Opus 5 requires v2.1.219+;
-# Sonnet 5 requires v2.1.197+.
+# Sonnet 5.5 requires v2.1.284+; Sonnet 5 requires v2.1.197+.
 # Claude Fable 5.1 (Mythos-class, $10/$50 MTok, 1M ctx) remains opt-in only:
 # pin OCTOPUS_OPUS_MODEL=claude-fable-5-1. Never auto-selected — $10/$50 per MTok,
 # and Anthropic retains prompts/outputs up to 30 days for safety classifiers.
@@ -85,7 +86,9 @@ opus_default_model() {
 }
 
 sonnet_default_model() {
-    if [[ "${SUPPORTS_SONNET_5:-false}" == "true" ]]; then
+    if [[ "${SUPPORTS_SONNET_5_5:-false}" == "true" ]]; then
+        echo "claude-sonnet-5-5"
+    elif [[ "${SUPPORTS_SONNET_5:-false}" == "true" ]]; then
         echo "claude-sonnet-5"
     else
         echo "claude-sonnet-4.6"
@@ -156,6 +159,9 @@ validate_agy_model_name() {
     case "$model" in
         *\\*) return 1 ;;
     esac
+
+    # Static diagnostics display configured labels without contacting agy.
+    [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" == "true" ]] && return 0
 
     case "$model" in
         default|agy/default)
@@ -237,6 +243,12 @@ validate_model_name_for_provider() {
     case "$provider" in
         agy|agy-research|antigravity)
             validate_agy_model_name "$model"
+            ;;
+        anthropic-api)
+            case "$model" in claude-sonnet-5-5|claude-opus-5-5) return 0 ;; *) return 1 ;; esac
+            ;;
+        cheaperinference)
+            octo_cheaperinference_model "$model" >/dev/null
             ;;
         kimi)
             validate_kimi_model_name "$model"
@@ -352,7 +364,7 @@ _octo_eval_model_for_class() {
         codex:balanced) printf '%s\n' "gpt-5.6-terra" ;;
         codex:premium|codex:review|codex:security) printf '%s\n' "gpt-5.6-sol" ;;
         claude:mechanical) printf '%s\n' "claude-haiku-4.5" ;;
-        claude:balanced) printf '%s\n' "claude-sonnet-5" ;;
+        claude:balanced) sonnet_default_model ;;
         claude:premium|claude:review|claude:security) opus_default_model ;;
         *) return 1 ;;
     esac
@@ -382,6 +394,10 @@ resolve_octopus_model() {
         antigravity|agy-research|gemini|gemini-*) canonical_provider="agy" ;;
     esac
     provider="$canonical_provider"
+    if [[ "$canonical_provider" == cheaperinference ]]; then
+        octo_cheaperinference_model
+        return $?
+    fi
     local env_var
     if declare -f octo_provider_model_env >/dev/null 2>&1; then
         env_var="$(octo_provider_model_env "$canonical_provider")" || return 1
@@ -438,7 +454,9 @@ resolve_octopus_model() {
     # Persistent File Cache (optional, for parallel execution speed).
     # Path comes from lib/model-cache-path.sh so writers and invalidators agree.
     local persistent_cache=""
-    persistent_cache="$(octo_model_cache_file 2>/dev/null)" || persistent_cache=""
+    if [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" != "true" ]]; then
+        persistent_cache="$(octo_model_cache_file 2>/dev/null)" || persistent_cache=""
+    fi
     # v8.49.0: Invalidate cache if config file changed since cache was written
     if [[ -n "$persistent_cache" && -f "$persistent_cache" && -f "$config_file" && "$config_file" -nt "$persistent_cache" ]]; then
         rm -f "$persistent_cache"
@@ -782,6 +800,7 @@ resolve_octopus_model() {
             codex*)          resolved_model="$(codex_default_model)" ;;
             gemini*|agy*|antigravity) resolved_model="default" ;;
             commandcode*)    resolved_model="deepseek/deepseek-v4-pro" ;;
+            anthropic-api*)  resolved_model="claude-sonnet-5-5" ;;
             claude-sdk*)     resolved_model="${OCTOPUS_CLAUDE_SDK_MODEL:-claude-opus-5}" ;;  # must precede claude* glob
             claude-opus-legacy*) resolved_model="claude-opus-4.6" ;;
             claude-opus*)    resolved_model="$(opus_default_model)" ;;
@@ -815,6 +834,7 @@ resolve_octopus_model() {
             kimi*)           resolved_model="default" ;; # Kimi's own default from ~/.kimi-code/config.toml; the shim omits --model for "default"
             vibe*)           resolved_model="default" ;; # Mistral Vibe's own default from ~/.vibe/config.toml; never wired to --model (#797)
             atlascloud*)     resolved_model="" ;; # No safe universal default; atlascloud-agent dispatch already requires an explicit model pin (#797)
+            cheaperinference*) resolved_model="" ;; # Like atlascloud: cheaperinference-agent dispatch requires an explicit model pin
             *)              resolved_model="$(codex_default_model)" ;; # Safest universal fallback
         esac
         [[ -n "$_trace" ]] && echo "[model-trace] Tier 7 (hardcoded fallback): $resolved_model ← SELECTED" >&2
@@ -918,6 +938,9 @@ is_agent_available_v2() {
         openai-compatible|openai-tools|openai-compatible-agent*)
             declare -f openai_compatible_is_available >/dev/null 2>&1 && openai_compatible_is_available
             ;;
+        anthropic-api|anthropic-api-*)
+            command -v python3 >/dev/null 2>&1 && _octo_value_has_nonwhitespace "${ANTHROPIC_API_KEY:-}"
+            ;;
         perplexity|perplexity-fast)
             [[ -n "${PERPLEXITY_API_KEY:-}" ]]
             ;;
@@ -956,6 +979,17 @@ is_agent_available_v2() {
             fi
             [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && \
                 { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }
+            ;;
+        cheaperinference|cheaperinference-*)
+            if [[ -z "${CHEAPER_INFERENCE_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                resolve_provider_env "CHEAPER_INFERENCE_API_KEY" 2>/dev/null || true
+            fi
+            [[ "${CHEAPER_INFERENCE_API_KEY:-}" =~ [^[:space:]] ]] || return 1
+            if [[ "$agent" == *:* ]]; then
+                octo_cheaperinference_model "${agent#*:}" >/dev/null
+            else
+                octo_cheaperinference_model >/dev/null
+            fi
             ;;
         kimi|kimi-*)
             declare -f kimi_is_available >/dev/null 2>&1 && kimi_is_available

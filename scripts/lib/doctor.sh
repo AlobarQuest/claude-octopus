@@ -720,7 +720,10 @@ doctor_check_config() {
 
     # v9.36: CC v2.1.126-129 compatibility checks
     if [[ "${SUPPORTS_GATEWAY_MODEL_DISCOVERY:-false}" == "true" ]]; then
-        if [[ -n "${ANTHROPIC_BASE_URL:-}" && "${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY:-0}" != "1" ]]; then
+        if [[ "${ANTHROPIC_BASE_URL:-}" == "https://api.anthropic.com" || "${ANTHROPIC_BASE_URL:-}" == "https://api.anthropic.com/" ]]; then
+            doctor_add "gateway-model-discovery" "config" "pass" \
+                "No gateway: ANTHROPIC_BASE_URL is the Anthropic API" ""
+        elif [[ -n "${ANTHROPIC_BASE_URL:-}" && "${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY:-0}" != "1" ]]; then
             doctor_add "gateway-model-discovery" "config" "warn" \
                 "Gateway model discovery is opt-in on current Claude Code" \
                 "ANTHROPIC_BASE_URL is set; set CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 to populate /model from /v1/models"
@@ -1261,10 +1264,16 @@ doctor_check_skills() {
     fi
 
     if [[ "$SUPPORTS_BARE_FLAG" == "true" ]]; then
-        if [[ "${OCTOPUS_DISABLE_BARE:-0}" == "1" ]]; then
+        if [[ "${OCTOPUS_DISABLE_BARE:-0}" == "1" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+            doctor_add "bare-flag" "skills" "pass" \
+                "--bare disabled; no ANTHROPIC_API_KEY in the environment" "Authentication method was not checked"
+        elif [[ "${OCTOPUS_DISABLE_BARE:-0}" == "1" ]]; then
             doctor_add "bare-flag" "skills" "warn" \
                 "--bare flag disabled via OCTOPUS_DISABLE_BARE=1" \
                 "Subprocess synthesis falls back to standard claude -p (slower but avoids auth issues)"
+        elif [[ "${DOCTOR_LIVE_PROBE:-false}" != "true" ]]; then
+            doctor_add "bare-flag" "skills" "info" \
+                "--bare flag available; authentication not probed" "Use doctor --live to check --bare authentication"
         else
             # Probe whether --bare can authenticate (CC v2.1.114 regression,
             # issue #288) without allowing auth or Keychain waits to wedge doctor.
@@ -1445,7 +1454,13 @@ doctor_check_skills() {
     if [[ "${SUPPORTS_SONNET_5:-false}" == "true" ]]; then
         doctor_add "sonnet-5" "skills" "pass" \
             "CC v2.1.197 Sonnet 5 available for standard Claude seats" \
-            "Existing providers.json pins remain unchanged; new configs default to claude-sonnet-5"
+            "Existing providers.json pins remain unchanged; standard seats use the newest supported Sonnet"
+    fi
+
+    if [[ "${SUPPORTS_SONNET_5_5:-false}" == "true" ]]; then
+        doctor_add "sonnet-5-5" "skills" "pass" \
+            "CC v2.1.284 Sonnet 5.5 available for standard Claude seats" \
+            "The anthropic-api text seat supports between_tools; Claude Code keeps adaptive thinking"
     fi
 
     if [[ "${SUPPORTS_OPUS_5:-false}" == "true" ]]; then
@@ -1571,6 +1586,28 @@ doctor_check_conflicts() {
 
 # --- Category 9: Smoke Test (v8.19.0 - Issue #34) ---
 doctor_check_smoke() {
+    # Load only the shared smoke/model libraries, without workflow startup.
+    # Model inspection must not migrate config, write caches, or query catalogs.
+    local OCTOPUS_MODEL_READ_ONLY=true
+    local WORKSPACE_DIR="${WORKSPACE_DIR:-$(_doctor_resolve_workspace_dir)}"
+    local PREFLIGHT_CACHE_TTL="${PREFLIGHT_CACHE_TTL:-3600}"
+    local _doctor_smoke_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    local helper helper_file helper_function
+    for helper in model-resolver.sh:resolve_octopus_model dispatch.sh:get_agent_model smoke.sh:smoke_test_cache_key; do
+        helper_file="${helper%%:*}"
+        helper_function="${helper#*:}"
+        if ! declare -F "$helper_function" >/dev/null 2>&1; then
+            if [[ ! -r "${_doctor_smoke_lib_dir}/$helper_file" ]] \
+                || ! "$BASH" -n "${_doctor_smoke_lib_dir}/$helper_file" 2>/dev/null \
+                || ! source "${_doctor_smoke_lib_dir}/$helper_file" 2>/dev/null \
+                || ! declare -F "$helper_function" >/dev/null 2>&1; then
+                doctor_add "smoke-helpers" "smoke" "fail" \
+                    "Smoke diagnostics helper unavailable: $helper_file" "${_doctor_smoke_lib_dir}/$helper_file"
+                return 0
+            fi
+        fi
+    done
+
     # Cache status
     if [[ -f "$SMOKE_TEST_CACHE_FILE" ]]; then
         local cache_time cache_key cache_status current_time cache_age
@@ -2014,6 +2051,9 @@ do_doctor() {
     local verbose=false
     local json_output=false
     local DOCTOR_LIVE_PROBE=false
+    # Interpreter imports must not create bytecode caches during diagnostics.
+    local PYTHONDONTWRITEBYTECODE=1
+    export PYTHONDONTWRITEBYTECODE
     local categories="providers companions auth config updates state smoke hooks scheduler skills conflicts agents recurrence cache installation"
 
     # Parse arguments
@@ -2057,6 +2097,26 @@ do_doctor() {
     DOCTOR_AGY_LIVE_AUTH_STATUS="not-run"
     DOCTOR_PROVIDER_READINESS=()
     DOCTOR_PROVIDER_READINESS_KIND=""
+
+    # Only these categories consume host version or capability flags.
+    if [[ "${DOCTOR_DETECT_HOST_VERSION:-false}" == "true" &&
+          ( -z "$category_filter" || "$category_filter" == config ||
+            "$category_filter" == smoke || "$category_filter" == skills ||
+            "$category_filter" == agents ) ]]; then
+        local version_status=0
+        OCTOPUS_SKIP_PROVIDER_PROBES=true detect_claude_code_version 2>/dev/null || version_status=$?
+        if [[ "$version_status" -ne 0 ]]; then
+            if [[ "${_octo_host_version_probe_attempted:-true}" == false ]]; then
+                doctor_add "host-version-detection" "${category_filter:-config}" "warn" \
+                    "Host CLI unavailable; version was not checked" \
+                    "Install the host CLI to enable version-dependent diagnostics."
+            else
+                doctor_add "host-version-detection" "${category_filter:-config}" "fail" \
+                    "Host version discovery failed (exit $version_status)" \
+                    "Local --version check bounded to $(_octo_bare_probe_timeout "${OCTOPUS_VERSION_PROBE_TIMEOUT:-5}")s"
+            fi
+        fi
+    fi
 
     # Run checks (filtered if category specified)
     local cat

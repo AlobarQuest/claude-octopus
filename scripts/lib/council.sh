@@ -22,6 +22,7 @@ COUNCIL_PROVIDER_POLICY_VALID="true"
 COUNCIL_DEFAULT_PROVIDERS="$(octo_council_default_providers)" || COUNCIL_PROVIDER_POLICY_VALID="false"
 COUNCIL_MAX_COST=""
 COUNCIL_SEAT_TIMEOUT=""
+COUNCIL_SUPERSEDE_KEY=""
 COUNCIL_DRY_RUN=""
 COUNCIL_JSON=""
 COUNCIL_OUTPUT_DIR=""
@@ -36,6 +37,13 @@ COUNCIL_TASK=""
 COUNCIL_CONTEXT_FILES=()
 COUNCIL_RUN_DIR=""
 COUNCIL_RUN_ID=""
+COUNCIL_RUN_START_EPOCH=""
+COUNCIL_SESSION_ID=""
+COUNCIL_ARTIFACT_DIGEST=""
+COUNCIL_SEAT_TIMEOUT_CEILING=""
+COUNCIL_DEADLINE_HIT=""
+COUNCIL_SEATS_DISPATCHED=""
+COUNCIL_SEATS_SKIPPED=""
 COUNCIL_FIXTURE=""
 COUNCIL_MEMBER_OVERRIDE_WARNING=""
 COUNCIL_ESTIMATED_COST=""
@@ -106,6 +114,9 @@ Options:
   --dry-run
   --json
   --output-dir <path>
+  --supersede-key <key>   (re-runs of the same gate: this run supersedes prior
+                           runs carrying the same key in the pool; also settable
+                           via OCTOPUS_COUNCIL_SUPERSEDE_KEY)
 
 Budget values are USD decimal numbers only, for example: 2, 2.00, 0.50.
 Default runs are isolated per session; set OCTOPUS_COUNCIL_SHARED_POOL=1 to share the default pool.
@@ -126,6 +137,7 @@ council_reset_defaults() {
     COUNCIL_PROVIDERS="auto"
     COUNCIL_MAX_COST=""
     COUNCIL_SEAT_TIMEOUT=""
+    COUNCIL_SUPERSEDE_KEY="${OCTOPUS_COUNCIL_SUPERSEDE_KEY:-}"
     COUNCIL_DRY_RUN="false"
     COUNCIL_JSON="false"
     COUNCIL_OUTPUT_DIR=""
@@ -140,6 +152,13 @@ council_reset_defaults() {
     COUNCIL_CONTEXT_FILES=()
     COUNCIL_RUN_DIR=""
     COUNCIL_RUN_ID=""
+    COUNCIL_RUN_START_EPOCH=""
+    COUNCIL_SESSION_ID=""
+    COUNCIL_ARTIFACT_DIGEST=""
+    COUNCIL_SEAT_TIMEOUT_CEILING=""
+    COUNCIL_DEADLINE_HIT="false"
+    COUNCIL_SEATS_DISPATCHED="0"
+    COUNCIL_SEATS_SKIPPED="0"
     COUNCIL_FIXTURE="${OCTOPUS_COUNCIL_FIXTURE:-}"
     COUNCIL_MEMBER_OVERRIDE_WARNING="false"
     COUNCIL_ESTIMATED_COST="0.00"
@@ -264,27 +283,66 @@ council_resolve_corpus_mode() {
     return 0
 }
 
+council_research_path_is_safe() {
+    local file="$1"
+    local base="$2"
+    local parent canonical_base canonical_parent relative component current
+
+    [[ -f "$file" && ! -L "$file" && -d "$base" && ! -L "$base" ]] || return 1
+    case "$file" in
+        "$base"/*) ;;
+        *) return 1 ;;
+    esac
+
+    canonical_base="$(cd "$base" 2>/dev/null && pwd -P)" || return 1
+    [[ "$canonical_base" == "$base" ]] || return 1
+    parent="${file%/*}"
+    canonical_parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 1
+    case "$canonical_parent" in
+        "$canonical_base"|"$canonical_base"/*) ;;
+        *) return 1 ;;
+    esac
+
+    relative="${parent#"$base"}"
+    relative="${relative#/}"
+    current="$base"
+    while [[ -n "$relative" ]]; do
+        component="${relative%%/*}"
+        current="$current/$component"
+        [[ ! -L "$current" ]] || return 1
+        if [[ "$relative" == */* ]]; then
+            relative="${relative#*/}"
+        else
+            relative=""
+        fi
+    done
+}
+
 council_research_preview_file() {
     local file="$1"
     local label="$2"
-    [[ -f "$file" ]] || return 0
+    local base="$3"
+    council_research_path_is_safe "$file" "$base" || return 0
+    local preview
+    preview=$(python3 "${_council_registry_dir}/../helpers/confined-read.py" \
+        "${COUNCIL_CORPUS_ROOT:-${base%/*}}" "$file" 16384 80 2>/dev/null) || return 0
 
     printf '\n### %s\n\n' "$label"
     printf 'Source: `%s`\n\n' "$file"
-    sed -n '1,80p' "$file" | sed -E 's/[[:cntrl:]]//g'
+    printf '%s\n' "$preview"
     printf '\n'
 }
 
 council_research_preview_dir() {
     local dir="$1"
     local label="$2"
-    [[ -d "$dir" ]] || return 0
+    [[ -d "$dir" && ! -L "$dir" ]] || return 0
 
     local file count
     count=0
     while IFS= read -r file; do
         count=$((count + 1))
-        council_research_preview_file "$file" "${label}: $(basename "$file")"
+        council_research_preview_file "$file" "${label}: $(basename "$file")" "$dir"
         [[ "$count" -ge 5 ]] && break
     done < <(find "$dir" -maxdepth 2 -type f -name '*.md' | sort)
 }
@@ -305,7 +363,7 @@ council_write_research_artifact() {
         if [[ -n "$COUNCIL_CORPUS_ROOT" ]]; then
             echo
             printf 'Corpus root: `%s`\n' "$COUNCIL_CORPUS_ROOT"
-            council_research_preview_file "$COUNCIL_CORPUS_ROOT/graphify-out/GRAPH_REPORT.md" "Graphify Report"
+            council_research_preview_file "$COUNCIL_CORPUS_ROOT/graphify-out/GRAPH_REPORT.md" "Graphify Report" "$COUNCIL_CORPUS_ROOT/graphify-out"
             council_research_preview_dir "$COUNCIL_CORPUS_ROOT/03_knowledge_base" "Knowledge Base"
             council_research_preview_dir "$COUNCIL_CORPUS_ROOT/02_extracted_markdown" "Extracted Markdown"
         else
@@ -1851,6 +1909,16 @@ council_dispatch_member_detached() {
         return $?
     fi
 
+    # Resolve the watchdog before starting preparation. Synthesis has its own
+    # caller-owned timeout; advice, critique and revision use the seat timeout.
+    local seat_provider timeout_secs
+    seat_provider="$(jq -r '.agent_spec // .provider // ""' <<< "$member_json")"
+    if [[ "$phase" == "chair-synthesis" ]]; then
+        timeout_secs="$(council_synthesis_timeout "$seat_provider")"
+    else
+        timeout_secs="$(council_seat_timeout "$seat_provider")"
+    fi
+
     (
         trap '' HUP INT TERM
         trap 'exit 143' USR1
@@ -1880,13 +1948,11 @@ council_dispatch_member_detached() {
     # the subshell terminates on its own; this poll is a safety net keyed to the same
     # timeout plus a grace margin for the mv+sentinel write. Poll the .done sentinel
     # at a fine interval so fixture-fast seats do not each cost a full second.
-    local seat_provider timeout_secs
-    seat_provider="$(jq -r '.provider // ""' <<< "$member_json")"
-    timeout_secs="$(council_seat_timeout "$seat_provider")"
     # Grace margin for the mv+sentinel write after the provider timeout fires.
-    # Configurable so tests can force the timeout path deterministically.
-    local grace_secs="${OCTOPUS_COUNCIL_REAP_GRACE_SECS:-15}"
-    [[ "$grace_secs" =~ ^[0-9]+$ ]] || grace_secs=15
+    # Configurable so tests can force the timeout path deterministically. Use the
+    # shared resolver so this consumer and the aggregate-budget clamp normalize the
+    # value identically (a raw "08" would break this arithmetic as invalid octal).
+    local grace_secs; grace_secs="$(council_deadline_reap_grace)"
     local max_ms=$(( (timeout_secs + grace_secs) * 1000 )) waited_ms=0
     while (( waited_ms < max_ms )); do
         [[ -f "$done_file" ]] && break
@@ -1924,6 +1990,7 @@ council_dispatch_member_detached() {
         rm -f "$output_path"
     fi
     rm -f "$done_file" "${done_file}.tmp" "$partial"
+    if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; fi
     return "$rc"
 }
 
@@ -2017,6 +2084,263 @@ council_response_is_substantive() {
     return 0
 }
 
+council_response_content_match_count() {
+    # Count DISTINCTIVE verbatim code fragments the response quotes that actually
+    # appear (whitespace-normalized) in a source file under the evidence root. This
+    # is the content-match grounding signal (sail-cruisey #2931/#2947): a seat that
+    # quotes real source it read is grounded even when it cites in prose/table form
+    # without a `path:line` (the #2947 claude seats did exactly this), while a seat
+    # that only names bare filenames, package names, or echoes prompt numbers quotes
+    # nothing that resolves and scores zero (the agy "Assumptions" seats). A fragment
+    # counts only if it is long and carries multiple code operators, so ubiquitous
+    # tokens (`toBeUndefined()`), bare paths, and prose never match. Bounded scan:
+    # source extensions only; response, fragment, file, aggregate-byte, entry and
+    # depth caps; no symlink traversal, response aliases or private/tool-state reads.
+    local response_path="$1" evidence_root="$2" run_dir="${3:-${COUNCIL_RUN_DIR:-}}"
+    [[ -f "$response_path" && -d "$evidence_root" ]] || { printf '0\n'; return 0; }
+    command -v python3 >/dev/null 2>&1 || { printf '0\n'; return 0; }
+    python3 - "$response_path" "$evidence_root" "$run_dir" <<'PY'
+import os
+import re
+import stat
+import sys
+from itertools import chain
+from pathlib import Path
+
+# Fixed budgets cannot be widened by provider output or environment overrides.
+MAX_RESPONSE_BYTES = 1_048_576
+MAX_FRAGMENT_BYTES = 4096
+MAX_FRAGMENTS = 256
+MAX_FILES = 4000
+MAX_FILE_BYTES = 1_500_000
+MAX_TOTAL_BYTES = 16_777_216
+MAX_ENTRIES = 20_000
+MAX_DEPTH = 64
+if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+    print(0)
+    sys.exit(2)
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+def signature(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+def read_bounded(descriptor, metadata, limit):
+    # Read only the size checked on this descriptor, then reject changed files.
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+        raise ValueError("not a bounded regular file")
+    chunks = []
+    remaining = metadata.st_size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, 65_536))
+        if not chunk:
+            raise ValueError("file shrank during read")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if signature(metadata) != signature(os.fstat(descriptor)):
+        raise ValueError("file changed during read")
+    return b"".join(chunks)
+
+try:
+    response_fd = os.open(sys.argv[1], FILE_FLAGS)
+    try:
+        response_stat = os.fstat(response_fd)
+        resp = read_bounded(response_fd, response_stat, MAX_RESPONSE_BYTES).decode("utf-8", "replace")
+    finally:
+        os.close(response_fd)
+    # The caller may explicitly select a symlinked root. Resolve that authority
+    # once, then use the same no-follow directory walk as confined-read.py.
+    root = Path(sys.argv[2]).resolve(strict=True)
+except (OSError, ValueError, RuntimeError):
+    print(0)
+    sys.exit(0)
+
+CODE_OP = re.compile(r"[=(){}\[\].:;<>?|&+*/-]")
+def distinctive(fragment):
+    if len(fragment.encode("utf-8")) > MAX_FRAGMENT_BYTES:
+        return None
+    fragment = re.sub(r"\s+", " ", fragment).strip()
+    if len(fragment) < 18 or len(CODE_OP.findall(fragment)) < 2:
+        return None
+    if " " not in fragment and "/" in fragment:
+        return None
+    return fragment
+
+def code_fragments():
+    for match in re.finditer(r"`([^`\n]+)`|```[^\n]*\n(.*?)```", resp, re.S):
+        if match.group(1) is not None:
+            yield match.group(1)
+        else:
+            yield from match.group(2).splitlines()
+
+cands = set()
+# Preserve established code spans inside prose wrappers. Plain quotations use
+# a second bounded pass, with the same set and no additional candidate budget.
+plain_fragments = (match.group(1) for match in re.finditer(r'"([^"\n]{1,400})"', resp))
+for fragment in chain(code_fragments(), plain_fragments):
+    candidate = distinctive(fragment)
+    if candidate:
+        cands.add(candidate)
+    if len(cands) >= MAX_FRAGMENTS:
+        break
+if not cands:
+    print(0)
+    sys.exit(0)
+
+SRC_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".sass", ".less",
+           ".html", ".htm", ".vue", ".svelte", ".py", ".go", ".rb", ".rs", ".java", ".kt",
+           ".swift", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".sh", ".bash",
+           ".zsh", ".ps1", ".sql", ".yaml", ".yml", ".toml", ".json", ".jsonc", ".xml",
+           ".proto", ".graphql", ".gql", ".ini", ".cfg", ".conf", ".gradle", ".md",
+           ".mdx", ".php", ".pl", ".lua", ".ex", ".exs", ".scala", ".dart", ".m", ".mm",
+           ".jl", ".tf", ".r"}
+SKIP = {"node_modules", "dist", "build", "coverage", "vendor", "__pycache__", "private"}
+PRIVATE_NAME = re.compile(r"(^|[._-])(credentials?|secrets?|private|service[-_]account|id[-_]rsa)([._-]|$)", re.I)
+remaining = set(cands)
+scanned = entries = total_bytes = 0
+response_identity = (response_stat.st_dev, response_stat.st_ino)
+run_identity = None
+
+def open_directory(path, excluded=None):
+    # Pin physical components without following replacement aliases.
+    descriptor = os.open(os.sep, DIRECTORY_FLAGS)
+    try:
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == excluded:
+            raise ValueError("active run is not source evidence")
+        for part in path.parts[1:]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            metadata = os.fstat(descriptor)
+            if (metadata.st_dev, metadata.st_ino) == excluded:
+                raise ValueError("active run is not source evidence")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+if sys.argv[3]:
+    try:
+        run_fd = open_directory(Path(sys.argv[3]).resolve(strict=True))
+        try:
+            run_stat = os.fstat(run_fd)
+            run_identity = (run_stat.st_dev, run_stat.st_ino)
+        finally:
+            os.close(run_fd)
+    except (OSError, ValueError, RuntimeError):
+        # An explicit run that cannot be identified cannot be safely excluded.
+        print(0)
+        sys.exit(0)
+    except (TypeError, NotImplementedError):
+        print(0)
+        sys.exit(2)
+
+def exhausted():
+    return not remaining or scanned >= MAX_FILES or entries >= MAX_ENTRIES or total_bytes >= MAX_TOTAL_BYTES
+
+def scan(directory, depth):
+    global scanned, entries, total_bytes
+    with os.scandir(directory) as listing:
+        while not exhausted():
+            try:
+                entry = next(listing)
+            except StopIteration:
+                return
+            entries += 1
+            name = entry.name
+            # Prune before opening or enumerating a subtree. Hidden files and
+            # tool state are not implicit source evidence, even with a source suffix.
+            if name.startswith(".") or name.lower() in SKIP or PRIVATE_NAME.search(name):
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode):
+                    if (metadata.st_dev, metadata.st_ino) == run_identity:
+                        continue
+                    if depth >= MAX_DEPTH:
+                        continue
+                    child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory)
+                    try:
+                        opened = os.fstat(child)
+                        if (opened.st_dev, opened.st_ino) != run_identity and \
+                           (opened.st_dev, opened.st_ino) == (metadata.st_dev, metadata.st_ino):
+                            scan(child, depth + 1)
+                    finally:
+                        os.close(child)
+                elif stat.S_ISREG(metadata.st_mode) and Path(name).suffix.lower() in SRC_EXT:
+                    scanned += 1
+                    descriptor = os.open(name, FILE_FLAGS, dir_fd=directory)
+                    try:
+                        opened = os.fstat(descriptor)
+                        identity = (opened.st_dev, opened.st_ino)
+                        if identity == response_identity or signature(opened) != signature(metadata):
+                            continue
+                        limit = min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total_bytes)
+                        if opened.st_size > limit:
+                            continue
+                        # Charge the full allowance before reading so rejected
+                        # changing files cannot bypass the aggregate byte budget.
+                        total_bytes += opened.st_size
+                        data = read_bounded(descriptor, opened, limit)
+                    finally:
+                        os.close(descriptor)
+                    hay = re.sub(r"\s+", " ", data.decode("utf-8", "replace"))
+                    remaining.difference_update(candidate for candidate in tuple(remaining) if candidate in hay)
+            except (OSError, ValueError):
+                continue
+
+# Opening every physical-root component with NOFOLLOW rejects replacement aliases
+# after resolution. All child lookups stay relative to an already-open directory.
+directory = None
+try:
+    directory = open_directory(root, run_identity)
+    scan(directory, 0)
+except (TypeError, NotImplementedError):
+    # Descriptor-relative traversal is unavailable on some Python platforms.
+    print(0)
+    sys.exit(2)
+except (OSError, ValueError):
+    pass
+finally:
+    if directory is not None:
+        os.close(directory)
+print(len(cands) - len(remaining))
+PY
+}
+
+council_response_makes_code_claims() {
+    # True when the response asserts code-level facts (vs a purely process/plan
+    # discussion with nothing to ground). Includes token-bounded security and
+    # control-flow terms. Used only to decide whether the positive
+    # grounding gate applies — a review with no code claims is never gated.
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -ciE '(^|[^[:alnum:]])(test(s|ed|ing|cases?)?|coverage|render(s|ed|ing)?|outputs?|type[- ]?check(s|ed|ing)?|tsc|lint(s|ed|ing|er)?|implement(s|ed|ing|ations?)?|propagat(e|es|ed|ing|ion)?|pass(es|ing|ed)?|regress(es|ed|ions?)?|contracts?|behaviou?r(s|al)?|diff(s|ed)?|assert(s|ed|ing|ions?)?|snapshots?|dom|css|class(es)?|components?|functions?|api(s)?|endpoints?|schema(s|ta)?|payloads?|fields?|joins?|quer(y|ies)|gate[ds]?|fallback|routing?|resolver|interface|serializ|compiler?|reject(s|ed|ing|ion)?|validat(e|es|ed|ing|ion|or|ors)|saniti[sz](e|es|ed|ing|ation)|escap(e|es|ed|ing)|permissions?|middleware|tokens?|sessions?|cookies?|headers?|guards?|unauthenticated|unauthori[sz]ed|authenticat(e|es|ed|ing|ion)|authori[sz](e|es|ed|ing|ation)|control[- ]flow|conditionals?|branches|branch|short[- ]circuit(s|ed|ing)?)([^[:alnum:]]|$)' "$f" >/dev/null
+}
+
+council_response_has_grounding() {
+    # True when the response carries at least one grounding signal: a validated
+    # `path:line` citation that resolves under the evidence root, OR a content-match
+    # (a distinctive quoted fragment that appears verbatim in a source file). This is
+    # the single gate the quorum tally and the §4 raw-body rule share.
+    local f="$1" evidence_root="${2:-}"
+    [[ -f "$f" ]] || return 1
+    [[ -n "$evidence_root" && -d "$evidence_root" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local validated
+    validated="$(council_response_evidence_paths_json "$f" "$evidence_root")" || validated='[]'
+    [[ "$(jq 'length' <<< "$validated" 2>/dev/null || printf 0)" -gt 0 ]] && return 0
+    local matches scan_rc=0
+    matches="$(council_response_content_match_count "$f" "$evidence_root")" || scan_rc=$?
+    # Preserve the prose fallback when safe descriptor reads are unsupported.
+    # This is availability, not validated evidence or a comprehension claim.
+    (( scan_rc == 2 )) && return 0
+    [[ "$matches" =~ ^[0-9]+$ ]] && (( matches > 0 )) && return 0
+    return 1
+}
+
 council_response_is_blind() {
     # A "blind" seat returned a verdict WITHOUT reading the artifact — it was
     # dispatched without file-read tools (e.g. permissionMode "plan") and says so.
@@ -2048,6 +2372,36 @@ council_response_is_blind() {
 
     local nlen
     nlen="$(tr -d '[:space:]' < "$f" | wc -c | tr -d '[:space:]')"
+
+    # Positive-grounding gate (sail-cruisey #2931/#2947). A full-length, confident
+    # review that makes code-level claims but grounds NONE of them — no validated
+    # path:line AND no verbatim quote that resolves in a source file under the
+    # evidence root — reviewed nothing it can prove it read. Several agy seats
+    # approved exactly this way (bare filenames + echoed prompt numbers, framed as
+    # "Assumptions") and were wrongly counted toward quorum. Scoped so it cannot
+    # over-blind: skipped in fixture mode; only when a live evidence root + validator
+    # are present (a no-source-tree plan review keeps the prose exemption); only for
+    # responses long enough to be a full review (OCTOPUS_COUNCIL_GROUNDING_MIN_CHARS,
+    # default 700 — a terse "looks good, APPROVE" is not the targeted shape); and
+    # only when the body actually makes code claims. A seat that quotes real source
+    # in prose/table form WITHOUT a path:line (the #2947 claude seats) passes via the
+    # content-match arm of council_response_has_grounding. Runs before the length
+    # short-circuit below because the targeted bodies are long.
+    local grounding_min="${OCTOPUS_COUNCIL_GROUNDING_MIN_CHARS:-700}"
+    # Capture a bounded decimal value after leading-zero padding.
+    if [[ "$grounding_min" =~ ^0*([0-9]{1,9})$ ]]; then
+        grounding_min=$((10#${BASH_REMATCH[1]}))
+    else
+        grounding_min=700
+    fi
+    if [[ -z "${COUNCIL_FIXTURE:-}" && -n "$evidence_root" && -d "$evidence_root" ]] \
+        && (( nlen >= grounding_min )) \
+        && command -v python3 >/dev/null 2>&1 \
+        && council_response_makes_code_claims "$f" \
+        && ! council_response_has_grounding "$f" "$evidence_root"; then
+        return 0
+    fi
+
     (( nlen < 1600 )) || return 1
     if grep -ciE "(cannot|could not|couldn'?t|unable to|can'?t)[[:space:]]+(access|read|open|locate|find|view|retrieve)[^.]{0,60}(file|plan|prd|diff|patch|artifact|document|spec)|no[[:space:]]+(file|read)[[:space:]]+access" "$f" >/dev/null; then
         return 0
@@ -2113,13 +2467,9 @@ council_response_defers_without_reading() {
     #     stated in the summary" (sail-cruisey #2570)
     #   - prior-phase deference: "given the rigorous validations in previous
     #     rounds ... I recommend proceeding" (#2463)
-    # This is length-independent (the evasions are long) but gated on ZERO
-    # `path.ext:line` citations: a genuinely grounded review carries a concrete
-    # file:line, so it is never flagged for merely mentioning a summary or a prior
-    # round. The colon citation form is deliberately the ONLY grounding signal
-    # here — prose "lines 251-263" or a bare filename can be copied from the
-    # plan/summary without reading it (#2463 does exactly that). When an
-    # evidence root is available, the cited path must also resolve beneath it.
+    # This is length-independent, but a validated source citation or a verified
+    # quoted fragment exempts source-backed analysis that also cites a summary.
+    # Bare filenames and prose line ranges are not evidence of reading source.
     local f="$1" evidence_root="${2:-}"
     [[ -f "$f" ]] || return 1
 
@@ -2161,7 +2511,7 @@ council_response_defers_without_reading() {
     # inflections so common plural/tense forms still match.
     local code_token='(^|[^[:alnum:]])(test(s|ed|ing|cases?)?|coverage|render(s|ed|ing)?|outputs?|type[- ]?check(s|ed|ing)?|tsc|lint(s|ed|ing|er)?|implement(s|ed|ing|ations?)?|propagat(e|es|ed|ing|ion)?|byte-identical|pass(es|ing|ed)?|regress(es|ed|ions?)?|contracts?|behaviou?r(s|al)?|diff(s|ed)?|assert(s|ed|ing|ions?)?|snapshots?|dom|css|class(es)?|components?|functions?|api(s)?|endpoints?|schema(s|ta)?|payloads?|fields?)([^[:alnum:]]|$)'
 
-    printf '%s\n' "$normalized_without_urls" | awk -v ct="$code_token" '
+    if printf '%s\n' "$normalized_without_urls" | awk -v ct="$code_token" '
         {
             # NOTE: a bare "based on the provided summary" is deliberately NOT a
             # trigger — a legitimate plan/design review (no code to cite) uses that
@@ -2186,7 +2536,17 @@ council_response_defers_without_reading() {
             if (summary_reliance || prior_deference) found=1
         }
         END { exit(found ? 0 : 1) }
-    ' >/dev/null 2>&1
+    ' >/dev/null 2>&1; then
+        # Only a verified match exempts summary attribution. Scan exhaustion or
+        # unavailable confinement does not establish source-backed analysis.
+        local content_matches
+        content_matches="$(council_response_content_match_count "$f" "$evidence_root")" || content_matches=0
+        if [[ "$content_matches" =~ ^[0-9]+$ ]] && (( content_matches > 0 )); then
+            return 1
+        fi
+        return 0
+    fi
+    return 1
 }
 
 _council_parse_final_verdict() {
@@ -2448,16 +2808,148 @@ council_seat_timeout() {
     #   2. COUNCIL_SEAT_TIMEOUT                 (the --seat-timeout flag, run-wide)
     #   3. OCTOPUS_COUNCIL_AGENT_TIMEOUT        (legacy global env)
     #   4. built-in default
-    local provider pvar candidate
+    # An optional $2 is an explicit caller override (e.g. the synthesis timeout)
+    # that wins over the env resolution but is STILL clamped to the aggregate
+    # deadline below — otherwise a large OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT could let
+    # chair synthesis run past the budget after critique/revision spent it (#2918).
+    local provider pvar candidate resolved="" explicit="${2:-}"
     provider="$(octo_agent_spec_provider "$1")"
     pvar="OCTOPUS_COUNCIL_TIMEOUT_$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')"
-    candidate="${!pvar:-}"
+    if [[ "$explicit" =~ ^[1-9][0-9]*$ ]]; then resolved="$explicit"; fi
+    if [[ -z "$resolved" ]]; then
+        candidate="${!pvar:-}"
+        [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && resolved="$candidate"
+    fi
+    if [[ -z "$resolved" ]]; then
+        candidate="${COUNCIL_SEAT_TIMEOUT:-}"
+        [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && resolved="$candidate"
+    fi
+    if [[ -z "$resolved" ]]; then
+        candidate="${OCTOPUS_COUNCIL_AGENT_TIMEOUT:-}"
+        [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && resolved="$candidate"
+    fi
+    [[ -z "$resolved" ]] && resolved="120"
+    # Clamp to the remaining aggregate-deadline budget so a single seat (or the
+    # chair synthesis) cannot run past the run-wide wall-clock cap and get the whole
+    # council SIGTERM-reaped mid-write with no summary.json (sail-cruisey #2918).
+    # Two sources, both floored so we never hand a provider a zero/negative cap:
+    #   - an explicit test ceiling (COUNCIL_SEAT_TIMEOUT_CEILING), and
+    #   - the LIVE remaining budget, active only while a run is anchored
+    #     (COUNCIL_RUN_START_EPOCH set) with the cap enabled — fixtures, dry-run,
+    #     and standalone unit calls set no start epoch, so their value is unchanged.
+    local ceiling=""
+    if [[ "${COUNCIL_SEAT_TIMEOUT_CEILING:-}" =~ ^[1-9][0-9]*$ ]]; then
+        ceiling="$COUNCIL_SEAT_TIMEOUT_CEILING"
+    fi
+    if [[ "${COUNCIL_RUN_START_EPOCH:-}" =~ ^[1-9][0-9]*$ ]]; then
+        # Reserve the reaper's grace: it waits provider_timeout + grace, so the
+        # provider budget must be (remaining - grace) for the whole reap to fit
+        # inside the aggregate deadline.
+        local rem grace budget
+        rem="$(council_deadline_remaining)"
+        grace="$(council_deadline_reap_grace)"
+        if [[ "$rem" =~ ^[0-9]+$ ]]; then
+            budget=$(( rem - grace ))
+            (( budget < 0 )) && budget=0
+            if [[ -z "$ceiling" || "$budget" -lt "$ceiling" ]]; then
+                ceiling="$budget"
+            fi
+        fi
+    fi
+    if [[ "$ceiling" =~ ^[0-9]+$ ]] && (( ceiling < resolved )); then
+        # Floor at a small positive slice: a seat given ~0s just times out instantly
+        # and wastes the boundary; the loop-level guard is what actually stops
+        # dispatching once the budget is spent.
+        local floor; floor="$(council_deadline_seat_floor)"
+        if (( ceiling < floor )); then resolved="$floor"; else resolved="$ceiling"; fi
+    fi
+    printf '%s' "$resolved"
+}
+
+council_run_deadline_secs() {
+    # Aggregate wall-clock cap (seconds) across ALL serially-dispatched seats. A
+    # council with several seats each allowed the per-seat cap can otherwise sum
+    # past a parent tool-call/orchestrator timeout and be SIGTERM-reaped mid-run
+    # with no summary.json — a silent hang the lead has to notice and fall back
+    # from (sail-cruisey #2918). When the cap is reached the runner stops
+    # dispatching further seats and finalizes a REPORTED partial with quorum
+    # recomputed from the seats that completed: a clean quorum-fail beats a hang.
+    #   OCTOPUS_COUNCIL_DEADLINE_SECS  (explicit override; 0 disables the cap)
+    #   default 1500 (25m) — under the ~28m harness reap seen in the field, above
+    #   a normal 10-20m multi-seat run. Runs that legitimately need longer set a
+    #   higher value or 0 to opt out.
+    local candidate="${OCTOPUS_COUNCIL_DEADLINE_SECS:-}"
+    if [[ "$candidate" == "0" ]]; then printf '0'; return 0; fi
     if [[ "$candidate" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$candidate"; return 0; fi
-    candidate="${COUNCIL_SEAT_TIMEOUT:-}"
-    if [[ "$candidate" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$candidate"; return 0; fi
-    candidate="${OCTOPUS_COUNCIL_AGENT_TIMEOUT:-}"
-    if [[ "$candidate" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$candidate"; return 0; fi
-    printf '120'
+    printf '1500'
+}
+
+council_deadline_seat_floor() {
+    # Minimum per-seat slice worth dispatching. Shared by council_seat_timeout and
+    # council_deadline_exceeded so both agree on the boundary. Normalize to base-10
+    # before any arithmetic so a value like "08" is not read as invalid octal.
+    local floor="${OCTOPUS_COUNCIL_DEADLINE_SEAT_FLOOR_SECS:-30}"
+    [[ "$floor" =~ ^[0-9]+$ ]] || floor=30
+    floor=$((10#$floor))
+    (( floor >= 1 )) || floor=30
+    printf '%s' "$floor"
+}
+
+council_deadline_reap_grace() {
+    # The detached reaper waits (provider_timeout + this grace) for the seat's
+    # mv+sentinel write (see council_dispatch_member_detached). The aggregate-budget
+    # clamp must reserve it so provider_timeout + grace never exceeds the remaining
+    # deadline. Kept in sync with the reaper's own OCTOPUS_COUNCIL_REAP_GRACE_SECS
+    # default; normalize to base-10 for the same octal reason as the floor.
+    local grace="${OCTOPUS_COUNCIL_REAP_GRACE_SECS:-15}"
+    [[ "$grace" =~ ^[0-9]+$ ]] || grace=15
+    grace=$((10#$grace))
+    printf '%s' "$grace"
+}
+
+council_deadline_remaining() {
+    # Seconds left before the aggregate cap. Prints a large sentinel when the cap
+    # is disabled or the run start was never anchored (fixtures/dry-run/unit).
+    local cap; cap="$(council_run_deadline_secs)"
+    [[ "$cap" == "0" ]] && { printf '2147483647'; return 0; }
+    [[ "${COUNCIL_RUN_START_EPOCH:-}" =~ ^[1-9][0-9]*$ ]] || { printf '2147483647'; return 0; }
+    local now rem
+    now="$(date +%s 2>/dev/null || echo 0)"
+    rem=$(( cap - ( now - COUNCIL_RUN_START_EPOCH ) ))
+    (( rem < 0 )) && rem=0
+    printf '%s' "$rem"
+}
+
+council_deadline_exceeded() {
+    # True when too little budget remains to dispatch another seat AND let its
+    # reaper finish inside the deadline. A dispatched seat consumes at least the
+    # floor plus the reaper grace, so stop once less than that remains — this keeps
+    # the clamp above from ever handing out a sub-floor budget. Shared resolvers
+    # keep this predicate and council_seat_timeout in agreement.
+    local cap; cap="$(council_run_deadline_secs)"
+    [[ "$cap" == "0" ]] && return 1
+    [[ "${COUNCIL_RUN_START_EPOCH:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+    local floor grace rem
+    floor="$(council_deadline_seat_floor)"
+    grace="$(council_deadline_reap_grace)"
+    rem="$(council_deadline_remaining)"
+    (( rem <= floor + grace ))
+}
+
+council_finalize_deadline_partial() {
+    # Shared finalize path when the aggregate wall-clock deadline is reached after
+    # the advice vote (post-advice, or after critique/revision spent the rest of the
+    # budget). Marks the hit, writes the reported partial, and surfaces it loudly.
+    # The advice vote already stands in summary.json; skipping the remaining phases
+    # is exactly what keeps the run from being SIGTERM-reaped past a parent timeout
+    # (#2918). Caller returns 1 afterwards (a partial is not a clean full run).
+    local where="${1:-after the advice vote}"
+    COUNCIL_DEADLINE_HIT="true"
+    council_append_corpus_artifacts || return 1
+    council_write_summary_json "partial" || return 1
+    council_print_run_warnings
+    _council_warn "Council reached its aggregate wall-clock deadline (OCTOPUS_COUNCIL_DEADLINE_SECS) ${where}; skipped remaining critique/revision/synthesis and finalized a partial. The vote stands (quorum.met=${COUNCIL_QUORUM_MET}) — read the per-seat verdicts in ${COUNCIL_RUN_DIR}/responses/ and summary.json (deadline.hit=true)."
+    return 0
 }
 
 council_synthesis_timeout() {
@@ -2468,10 +2960,10 @@ council_synthesis_timeout() {
     # OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT overrides just this phase; otherwise fall
     # back to the chair provider's normal per-seat resolution so existing tuning
     # (OCTOPUS_COUNCIL_TIMEOUT_<PROVIDER>, --seat-timeout, ...) still applies.
-    local provider="$1" candidate
-    candidate="${OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT:-}"
-    if [[ "$candidate" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$candidate"; return 0; fi
-    council_seat_timeout "$provider"
+    # Pass the explicit synthesis override as council_seat_timeout's $2 so it wins
+    # over the env resolution yet is STILL clamped to the remaining aggregate
+    # deadline (a large override must not let synthesis overrun the budget, #2918).
+    council_seat_timeout "$1" "${OCTOPUS_COUNCIL_SYNTHESIS_TIMEOUT:-}"
 }
 
 council_compute_approving_providers() {
@@ -2557,6 +3049,8 @@ council_run_advice_phase() {
     local evidence_root="${OCTOPUS_PROJECT_DIR:-${PROJECT_ROOT:-$PWD}}" artifact_digest contribution_json
     [[ -d "$evidence_root" ]] || evidence_root="$PWD"
     artifact_digest="$(council_artifact_digest "$evidence_root" "${COUNCIL_TASK:-}")" || artifact_digest="unavailable"
+    COUNCIL_ARTIFACT_DIGEST="$artifact_digest"
+    COUNCIL_DEADLINE_HIT="false"; COUNCIL_SEATS_DISPATCHED=0; COUNCIL_SEATS_SKIPPED=0
     while IFS= read -r member; do
         persona="$(jq -r '.persona' <<< "$member")"
         seat="$(jq -r '.seat' <<< "$member")"
@@ -2571,6 +3065,31 @@ council_run_advice_phase() {
         verdict=""; seat_status="no-response"; resp_bytes=0
         local dispatch_rc=0
         COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE=""
+        # Aggregate-deadline stop (#2918): if too little of the run-wide wall-clock
+        # budget remains to dispatch another seat, do NOT start it. Record every
+        # remaining seat as skipped-for-deadline (honest tally), then let quorum be
+        # recomputed below from the seats that actually completed — a reported
+        # quorum-fail beats being SIGTERM-reaped mid-seat with no summary.json.
+        if council_deadline_exceeded; then
+            COUNCIL_DEADLINE_HIT="true"
+            COUNCIL_SEATS_SKIPPED=$((COUNCIL_SEATS_SKIPPED + 1))
+            seat_status="skipped-deadline"
+            contribution_json="$(council_unavailable_contribution_record_json)"
+            seat_rec="$(jq -cn --argjson idx "$index" --arg persona "$persona" --arg seat "$seat" \
+                --arg agent_spec "$mprovider_spec" --arg provider "$mprovider" --arg org "$seat_org" --arg model "$seat_model" --arg model_family "$seat_model_family" \
+                --argjson contribution "$contribution_json" \
+                '{index:$idx, persona:$persona, seat:$seat, agent_spec:$agent_spec, provider:$provider, provider_org:$org,
+                  model:$model, model_family:$model_family, response_bytes:0, payload_kind:"none",
+                  verdict:null, status:"skipped-deadline", contribution:$contribution,
+                  timeout_provenance:"aggregate-deadline", counted_as_approver:false}')"
+            COUNCIL_SEAT_RECORDS_JSON="$(jq -c ". + [$seat_rec]" <<< "$COUNCIL_SEAT_RECORDS_JSON")"
+            index=$((index + 1))
+            continue
+        fi
+        # council_seat_timeout auto-clamps this seat's cap (and the detached
+        # reaper's) to the live remaining budget while the run is anchored, so the
+        # seat cannot overrun the aggregate deadline.
+        COUNCIL_SEATS_DISPATCHED=$((COUNCIL_SEATS_DISPATCHED + 1))
         council_dispatch_member_detached "$member" "independent-advice" "$output_path" || dispatch_rc=$?
         dispatch_timeout_provenance="$COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE"
         # Confirm-finish-before-shortage: a non-zero dispatch (e.g. the per-seat
@@ -2799,6 +3318,12 @@ council_run_chair_fallback() {
         output_path="${COUNCIL_RUN_DIR}/responses/$(printf '%02d' "$index")-chair-fallback-${slug}.md"
         dispatch_rc=0
         COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE=""
+        # Each failed attempt can consume the remaining budget. Recheck before
+        # dispatch, while still allowing reuse of an already accepted response.
+        if council_deadline_exceeded; then
+            COUNCIL_DEADLINE_HIT="true"
+            return 0
+        fi
         council_dispatch_member_detached "$member_json" "independent-advice" "$output_path" || dispatch_rc=$?
         dispatch_timeout_provenance="$COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE"
         if council_response_nonempty "$output_path" \
@@ -2852,10 +3377,14 @@ council_run_critique_phase() {
 
     local index=0 member persona slug output_path
     while IFS= read -r member; do
+        # Stop enriching once the aggregate budget is spent (#2918); the run
+        # finalizes a partial before synthesis. Critiques are best-effort, so a
+        # break here simply omits the rest — no partial file is left behind.
+        if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; break; fi
         persona="$(jq -r '.persona' <<< "$member")"
         slug="$(council_slug "$persona")"
         output_path="${COUNCIL_RUN_DIR}/critiques/$(printf '%02d' "$index")-${slug}.md"
-        council_dispatch_member "$member" "cross-critique" > "$output_path" || rm -f "$output_path"
+        council_dispatch_member_detached "$member" "cross-critique" "$output_path" || rm -f "$output_path"
         index=$((index + 1))
     done < <(jq -c '.[]' <<< "$COUNCIL_ROSTER_JSON")
 }
@@ -2867,10 +3396,12 @@ council_run_revision_phase() {
 
     local index=0 member persona slug output_path
     while IFS= read -r member; do
+        # Stop once the aggregate budget is spent (#2918); revisions are best-effort.
+        if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; break; fi
         persona="$(jq -r '.persona' <<< "$member")"
         slug="$(council_slug "$persona")"
         output_path="${COUNCIL_RUN_DIR}/revisions/$(printf '%02d' "$index")-${slug}.md"
-        if council_dispatch_member "$member" "revision-after-critique" > "$output_path"; then
+        if council_dispatch_member_detached "$member" "revision-after-critique" "$output_path"; then
             :
         else
             rm -f "$output_path"
@@ -2904,7 +3435,7 @@ council_write_synthesis() {
     local chair_member=""
 
     chair_member="$(council_chair_member_json || true)"
-    if [[ -n "$chair_member" ]] && council_dispatch_member "$chair_member" "chair-synthesis" > "$temp_path" && [[ -s "$temp_path" ]]; then
+    if [[ -n "$chair_member" ]] && council_dispatch_member_detached "$chair_member" "chair-synthesis" "$temp_path" && [[ -s "$temp_path" ]]; then
         if grep -q '^#' "$temp_path"; then
             mv "$temp_path" "$synthesis_path"
         else
@@ -3363,6 +3894,17 @@ council_parse_args() {
                 COUNCIL_OUTPUT_DIR="$2"
                 shift 2
                 ;;
+            --supersede-key)
+                # A stable per-gate key (e.g. "<issue>:CP2"). When set, this run
+                # supersedes prior runs in the same pool carrying the SAME key, and
+                # a pool pointer records this run as the latest for the key. Only
+                # the caller knows the gate identity (the runner sees one pool per
+                # session with CP1/CP2 interleaved), so this is caller-supplied and
+                # a no-op when absent — nothing is superseded without an explicit key.
+                [[ $# -ge 2 ]] || { council_error_usage "--supersede-key requires a value"; return 2; }
+                COUNCIL_SUPERSEDE_KEY="$2"
+                shift 2
+                ;;
             --context-file)
                 # Inline a referenced artifact (e.g. a working-tree diff) into every
                 # seat prompt as untrusted data. Seats default to permissionMode
@@ -3413,23 +3955,18 @@ council_write_run_status() {
     # poller's `kill -0` would watch the wrong process. Prefer BASHPID, fall back
     # to $$ on bash 3.2 (macOS default) where BASHPID is unset.
     local pid="${BASHPID:-$$}"
-    local path="${COUNCIL_RUN_DIR}/run-status.json"
-    local tmp="${COUNCIL_RUN_DIR}/run-status.json.tmp"
-    if jq -n --arg state "$state" --arg status "$status" \
-            --arg run_id "${COUNCIL_RUN_ID:-}" --argjson pid "$pid" \
-            '{state:$state, pid:$pid, run_id:$run_id,
-              status:(if $status == "" then null else $status end)}' \
-            > "$tmp" 2>/dev/null && mv -f "$tmp" "$path" 2>/dev/null; then
-        return 0
-    fi
-    # Fall back to a minimal valid beacon — still written atomically (tmp + mv) so
-    # a poller never reads a half-written file and a prior valid beacon is not
-    # clobbered by a partial direct write.
-    if printf '{"state":"%s","pid":%s}\n' "$state" "$pid" > "$tmp" 2>/dev/null; then
-        mv -f "$tmp" "$path" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
-    else
-        rm -f "$tmp" 2>/dev/null || true
-    fi
+    # The helper holds a pool-wide kernel lock across the read/merge/rename.
+    # Supersession uses that same lock, so a concurrent older completion cannot
+    # overwrite a newer run's mark. Keep prior state intact if persistence fails.
+    jq -n --arg state "$state" --arg status "$status" \
+        --arg run_id "${COUNCIL_RUN_ID:-}" --arg session_id "${COUNCIL_SESSION_ID:-}" --argjson pid "$pid" \
+        --arg supersede_key "${COUNCIL_SUPERSEDE_KEY:-}" \
+        '{state:$state, pid:$pid, run_id:$run_id,
+          session_id:(if $session_id == "" then null else $session_id end),
+          supersede_key:(if $supersede_key == "" then null else $supersede_key end),
+          status:(if $status == "" then null else $status end)}' \
+        | python3 "${_council_registry_dir}/../helpers/council-run-state.py" \
+            write "$COUNCIL_RUN_DIR" || true
     return 0
 }
 
@@ -3457,7 +3994,40 @@ council_session_slug() {
     printf '%s-%s' "$safe" "$hash"
 }
 
+council_supersede_key_slug() {
+    # Filesystem-safe slug for a supersede key, used in the pool `latest-<slug>`
+    # pointer filename. Lossy sanitize + a checksum of the raw key disambiguates
+    # keys that differ only in unsafe characters (mirrors council_session_slug).
+    local key="$1" safe hash
+    safe="$(printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
+    hash="$(printf '%s' "$key" | cksum | cut -d' ' -f1)"
+    printf '%s-%s' "$safe" "$hash"
+}
+
+council_mark_prior_runs_superseded() {
+    # A delayed older scanner still selects the newest creation order. The helper
+    # serializes both supersession and beacon completion under the same pool lock.
+    local pool="$1" current_run_dir="$2" key="$3" slug
+    [[ -n "$key" && -d "$pool" ]] || return 0
+    slug="$(council_supersede_key_slug "$key")"
+    python3 "${_council_registry_dir}/../helpers/council-run-state.py" \
+        supersede "$pool" "$current_run_dir" "$key" "latest-${slug}" || true
+    return 0
+}
+
+council_require_run_state_runtime() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' 'council: Python 3 is required for atomic run-state updates. Install python3 and retry.' >&2
+        return 2
+    fi
+    if [[ ! -r "${_council_registry_dir}/../helpers/council-run-state.py" ]]; then
+        printf '%s\n' 'council: council-run-state.py is missing or unreadable. Repair the Octopus installation and retry.' >&2
+        return 2
+    fi
+}
+
 council_create_run_dir() {
+    council_require_run_state_runtime || return $?
     local parent="$COUNCIL_OUTPUT_DIR"
     if [[ -z "$parent" ]]; then
         parent="${WORKSPACE_DIR:-${HOME}/.claude-octopus}/councils"
@@ -3503,10 +4073,19 @@ council_create_run_dir() {
     COUNCIL_RUN_DIR="$staging"
     council_write_run_status "running"
     COUNCIL_RUN_DIR="$_final"
+    # Persistence may fail or time out on the pool lock. Preserve the publication
+    # invariant: a visible run directory must already contain its atomic beacon.
+    if [[ ! -s "$staging/run-status.json" ]]; then
+        rm -rf "$staging" 2>/dev/null
+        return 1
+    fi
     if ! mv "$staging" "$COUNCIL_RUN_DIR" 2>/dev/null; then
         rm -rf "$staging" 2>/dev/null
         return 1
     fi
+    # Now that this run's run-status.json (carrying any supersede key) is published,
+    # supersede prior same-key runs in the pool and record the latest pointer.
+    council_mark_prior_runs_superseded "$parent" "$COUNCIL_RUN_DIR" "${COUNCIL_SUPERSEDE_KEY:-}"
 }
 
 council_write_summary_json() {
@@ -3528,6 +4107,13 @@ council_write_summary_json() {
 
     jq -n \
         --arg run_id "$COUNCIL_RUN_ID" \
+        --arg session_id "${COUNCIL_SESSION_ID:-}" \
+        --arg artifact_digest "${COUNCIL_ARTIFACT_DIGEST:-}" \
+        --arg deadline_cap "$(council_run_deadline_secs)" \
+        --arg deadline_hit "${COUNCIL_DEADLINE_HIT:-false}" \
+        --arg seats_dispatched "${COUNCIL_SEATS_DISPATCHED:-0}" \
+        --arg seats_skipped "${COUNCIL_SEATS_SKIPPED:-0}" \
+        --arg supersede_key "${COUNCIL_SUPERSEDE_KEY:-}" \
         --arg status "$status" \
         --arg goal "$COUNCIL_GOAL" \
         --arg domain "$COUNCIL_DOMAIN" \
@@ -3589,6 +4175,15 @@ council_write_summary_json() {
         '{
           run_id: $run_id,
           command: "council",
+          session_id: (if $session_id == "" then null else $session_id end),
+          artifact_digest: (if $artifact_digest == "" then null else $artifact_digest end),
+          deadline: {
+            cap_secs: ($deadline_cap | tonumber),
+            hit: ($deadline_hit == "true"),
+            seats_dispatched: ($seats_dispatched | tonumber),
+            seats_skipped: ($seats_skipped | tonumber)
+          },
+          supersede_key: (if $supersede_key == "" then null else $supersede_key end),
           status: $status,
           task: $task,
           goal: $goal,
@@ -3740,6 +4335,17 @@ _council_run_impl() {
         return 2
     fi
 
+    # Anchor the aggregate wall-clock budget and stamp the run's provenance BEFORE
+    # the run dir (and its run-status beacon) are written, so every artifact carries
+    # the session id from the first byte. session id lets a poller reject a foreign
+    # session's run when a shared/collided councils pool serves the "newest" dir
+    # (sail-cruisey #2859 cross-session contamination); the start epoch bounds the
+    # serial seat loop (#2918).
+    COUNCIL_RUN_START_EPOCH="$(date +%s 2>/dev/null || echo 0)"
+    if declare -f octo_resolve_session_id >/dev/null 2>&1; then
+        COUNCIL_SESSION_ID="$(octo_resolve_session_id "" 2>/dev/null || true)"
+    fi
+
     council_create_run_dir || return 1
 
     if [[ "$COUNCIL_DRY_RUN" == "true" ]]; then
@@ -3788,6 +4394,15 @@ _council_run_impl() {
         return 1
     fi
 
+    # Aggregate deadline reached after the advice vote: even with quorum met, do not
+    # spend the (already-exhausted) wall-clock budget on critique/revision/synthesis
+    # — those extra dispatches are what would push the run past the parent timeout
+    # into a silent reap. Finalize a reported partial; the vote stands (#2918).
+    if council_deadline_exceeded; then
+        council_finalize_deadline_partial "after the advice vote" || return 1
+        return 1
+    fi
+
     if council_check_cost_cap "critique" "critique"; then
         :
     else
@@ -3802,6 +4417,13 @@ _council_run_impl() {
         return 1
     fi
     council_run_revision_phase
+    # Critique/revision consume wall-clock too — re-check before the chair synthesis
+    # dispatch so a run that crossed the deadline during those phases finalizes a
+    # partial instead of launching one more (budget-overrunning) synthesis (#2918).
+    if council_deadline_exceeded; then
+        council_finalize_deadline_partial "during critique/revision" || return 1
+        return 1
+    fi
     if council_check_cost_cap "synthesis" "synthesis"; then
         :
     else
@@ -3821,6 +4443,15 @@ _council_run_impl() {
         council_write_summary_json "partial" || return 1
         council_print_run_warnings
         _council_warn "Council quorum met on independent vendor approvals, but chair synthesis was unavailable — no synthesized recommendation was produced this round. Read the per-seat verdicts in ${COUNCIL_RUN_DIR}/responses/ (summary.json quorum.met=true, chair_synthesis_available=false)."
+        return 1
+    fi
+    # Synthesis itself consumes wall-clock: the pre-synthesis check only gates the
+    # dispatch START, so a synthesis that began just under the threshold can run its
+    # timeout + reaper past the deadline. Re-check here so the run is reported as a
+    # partial rather than falling through to the completed-summary path after the
+    # hard deadline (#2918).
+    if council_deadline_exceeded; then
+        council_finalize_deadline_partial "during synthesis" || return 1
         return 1
     fi
     if council_check_cost_cap "implementation" "implementation planning"; then
@@ -3887,6 +4518,7 @@ council_run() {
         return 0
     fi
 
+    council_require_run_state_runtime || return $?
     local _council_rc=0
     _council_run_impl "$@" || _council_rc=$?
 

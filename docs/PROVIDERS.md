@@ -77,6 +77,80 @@ Plus, usually:
 - Unit test in `tests/unit/test-<provider>-provider.sh`
 - `docs/DEVELOPER.md` / README provider tables
 
+## Cheaper Inference setup
+
+`cheaperinference-agent` uses the OpenAI-compatible tool-loop helper at
+`https://api.cheaperinference.com/v1`. Set `CHEAPER_INFERENCE_API_KEY` and
+choose a model supported by that gateway. No model is selected by default.
+
+Model selection uses `CHEAPER_INFERENCE_MODEL`, then
+`OCTOPUS_CHEAPERINFERENCE_MODEL`, then `OPENAI_COMPAT_MODEL`, then the string
+`providers.cheaperinference.default` in
+`~/.claude-octopus/config/providers.json`. `OCTOPUS_PROVIDERS_CONFIG` can select
+another file. Native model resolution, dispatch, health, detection and
+readiness use the same selection. Qualified seats use their exact model pin
+without requiring another default. Invalid pins and allowlist fallbacks fail
+closed.
+Use `CHEAPER_INFERENCE_ALLOWED_MODELS` to restrict dispatch models.
+
+Read-only roles disable local tools. The child receives only its selected
+credential and the shared helper's approved runtime settings. This provider
+is excluded from Council. Local readiness does not prove model entitlement,
+tool support, quota or billed cost. See the [gateway API documentation](https://api.cheaperinference.com/docs)
+for its current model capabilities.
+
+## Perplexity Agent API
+
+Perplexity requests use `POST /v1/agent`. Legacy Sonar model names map to
+Perplexity's recommended presets; explicit `provider/model` names enable the
+`web_search` tool. Bare `fast`, `low`, `medium`, `high`, and `xhigh` values
+select a preset and inherit its tools. Selecting `xhigh` enables Perplexity's
+remote code sandbox, web search, and finance search. Preset tools merge with
+request tools, so an empty `tools` array does not disable them. See
+[Perplexity's preset configuration](https://docs.perplexity.ai/docs/agent-api/presets).
+
+## Grok headless tool approval
+
+The Grok stdin shim uses `--always-approve --sandbox read-only` by default.
+Advisory seats receive only `read_file`, `grep`, and `list_dir` through `--tools`,
+plus a deny rule for MCP tools and disabled subagents. They can inspect source
+without granting shell or file mutation authority. The CLI must advertise these
+controls in `--help`; missing controls reject the call before prompt execution.
+`OCTOPUS_GROK_APPROVE=0` omits the approval and sandbox flags and retains the
+tool ceiling.
+`OCTOPUS_GROK_SANDBOX` overrides the profile: `off`, `workspace`, `read-only`, or
+`strict`. Invalid values produce one stderr warning and use the call's default.
+The shim's standalone default is `read-only`.
+
+Dispatch defaults to `workspace` only for write-capable implementation roles in
+`tangle`/`develop` when `OCTOPUS_CODEX_SANDBOX` permits writes. Codex's default
+is `workspace-write`; `danger-full-access` also maps to Grok `workspace`, while
+Codex `read-only` keeps Grok read-only. Review, consult, council, and unknown
+contexts default to `read-only`, including consultative calls that grant Codex
+`danger-full-access` inside a disposable workspace. Explicit Grok overrides
+take precedence for the sandbox profile. They cannot raise an advisory role's
+tool ceiling. Only eligible implementation calls receive full tools, and an
+explicit Grok `read-only` override narrows those calls too. Approval, sandbox,
+and tool policy travel with `OCTOPUS_GROK_MODEL` in the shim's env prefix so they
+survive provider environment isolation. Standalone calls default to the same
+read-tool ceiling. A trusted operator can request full tools for standalone
+implementation with `OCTOPUS_GROK_TOOL_POLICY=full`; dispatch derives that value
+from the role and phase and overrides inherited values.
+
+Grok's [sandbox guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md)
+permits temporary-directory writes under `read-only`. Its child-network block
+is Linux-only. The tool ceiling avoids relying on that profile for advisory
+write protection. Grok's [CLI reference](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-shell/README.md#tool-filtering-tools--disallowed-tools)
+documents the read-tool allowlist. These flags are present in locally checked
+Grok 1.0.3 help; no provider call is needed for that compatibility check.
+
+Prompts above 100000 bytes use a private temporary file, preserving the stdin
+bytes. `OCTOPUS_GROK_ARGV_MAX` can lower the inline threshold; `0` forces file
+transport. Invalid values and values above 100000 retain the safe ceiling.
+File transport cancellation sends TERM to the direct child, waits up to two
+seconds, then escalates to KILL and reaps it before removing the prompt. It
+does not claim ownership of unregistered descendants.
+
 ## Kimi Code integration
 
 Kimi Code exercises all seven wiring points: `kimi` identity/runtime rows in
@@ -134,9 +208,9 @@ Use `VERTEXAI_API_KEY` or `GOOGLE_API_KEY` inside the selected provider's
 
 ## Current providers
 
-codex, commandcode, claude, claude-sdk (Agent SDK seat), agy (Antigravity,
+codex, commandcode, claude, claude-sdk (Agent SDK seat), anthropic-api (text-only Messages seat), agy (Antigravity,
 Google seat), perplexity, opencode, openrouter, orcarouter, atlascloud,
-openai-compatible, openai-tools, openai-compatible-agent, cursor-agent, grok,
+cheaperinference, openai-compatible, openai-tools, openai-compatible-agent, cursor-agent, grok,
 qwen, ollama, copilot, vibe, and kimi.
 
 `cursor-agent` is the Cursor CLI (`agent` binary, `cursor` alias). Its auth
@@ -160,3 +234,36 @@ cost, health-selection, and independence lists from consumers. Command syntax,
 credential validation, model fallbacks, and environment isolation stay explicit
 because their provider contracts differ and deserve direct tests. The dispatch
 plan is the handoff between those adapters and the common execution lifecycle.
+
+## Anthropic Messages text seat
+
+`anthropic-api` sends one request with no tools using Python's standard library.
+Only an explicit `ANTHROPIC_API_KEY` enters its isolated child environment.
+`config/provider-env-allowlist.json` already includes that key for MCP. The
+adapter ignores CLI authentication, `CLAUDE_SDK_API_KEY`, OAuth tokens,
+`ANTHROPIC_BASE_URL`, and shell credential files. Its endpoint is fixed to the
+Anthropic Messages API, redirects are blocked, and errors report status codes
+without response bodies or credential values.
+
+Select `anthropic-api` explicitly for `planner`, `strategist`, `architect`,
+`researcher`, `synthesizer`, `reviewer`, `code-reviewer`, or `security-reviewer`.
+Supply all evidence in the prompt. Local readiness checks prove only Python
+and key presence; they do not verify authentication or model entitlement.
+The provider does not enter automatic defaults or council selection. To route
+only synthesis through it, run `/octo:model-config route-role synthesizer
+anthropic-api`. Set `ANTHROPIC_API_KEY` in the caller environment before use.
+
+Its default model is `claude-sonnet-5-5` with high effort. API `auto` thinking
+selects `between_tools` at low, medium, or high effort, and adaptive thinking
+at xhigh or max. `claude-opus-5-5` uses adaptive thinking. Explicit model and
+effort pins reach the request unchanged. Unsupported models and incompatible
+thinking modes fail before transport. Set `OCTOPUS_ANTHROPIC_API_TIMEOUT` to
+change the 120-second request timeout, up to 600 seconds, and
+`OCTOPUS_ANTHROPIC_API_MAX_TOKENS` to change the 8,192-token output allowance,
+up to the model's 128,000-token limit. Context admission reserves that output
+allowance. Set `OCTOPUS_ANTHROPIC_API_CONTEXT_BUDGET` to raise the conservative
+12,000-token default budget, up to the native 1M context limit. A larger output
+allowance can require a larger configured context budget.
+
+See the [thinking migration](MODEL-ROUTING-STRATEGY.md#sonnet-55-api-thinking-2026-10-01)
+for the current CLI and Agent SDK limitation and the API compatibility rules.

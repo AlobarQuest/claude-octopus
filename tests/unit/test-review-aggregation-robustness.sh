@@ -132,6 +132,235 @@ else
     test_pass
 fi
 
+test_case "findings normalizer repairs an illegal string escape in provider output"
+illegal_escape_file="$TEST_TMP_DIR/illegal-escape-findings.json"
+cat > "$illegal_escape_file" <<'EOF'
+{"findings":[{"file":"src/app.ts","line":528,"title":"Flag ignored","detail":"Seen under C:\users\dev","merged_from":["src/app.ts:528","\.docs/auth/README.md:218"]}]}
+EOF
+illegal_escape_normalized="$(review_normalize_findings_json < "$illegal_escape_file" 2>/dev/null || true)"
+if [[ "$(printf '%s' "$illegal_escape_normalized" | jq -r '.findings[0].merged_from[1]' 2>/dev/null || true)" == '\.docs/auth/README.md:218' ]] &&
+   [[ "$(printf '%s' "$illegal_escape_normalized" | jq -r '.findings[0].detail' 2>/dev/null || true)" == 'Seen under C:\users\dev' ]]; then
+    test_pass
+else
+    test_fail "illegal escape was not repaired: $illegal_escape_normalized"
+fi
+
+test_case "escape repair leaves legal JSON escapes untouched"
+legal_escape_document='{"findings":[{"title":"q\"uote \\. back\\\\slash \\q \/ \b \f \n \r \t \u00e9 \u00E9 \uD834\uDD1E \uDC00 \u0000"}]}'
+legal_escape_repaired="$(printf '%s' "$legal_escape_document" | review_repair_json_escapes)"
+legal_escape_normalized="$(printf '%s' "$legal_escape_document" | review_normalize_findings_json 2>/dev/null || true)"
+if [[ "$legal_escape_repaired" == "$legal_escape_document" ]] &&
+   [[ "$legal_escape_normalized" == "$(printf '%s' "$legal_escape_document" | jq -c .)" ]]; then
+    test_pass
+else
+    test_fail "legal escapes changed: repaired=$legal_escape_repaired normalized=$legal_escape_normalized"
+fi
+
+escape_prefix=''
+for pair_count in 0 1 2 3; do
+    test_case "escape retry preserves $pair_count legal backslash pairs before an illegal escape"
+    paired_document='{"findings":[{"title":"'"$escape_prefix"'\q, quoted \"value\" and \u00e9"}]}'
+    paired_expected='{"findings":[{"title":"'"$escape_prefix"'\\q, quoted \"value\" and \u00e9"}]}'
+    paired_repaired="$(printf '%s' "$paired_document" | review_repair_json_escapes)"
+    paired_normalized="$(printf '%s' "$paired_document" | review_normalize_findings_json 2>/dev/null || true)"
+    if [[ "$paired_repaired" == "$paired_expected" ]] &&
+       [[ "$paired_normalized" == "$(printf '%s' "$paired_expected" | jq -c .)" ]]; then
+        test_pass
+    else
+        test_fail "backslash pairs or valid escapes changed: $paired_repaired"
+    fi
+    escape_prefix+='\\'
+done
+
+for malformed_unicode in u u12 u123x uZZZZ; do
+    test_case "escape retry preserves malformed Unicode escape $malformed_unicode literally"
+    unicode_document='{"findings":[{"title":"\'"$malformed_unicode"'"}]}'
+    unicode_expected='{"findings":[{"title":"\\'"$malformed_unicode"'"}]}'
+    unicode_normalized="$(printf '%s' "$unicode_document" | review_normalize_findings_json 2>/dev/null || true)"
+    if [[ "$unicode_normalized" == "$(printf '%s' "$unicode_expected" | jq -c .)" ]]; then
+        test_pass
+    else
+        test_fail "malformed Unicode escape did not remain literal: $unicode_normalized"
+    fi
+done
+
+test_case "escape retry rejects malformed structure and invalid finding shapes without output"
+invalid_escape_inputs="$TEST_TMP_DIR/invalid-escape-inputs.txt"
+cat > "$invalid_escape_inputs" <<'EOF'
+{"findings":[{"title":"\q"}]} trailing
+{"findings":[{"title":"\q"}]} {"findings":[]}
+{"findings":[{"title":"\q"}],\x"extra":1}
+{"findings":[{"title":"\q"},]}
+{"findings":[{"title":"\q"}]
+{"findings":[{"title":"\q\"}]}
+{"findings":[{"title":"unfinished\
+{"findings":[{"title":"\q \uD800"}]}
+{"findings":[{"title":"\q \uD800\u0041"}]}
+{"findings":["\q"]}
+{"findings":null,"title":"\q"}
+{"findings":"\q"}
+{"title":"\q"}
+"\q"
+["\q"]
+null
+false
+12
+EOF
+invalid_escape_failures=0
+while IFS= read -r invalid_escape_input; do
+    if printf '%s' "$invalid_escape_input" | review_normalize_findings_json > "$TEST_TMP_DIR/invalid-escape.out" 2>/dev/null ||
+       [[ -s "$TEST_TMP_DIR/invalid-escape.out" ]]; then
+        invalid_escape_failures=$((invalid_escape_failures + 1))
+    fi
+done < "$invalid_escape_inputs"
+if review_normalize_findings_json < /dev/null > "$TEST_TMP_DIR/invalid-escape.out" 2>/dev/null ||
+   [[ -s "$TEST_TMP_DIR/invalid-escape.out" ]]; then
+    invalid_escape_failures=$((invalid_escape_failures + 1))
+fi
+if [[ "$invalid_escape_failures" -eq 0 ]]; then
+    test_pass
+else
+    test_fail "$invalid_escape_failures invalid documents were accepted or emitted partial output"
+fi
+
+test_case "provider JSON retry preserves raw control bytes for parser rejection"
+control_failures=0
+for control_byte in '\000' '\001' '\011' '\012' '\015' '\037'; do
+    for prefix in 'a' '\q'; do
+        printf '{"findings":[{"title":"%s%btext"}]}' "$prefix" "$control_byte" > "$TEST_TMP_DIR/raw-control.json"
+        if review_normalize_findings_json < "$TEST_TMP_DIR/raw-control.json" > "$TEST_TMP_DIR/raw-control.out" 2>/dev/null ||
+           [[ -s "$TEST_TMP_DIR/raw-control.out" ]]; then
+            control_failures=$((control_failures + 1))
+        fi
+    done
+done
+if [[ "$control_failures" -eq 0 ]]; then
+    test_pass
+else
+    test_fail "$control_failures raw control-byte documents were accepted or emitted partial output"
+fi
+
+test_case "raw malformed UTF-8 follows direct jq on initial parse and donor repair on retry"
+utf8_failures=0
+for lead_byte in '\200' '\300' '\340' '\342' '\357' '\360' '\364' '\377'; do
+    for utf8_tail in b bc; do
+        for parse_path in initial retry; do
+            utf8_prefix=a
+            [[ "$parse_path" != retry ]] || utf8_prefix='\q'
+            printf '{"findings":[{"title":"%s%b%s"}]}' "$utf8_prefix" "$lead_byte" "$utf8_tail" > "$TEST_TMP_DIR/raw-utf8.json"
+            expected_rc=0
+            if [[ "$parse_path" == initial ]]; then
+                jq -cse '.[0]' < "$TEST_TMP_DIR/raw-utf8.json" > "$TEST_TMP_DIR/utf8-expected.out" 2>/dev/null || expected_rc=$?
+            else
+                review_repair_json_escapes < "$TEST_TMP_DIR/raw-utf8.json" |
+                    jq -cse '.[0]' > "$TEST_TMP_DIR/utf8-expected.out" 2>/dev/null || expected_rc=$?
+            fi
+            actual_rc=0
+            review_normalize_findings_json < "$TEST_TMP_DIR/raw-utf8.json" > "$TEST_TMP_DIR/utf8-actual.out" 2>/dev/null || actual_rc=$?
+            if [[ "$actual_rc" != "$expected_rc" ]] ||
+               ! cmp -s "$TEST_TMP_DIR/utf8-expected.out" "$TEST_TMP_DIR/utf8-actual.out"; then
+                utf8_failures=$((utf8_failures + 1))
+            fi
+        done
+    done
+done
+if [[ "$utf8_failures" -eq 0 ]]; then
+    test_pass
+else
+    test_fail "$utf8_failures malformed UTF-8 cases changed parser status or output"
+fi
+
+test_case "provider JSON temporary input stays private and is removed after success and rejection"
+json_scratch="$TEST_TMP_DIR/json-scratch"
+mkdir -p "$json_scratch"
+json_temp_audit="$TEST_TMP_DIR/json-temp-audit"
+if (
+    trap 'printf caller > "$TEST_TMP_DIR/caller-exit.out"' EXIT
+    outer_exit_trap="$(trap -p EXIT)"
+    mktemp() {
+        local created
+        created="$(command mktemp "$@")" || return 1
+        [[ -n "$(find "$created" -perm 600)" ]] || return 1
+        printf '%s\n' "$created" >> "$json_temp_audit"
+        printf '%s\n' "$created"
+    }
+    TMPDIR="$json_scratch" review_normalize_findings_json < "$illegal_escape_file" > "$TEST_TMP_DIR/temp-success.out" || exit 1
+    [[ "$(trap -p EXIT)" == "$outer_exit_trap" ]] || exit 1
+    [[ -z "$(find "$json_scratch" -type f -print)" ]] || exit 1
+    if TMPDIR="$json_scratch" review_normalize_findings_json < "$TEST_TMP_DIR/raw-control.json" > "$TEST_TMP_DIR/temp-failure.out" 2>/dev/null; then exit 1; fi
+    [[ "$(trap -p EXIT)" == "$outer_exit_trap" ]] || exit 1
+    [[ ! -s "$TEST_TMP_DIR/temp-failure.out" && -z "$(find "$json_scratch" -type f -print)" ]]
+) && [[ "$(wc -l < "$json_temp_audit" | tr -d ' ')" == 2 ]] &&
+   [[ "$(cat "$TEST_TMP_DIR/caller-exit.out")" == caller ]]; then
+    test_pass
+else
+    test_fail "temporary input permissions, cleanup, or caller EXIT trap changed"
+fi
+
+test_case "provider JSON temporary input creation and read failures emit nothing and clean up"
+if (
+    mktemp() { return 1; }
+    if review_normalize_findings_json < "$illegal_escape_file" > "$TEST_TMP_DIR/temp-create-failure.out" 2>/dev/null; then exit 1; fi
+    [[ ! -s "$TEST_TMP_DIR/temp-create-failure.out" ]]
+) && (
+    cat() { printf '%s' '{"findings":[]}'; return 1; }
+    if TMPDIR="$json_scratch" review_normalize_findings_json < /dev/null > "$TEST_TMP_DIR/temp-read-failure.out" 2>/dev/null; then exit 1; fi
+    [[ ! -s "$TEST_TMP_DIR/temp-read-failure.out" && -z "$(find "$json_scratch" -type f -print)" ]]
+); then
+    test_pass
+else
+    test_fail "temporary input creation or read failure was accepted, emitted output, or left a file"
+fi
+
+test_case "escape retry keeps provider answers out of jq arguments"
+jq_argv_file="$TEST_TMP_DIR/jq-arguments.txt"
+: > "$jq_argv_file"
+if (
+    jq() { printf '%s\n' "$@" >> "$jq_argv_file"; command jq "$@"; }
+    printf '%s' '{"findings":[{"title":"provider-answer-sentinel\q"}]}' |
+        review_normalize_findings_json > "$TEST_TMP_DIR/argv-findings.json"
+) && [[ -s "$jq_argv_file" ]] && ! grep -q 'provider-answer-sentinel' "$jq_argv_file" &&
+   [[ "$(jq -r '.findings[0].title' "$TEST_TMP_DIR/argv-findings.json")" == 'provider-answer-sentinel\q' ]]; then
+    test_pass
+else
+    test_fail "provider answer entered jq arguments or did not survive the retry"
+fi
+
+test_case "repaired debate documents still require a reason and evidence to exclude"
+debate_candidate='[{"debate_id":"finding-0","title":"Contested"}]'
+debate_repair_failures=0
+for decision_document in \
+    '{"decisions":[{"debate_id":"finding-0","decision":"exclude","reason":"\q","evidence":""}]}' \
+    '{"decisions":[{"debate_id":"finding-0","decision":"exclude","reason":null,"evidence":"\q"}]}' \
+    '{"decisions":[{"debate_id":"finding-0","decision":"exclude","reason":12,"evidence":"\q"}]}'; do
+    if ! repaired_decision="$(printf '%s' "$decision_document" | review_slurp_provider_json 'if length == 1 and (.[0] | type == "object") then .[0] else error("invalid decision document") end')" || [[ -z "$repaired_decision" ]]; then
+        debate_repair_failures=$((debate_repair_failures + 1))
+        continue
+    fi
+    repaired_resolution="$(printf '%s\n%s\n' "$debate_candidate" "$repaired_decision" | review_resolve_debate_decisions)"
+    if [[ "$(printf '%s' "$repaired_resolution" | jq -r '.[0].decision')" != 'retain' ]]; then
+        debate_repair_failures=$((debate_repair_failures + 1))
+    fi
+done
+if [[ "$debate_repair_failures" -eq 0 ]]; then
+    test_pass
+else
+    test_fail "$debate_repair_failures decision documents failed parsing or excluded a finding without support"
+fi
+
+test_case "escape repair still rejects multiple JSON documents"
+multi_escape_file="$TEST_TMP_DIR/multi-document-illegal-escape.json"
+printf '%s\n%s\n' \
+    '{"findings":[{"title":"\.first"}]}' \
+    '{"findings":[{"title":"\.second"}]}' > "$multi_escape_file"
+if multi_escape_out="$(review_normalize_findings_json < "$multi_escape_file" 2>/dev/null)"; then
+    test_fail "repaired multi-document findings were accepted: $multi_escape_out"
+elif [[ -n "$multi_escape_out" ]]; then
+    test_fail "rejected multi-document findings still wrote output: $multi_escape_out"
+else
+    test_pass
+fi
+
 test_case "findings count returns one integer or rejects malformed input without output"
 valid_count="$(review_findings_count "$single_normalized" 2>/dev/null || true)"
 invalid_count_file="$TEST_TMP_DIR/invalid-count.out"
@@ -393,9 +622,17 @@ fi
 
 test_case "retry wait accepts only terminal status markers"
 wait_helper_body="$(sed -n '/^review_wait_for_result_status()/,/^}/p' "$REVIEW_SH")"
-terminal_helper_body="$(sed -n '/^review_result_has_terminal_status()/,/^}/p' "$REVIEW_SH")"
+terminal_markers_ok=true
+for status in SUCCESS FAILED TIMEOUT; do
+    printf '## Status: %s\n' "$status" > "$TEST_TMP_DIR/terminal-marker.md"
+    review_result_has_terminal_status "$TEST_TMP_DIR/terminal-marker.md" || terminal_markers_ok=false
+done
+for status in RUNNING SUCCESSFUL BLOCKED; do
+    printf '## Status: %s\n' "$status" > "$TEST_TMP_DIR/terminal-marker.md"
+    if review_result_has_terminal_status "$TEST_TMP_DIR/terminal-marker.md"; then terminal_markers_ok=false; fi
+done
 if grep -q 'review_result_has_terminal_status' <<< "$wait_helper_body" &&
-   grep -q "Status: (SUCCESS|FAILED|TIMEOUT)" <<< "$terminal_helper_body"; then
+   [[ "$terminal_markers_ok" == true ]]; then
     test_pass
 else
     test_fail "retry wait still accepts arbitrary status markers"

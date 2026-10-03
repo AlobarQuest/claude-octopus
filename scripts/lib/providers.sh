@@ -13,6 +13,7 @@ if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
 fi
 source "${_providers_lib_dir}/provider-allowlist.sh" 2>/dev/null || true
 source "${_providers_lib_dir}/provider-registry.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/cheaperinference.sh" || return 1
 source "${_providers_lib_dir}/bounded-probe.sh" 2>/dev/null || true
 # Provider detection can run standalone in tests and helper scripts, before the
 # main orchestrator reaches its later provider-routing import. Load the shared
@@ -35,6 +36,7 @@ if ! declare -f copilot_is_available >/dev/null 2>&1; then
 fi
 
 : "${SUPPORTS_OPUS_5_5:=false}"
+: "${SUPPORTS_SONNET_5_5:=false}"
 
 # Keep the Claude Code --bare authentication check from wedging every Octopus
 # command when the CLI is waiting on auth, Keychain, or a broken hook. The
@@ -83,7 +85,16 @@ version_compare() {
     return 1
 }
 
+_octo_host_version_output() {
+    local total_timeout term_timeout kill_grace
+    read -r total_timeout term_timeout kill_grace <<< \
+        "$(_octo_bare_probe_budget "${OCTOPUS_VERSION_PROBE_TIMEOUT:-5}")"
+    _octo_run_bare_probe_with_timeout \
+        "$total_timeout" "$term_timeout" "$kill_grace" "$1" --version </dev/null
+}
+
 detect_claude_code_version() {
+    _octo_host_version_probe_attempted=false
     # v9.16.0: Non-Claude hosts skip CC version detection entirely.
     if [[ "$OCTOPUS_HOST" == "codex" ]]; then
         CLAUDE_CODE_VERSION=""
@@ -93,10 +104,14 @@ detect_claude_code_version() {
         SUPPORTS_MCP=false  # MCP integration is host-specific
         return 0
     fi
+    local _host_version_output=""
+    CLAUDE_CODE_VERSION=""
     # v8.36.0: Support Factory AI Droid runtime alongside Claude Code
     if [[ "$OCTOPUS_HOST" == "factory" ]]; then
         if command -v droid &>/dev/null; then
-            CLAUDE_CODE_VERSION=$(droid --version 2>/dev/null | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            _octo_host_version_probe_attempted=true
+            _host_version_output="$(_octo_host_version_output droid 2>/dev/null)" || return $?
+            CLAUDE_CODE_VERSION=$(grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' <<< "$_host_version_output") || CLAUDE_CODE_VERSION=""
             log "INFO" "Factory AI Droid detected (v${CLAUDE_CODE_VERSION:-unknown})"
         fi
         # Factory's plugin format is interop with Claude Code — enable all modern features
@@ -126,7 +141,9 @@ detect_claude_code_version() {
     fi
     if command -v claude &>/dev/null; then
         # Get version from Claude CLI
-        CLAUDE_CODE_VERSION=$(claude --version 2>/dev/null | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        _octo_host_version_probe_attempted=true
+        _host_version_output="$(_octo_host_version_output claude 2>/dev/null)" || return $?
+        CLAUDE_CODE_VERSION=$(grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' <<< "$_host_version_output") || CLAUDE_CODE_VERSION=""
     fi
 
     if [[ -z "$CLAUDE_CODE_VERSION" ]]; then
@@ -564,6 +581,10 @@ detect_claude_code_version() {
         SUPPORTS_OPUS_5_5=true
     fi
 
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.284" ">="; then
+        SUPPORTS_SONNET_5_5=true
+    fi
+
     log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
     log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
     log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
@@ -611,7 +632,7 @@ detect_claude_code_version() {
     log "INFO" "Bash Session ID Env: $SUPPORTS_BASH_SESSION_ID_ENV"
     log "INFO" "Opus 4.8: $SUPPORTS_OPUS_4_8 | Dynamic Workflows: $SUPPORTS_DYNAMIC_WORKFLOWS | Lean Prompt Default: $SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT"
     log "INFO" "Agent Settings Agent Field: $SUPPORTS_AGENT_SETTINGS_AGENT_FIELD | Skills Auto Plugin Load: $SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD | EnterWorktree Switch: $SUPPORTS_ENTER_WORKTREE_SWITCH | Tool Decision Params OTel: $SUPPORTS_TOOL_DECISION_PARAMS_OTEL"
-    log "INFO" "Sonnet 5: $SUPPORTS_SONNET_5 | Opus 5: $SUPPORTS_OPUS_5 | Opus 5.5: $SUPPORTS_OPUS_5_5"
+    log "INFO" "Sonnet 5: $SUPPORTS_SONNET_5 | Sonnet 5.5: $SUPPORTS_SONNET_5_5 | Opus 5: $SUPPORTS_OPUS_5 | Opus 5.5: $SUPPORTS_OPUS_5_5"
 
     # v8.29.0: Context window control
     OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
@@ -886,6 +907,21 @@ check_provider_health() {
                 return 1
             fi
             ;;
+        cheaperinference)
+            if [[ -z "${CHEAPER_INFERENCE_API_KEY:-}" ]]; then
+                resolve_provider_env "CHEAPER_INFERENCE_API_KEY" 2>/dev/null
+            fi
+            if [[ ! "${CHEAPER_INFERENCE_API_KEY:-}" =~ [^[:space:]] ]]; then
+                echo "cheaperinference: CHEAPER_INFERENCE_API_KEY not set" >&2
+                return 1
+            fi
+            local ci_health_model="$resolved_model"
+            [[ -n "$ci_health_model" ]] || ci_health_model="$(octo_cheaperinference_model 2>/dev/null || true)"
+            if ! octo_cheaperinference_model "$ci_health_model" >/dev/null; then
+                echo "cheaperinference: set a valid CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, or providers.json cheaperinference.default before dispatch" >&2
+                return 1
+            fi
+            ;;
         ollama)
             if ! command -v ollama &>/dev/null; then
                 echo "ollama CLI not found in PATH" >&2
@@ -939,6 +975,12 @@ check_provider_health() {
                 :
             else
                 echo "qwen: not authenticated (set QWEN_API_KEY or configure Coding-Plan)" >&2
+                return 1
+            fi
+            ;;
+        anthropic-api)
+            if ! command -v python3 >/dev/null 2>&1 || ! _octo_value_has_nonwhitespace "${ANTHROPIC_API_KEY:-}"; then
+                echo "anthropic-api: Python 3 and an explicit ANTHROPIC_API_KEY are required" >&2
                 return 1
             fi
             ;;
@@ -1289,6 +1331,16 @@ detect_providers() {
         fi
     fi
 
+    # Detect Cheaper Inference (OpenAI-compatible API key + explicit model)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed cheaperinference; }; then
+        if [[ -z "${CHEAPER_INFERENCE_API_KEY:-}" ]]; then
+            resolve_provider_env "CHEAPER_INFERENCE_API_KEY" 2>/dev/null
+        fi
+        if [[ "${CHEAPER_INFERENCE_API_KEY:-}" =~ [^[:space:]] ]] && octo_cheaperinference_model >/dev/null; then
+            result="${result}cheaperinference:api-key "
+        fi
+    fi
+
     # Detect Perplexity (API key only)
     if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed perplexity; } && [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
         result="${result}perplexity:api-key "
@@ -1363,6 +1415,11 @@ detect_providers() {
         result="${result}kimi:$(kimi_auth_method) "
     fi
 
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed anthropic-api; } &&
+       command -v python3 >/dev/null 2>&1 && _octo_value_has_nonwhitespace "${ANTHROPIC_API_KEY:-}"; then
+        result="${result}anthropic-api:api-key "
+    fi
+
     # Detect Claude Agent SDK seat (CLAUDE_SDK_API_KEY unlocks Opus 5 + 1M context)
     if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed claude-sdk; } && \
        _octo_value_has_nonwhitespace "${CLAUDE_SDK_API_KEY:-}"; then
@@ -1409,6 +1466,7 @@ detect_providers() {
         log WARN "  - OpenRouter: Set OPENROUTER_API_KEY environment variable"
         log WARN "  - OrcaRouter: Set ORCAROUTER_API_KEY environment variable"
         log WARN "  - Atlas Cloud: Set ATLASCLOUD_API_KEY and ATLASCLOUD_MODEL"
+        log WARN "  - Cheaper Inference: Set CHEAPER_INFERENCE_API_KEY and CHEAPER_INFERENCE_MODEL"
         log WARN "  - Copilot: brew install copilot-cli (zero additional cost)"
         log WARN "  - Ollama: brew install ollama (free local LLM)"
         log WARN "  - Qwen: npm i -g @qwen-code/qwen-code; set QWEN_API_KEY or configure Coding-Plan"

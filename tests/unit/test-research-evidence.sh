@@ -596,10 +596,40 @@ local_bad_status=0
 research_verify_synthesis "$local_bad_draft" || local_bad_status=$?
 local_bad_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
 if [[ "$local_bad_status" -ne 0 ]] \
-   && [[ "$local_bad_kinds" == "1:number_mismatch 2:missing_citation 3:missing_citation 4:missing_citation 5:missing_citation 6:missing_citation 7:missing_citation " ]]; then
+   && [[ "$local_bad_kinds" == "1:number_mismatch 2:unresolved_local_citation 3:unresolved_local_citation 4:unresolved_local_citation 5:unresolved_local_citation 6:unresolved_local_citation 7:unresolved_local_citation " ]]; then
     test_pass
 else
     test_fail "unresolvable workspace citations were accepted: $local_bad_kinds"
+fi
+
+test_case "emphasized ordered-list markers are not checked as cited numbers"
+marker_draft="$RESEARCH_RUN_DIR/local-markers.md"
+{
+    printf '%s\n' '**4. Unexpected errors return 500** (`src/handler.ts:4`).'
+    printf '%s\n' '__2. Unexpected errors return 500__ (`src/handler.ts:4`).'
+    printf '%s\n' '- **3.** Unexpected errors return 500 (`src/handler.ts:4`).'
+    printf '%s\n' '- Unexpected errors return **503** (`src/handler.ts:4`).'
+} > "$marker_draft"
+marker_status=0
+research_verify_synthesis "$marker_draft" || marker_status=$?
+marker_kinds=$(jq -r '.checks[] | "\(.line):\(.kind):\(.detail)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$marker_status" -ne 0 && "$marker_kinds" == "4:number_mismatch:503 " ]]; then
+    test_pass
+else
+    test_fail "emphasized list markers were checked as numbers, or an emphasized value escaped: $marker_kinds"
+fi
+
+test_case "an emphasized decimal remains a complete numeric claim"
+printf 'Availability is 5%%.\n' > "$local_root/src/availability.txt"
+printf '%s\n' '**503.5%** availability (`src/availability.txt:1`).' > "$marker_draft"
+marker_status=0
+research_verify_synthesis "$marker_draft" || marker_status=$?
+if [[ "$marker_status" -ne 0 ]] \
+   && jq -e '.checks | any(.kind == "number_mismatch" and .detail == "503.5%")' \
+       "$RESEARCH_RUN_DIR/verification.json" >/dev/null; then
+    test_pass
+else
+    test_fail "an emphasized decimal escaped evidence verification"
 fi
 
 test_case "workspace citations to files over the size cap fail closed"
@@ -614,7 +644,7 @@ cap_draft="$RESEARCH_RUN_DIR/local-cap.md"
 cap_status=0
 OCTOPUS_RESEARCH_MAX_RESPONSE_BYTES=256 research_verify_synthesis "$cap_draft" || cap_status=$?
 cap_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
-if [[ "$cap_status" -ne 0 ]] && [[ "$cap_kinds" == "1:missing_citation " ]]; then
+if [[ "$cap_status" -ne 0 ]] && [[ "$cap_kinds" == "1:unresolved_local_citation " ]]; then
     test_pass
 else
     test_fail "size cap not enforced: status=$cap_status checks=[$cap_kinds]"
@@ -706,5 +736,227 @@ if [[ "$normalization_status" -ne 0 && "$normalization_kind" == "local_cache_err
 else
     test_fail "normalization failure left cache files: status=$normalization_status checks=[$normalization_kind]"
 fi
+
+test_case "digits inside identifiers and git SHAs are not extracted as numbers"
+identifier_numbers=""
+while IFS= read -r identifier_line; do
+    identifier_numbers="${identifier_numbers}$(research_extract_numbers "$identifier_line")"
+done <<'EOF'
+| **T-1 (ALR-R1, R2; DoD-1)** | | | |
+- **The groundwork is on `main` at `89a941fda`.** That covers:
+  - p50/p95 latency pages;
+- Both `a6538e52e` pins contain `d34478150`; PLAT-1181, #1728 and DoD-2 track them.
+- abc123-456-789 is an identifier.
+- ALR-R4(c) and §4.2-4.3 cover the k8s c3po_fleet monitors in us-east-1 on claude-opus-5-5 (v11.9.6).
+EOF
+claim_numbers=$(research_extract_numbers \
+    '1. Pages fire after 15m or 30s on 5xx, 5 s apart, on 10-13 routes, 20m-45m and 7s-9s windows, 42% and 3.5 per 1,024 at 2026-09-28 across 1234567 rows.' \
+    | LC_ALL=C sort | tr '\n' ' ')
+if [[ -z "$identifier_numbers" \
+      && "$claim_numbers" == "09 1,024 10 1234567 13 15 20 2026 28 3.5 30 42% 45 5 7 9 " ]]; then
+    test_pass
+else
+    test_fail "identifiers leaked [$identifier_numbers] or claims were lost [$claim_numbers]"
+fi
+
+test_case "identifier-only lines need no citation while numbers beside identifiers still do"
+identifier_draft="$RESEARCH_RUN_DIR/local-identifiers.md"
+{
+    printf '%s\n' '| **T-1 (ALR-R1, R2; DoD-1)** | | | |'
+    printf '%s\n' '- **The groundwork is on `main` at `89a941fda`.** That covers:'
+    printf '%s\n' '  - p50/p95 latency pages;'
+    printf '%s\n' '- PLAT-1181 tracks #1728 and DoD-2.'
+    printf '%s\n' '- Commit `d34478150` makes unexpected errors return 500 (`src/handler.ts:4`).'
+    printf '%s\n' '- T-5 pages after 15m on 5xx.'
+    printf '%s\n' '- DoD-3 leaves 16 routes without a probe.'
+    printf '%s\n' '- Commit `0e03ef56a` makes unexpected errors return 503 (`src/handler.ts:4`).'
+    printf '%s\n' '- Unexpected errors return 500 after a 500ms-900ms backoff (`src/handler.ts:4`).'
+} > "$identifier_draft"
+identifier_status=0
+research_verify_synthesis "$identifier_draft" || identifier_status=$?
+identifier_kinds=$(jq -r '.checks[] | "\(.line):\(.kind):\(.detail)"' "$RESEARCH_RUN_DIR/verification.json" \
+    | sed -E 's/^([0-9]+:missing_citation):.*/\1/' | tr '\n' ' ')
+if [[ "$identifier_status" -ne 0 \
+      && "$identifier_kinds" == "6:missing_citation 7:missing_citation 8:number_mismatch:503 9:number_mismatch:900 " ]]; then
+    test_pass
+else
+    test_fail "identifier digits were checked as claims, or real numbers escaped: $identifier_kinds"
+fi
+
+test_case "an unresolved workspace citation is reported by name and its line numbers are not claims"
+unresolved_draft="$RESEARCH_RUN_DIR/local-unresolved.md"
+{
+    printf '%s\n' '- Unexpected errors return 500 (`src/handler.ts:4`; `main.tf:144-155`).'
+    printf '%s\n' '- Unexpected errors return 503 (`handler.ts:4`).'
+    printf '%s\n' '- A 4.5:1 contrast ratio is served from https://example.com:8443 [inference].'
+    printf '%s\n' '- The job API at https://example.com:443/api/jobs:42 answers slowly [inference].'
+} > "$unresolved_draft"
+unresolved_status=0
+research_verify_synthesis "$unresolved_draft" || unresolved_status=$?
+unresolved_kinds=$(jq -r '.checks[] | "\(.line):\(.kind):\(.detail)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$unresolved_status" -ne 0 \
+      && "$unresolved_kinds" == "1:unresolved_local_citation:main.tf:144-155 2:unresolved_local_citation:handler.ts:4 " ]]; then
+    test_pass
+else
+    test_fail "unresolved citations were misreported: $unresolved_kinds"
+fi
+
+test_case "an annotated [inference ...] marker exempts a claim the way [opinion ...] does"
+annotated_draft="$RESEARCH_RUN_DIR/annotated-inference.md"
+{
+    printf '%s\n' '- There are 21 templates to edit [inference — counted by glob].'
+    printf '%s\n' '- Regeneration rewrites 60 deployments [inference: counted by glob].'
+    printf '%s\n' '- 17 monitor files would need the filter [inference].'
+    printf '%s\n' '- The 9 pods restart on every rollout [inferences are cheap].'
+    printf '%s\n' '- Regeneration touches 5 more files.'
+} > "$annotated_draft"
+annotated_status=0
+research_verify_synthesis "$annotated_draft" || annotated_status=$?
+annotated_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$annotated_status" -ne 0 && "$annotated_kinds" == "4:missing_citation 5:missing_citation " ]]; then
+    test_pass
+else
+    test_fail "annotated inference markers were not honoured, or unmarked numbers escaped: $annotated_kinds"
+fi
+
+# Check the actual verifier, including the marker's effect on missing citations.
+marker_fixture="$tmp_root/marker-boundaries"
+mkdir -p "$marker_fixture/project/src"
+printf '%s\n' 'There are 21 templates. "verified source fragment"' > "$marker_fixture/project/src/counts.txt"
+_marker_verification_case() {
+    local name="$1" text="$2" expected_status="$3" expected_kind="${4:-}"
+    local case_dir="$marker_fixture/$name" status=0 kinds
+    mkdir -p "$case_dir/snapshots"
+    : > "$case_dir/sources.jsonl"
+    printf '%s\n' "$text" > "$case_dir/draft.md"
+    test_case "inference marker boundary: $name"
+    ( RESEARCH_RUN_DIR="$case_dir" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+      research_verify_synthesis "$case_dir/draft.md" ) || status=$?
+    kinds=$(jq -r '.checks[].kind' "$case_dir/verification.json" | sort -u | tr '\n' ' ')
+    if [[ "$status" == "$expected_status" && "$kinds" == "$expected_kind" ]]; then test_pass
+    else test_fail "status=$status checks=$kinds expected=$expected_status/$expected_kind"; fi
+}
+_marker_verification_case comma '- There are 21 templates [inference, counted by glob].' 0
+_marker_verification_case colon '- There are 21 templates [inference: counted by glob].' 0
+_marker_verification_case unicode '- There are 21 templates [inference — comptées par glob].' 0
+_marker_verification_case unicode-possessive "José's 21 templates [inference: counted by glob]." 0
+_marker_verification_case unicode-annotation-possessive "There are 21 templates [inference: José's count by glob]." 0
+_marker_verification_case quoted-unicode-possessive "There are 901 templates containing 'José's [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case quoted-ascii-possessive "There are 901 templates containing 'Jose's [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case ascii-adjacent-quote "There are 901 templates in value'[inference: estimated]' as a literal value." 1 'missing_citation '
+_marker_verification_case numeric-adjacent-quote "There are 901 templates in 7'[inference: estimated]' as a literal value." 1 'missing_citation '
+_marker_verification_case possessive-then-marker "The value's 21 templates [inference: estimated]." 0
+_marker_verification_case adjacent-quote-then-marker "There are 21 templates in value'[inference: literal]' [inference: estimated]." 0
+_marker_verification_case unicode-adjacent-quote "There are 901 templates containing é'[inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case unicode-punctuation-quote "There are 901 templates containing —'count [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case plural-ascii "The users' 21 templates [inference: counted]." 0
+_marker_verification_case name-possessive "James' 21 templates [inference: counted]." 0
+_marker_verification_case plural-unicode "Les employés' 21 templates [inference: counted]." 0
+_marker_verification_case multiple-trailing-possessives "The users' and James' 21 templates [inference: counted]." 0
+_marker_verification_case plural-quoted-annotation "The users' 21 templates [inference: counted 'template' entries]." 0
+_marker_verification_case plural-double-quoted-annotation "The users' 21 templates [inference: counted \"template\" entries]." 0
+_marker_verification_case closed-plural-literal "There are 901 templates in users' counted [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-then-marker "There are 21 templates in users' counted [inference: literal]' [inference: estimated]." 0
+_marker_verification_case adjacent-spaced-quote "There are 901 templates in value' [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case adjacent-spaced-unclosed-quote "There are 901 templates in value' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case numeric-spaced-unclosed-quote "There are 901 templates in 7' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case plural-spaced-label-quote "There are 901 templates in users' [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case plural-spaced-label-unclosed-quote "There are 901 templates in users' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case multiple-trailing-possessives-three "The users' and James' and employés' 21 templates [inference: counted]." 0
+_marker_verification_case closed-plural-literal-word-ending "There are 901 templates in users' counted [inference: estimated] files' as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-adjacent-suffix "There are 901 templates in users' counted [inference: estimated]'suffix as a literal." 1 'missing_citation '
+_marker_verification_case ambiguous-paired-possessives "The users' 21 templates [inference: counted] and James' 21 templates." 1 'missing_citation '
+_marker_verification_case unicode-following-word "Les employés' évaluations include 21 templates [inference: counted]." 0
+_marker_verification_case unicode-following-inword-possessive "The users' José's 21 templates [inference: counted]." 0
+_marker_verification_case unicode-following-punctuation "There are 901 templates in users' —literal [inference: estimated]." 1 'missing_citation '
+_marker_verification_case unicode-following-emoji "There are 901 templates in users' 😀literal [inference: estimated]." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-slash "There are 901 templates in users' counted [inference: estimated] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-dash "There are 901 templates in users' counted [inference: estimated] files'--suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-paren "There are 901 templates in users' counted [inference: estimated] files'(suffix) as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-double-quote "There are 901 templates in users' counted [inference: estimated] files'\"suffix\" as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-spaced-close "There are 901 templates in users' counted [inference: estimated] '/suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-escaped-interior "There are 901 templates in users' counted \\' [inference: estimated] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case escaped-apostrophe-after-marker "The users' 21 templates [inference: counted] contain an escaped \\' apostrophe." 0
+_marker_verification_case closed-plural-literal-two-markers "There are 901 templates in users' counted [inference: one] and [inference: two] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case marker-before-closed-plural-literal "There are 21 templates [inference: counted] containing users' counted [inference: literal] files'/suffix." 0
+_marker_verification_case marker-after-closed-plural-literal "There are 21 templates containing users' counted [inference: literal] files'/suffix [inference: counted]." 0
+_marker_verification_case genuine-quote-in-annotation "The users' 21 templates [inference: 'quoted annotation' counted]." 0
+_marker_verification_case annotation-s-quote-borrowed-close "There are 901 templates [inference: users' counted ]' text." 1 'missing_citation '
+_marker_verification_case annotation-s-quote-real-close "There are 21 templates [inference: users' counted ]' text]." 0
+_marker_verification_case adjacent-punctuation '- There are 21 templates [inference,counted by glob].' 0
+_marker_verification_case nonletter-delimiter '- There are 21 templates [inference2 passes of glob].' 0
+_marker_verification_case prefix '[inference: counted by glob] There are 21 templates.' 0
+_marker_verification_case middle '- There are [inference: counted by glob] 21 templates.' 0
+_marker_verification_case quoted-annotation '- There are 21 templates [inference: counted "template" entries].' 0
+_marker_verification_case bare '- There are 21 templates [inference].' 0
+_marker_verification_case legacy-bare-literal '- There are 21 templates containing "[inference]" as a literal value.' 0
+_marker_verification_case unclosed '- There are 901 templates [inference' 1 'missing_citation '
+_marker_verification_case unclosed-annotation '- There are 901 templates [inference, counted by glob.' 1 'missing_citation '
+_marker_verification_case nested '- There are 901 templates [inference: unfinished [other note].' 1 'missing_citation '
+_marker_verification_case nested-label '- There are 901 templates [label: [inference: counted by glob]].' 1 'missing_citation '
+_marker_verification_case quote-is-not-a-close '- There are 901 templates [inference: the string "]" is not a close.' 1 'missing_citation '
+_marker_verification_case double-quoted '- There are 901 templates containing "[inference: counted by glob]" as a literal value.' 1 'missing_citation '
+_marker_verification_case single-quoted "- There are 901 templates containing '[inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case inline-code '- There are 901 templates containing `[inference: counted by glob]` as a literal value.' 1 'missing_citation '
+_marker_verification_case double-tick-code '- There are 901 templates containing ``[inference: counted by glob]`` as a literal value.' 1 'missing_citation '
+_marker_verification_case escaped '- There are 901 templates containing \[inference: counted by glob] as a literal value.' 1 'missing_citation '
+_marker_verification_case unclosed-literal '- There are 901 templates containing "[inference: counted by glob] as a literal value.' 1 'missing_citation '
+_marker_verification_case quoted-then-marker '- There are 21 templates containing "[inference: an example]" [inference, counted by glob].' 0
+_marker_verification_case lookalike '- There are 901 templates [inferences are cheap].' 1 'missing_citation '
+_marker_verification_case unmarked '- There are 901 templates.' 1 'missing_citation '
+_marker_verification_case next-line $'[inference: counted by glob]\n- There are 901 templates.' 1 'missing_citation '
+_marker_verification_case split-marker $'- There are 901 templates [inference:\ncounted by glob].' 1 'missing_citation '
+_marker_verification_case citation-number '- There are 901 templates (`src/counts.txt:1`) [inference, counted by glob].' 1 'number_mismatch '
+_marker_verification_case citation-quote '- The phrase "invented source fragment" appears (`src/counts.txt:1`) [inference, counted by glob].' 1 'quote_mismatch '
+_marker_verification_case unresolved-local '- There are 21 templates (`src/missing.txt:1`) [inference, counted by glob].' 1 'unresolved_local_citation '
+_marker_verification_case false-consensus '- Multiple independent sources confirm 21 templates (`src/counts.txt:1`) [inference, counted by glob].' 1 'false_consensus '
+
+# Compare the existing unknown-source diagnostic without changing its status gate.
+test_case "annotation does not suppress an unknown-source diagnostic"
+unknown_case="$marker_fixture/unknown-source"
+mkdir -p "$unknown_case/snapshots"
+: > "$unknown_case/sources.jsonl"
+printf '%s\n' '- There are 21 templates [source:S999].' > "$unknown_case/draft.md"
+unknown_plain_status=0
+( RESEARCH_RUN_DIR="$unknown_case" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+  research_verify_synthesis "$unknown_case/draft.md" ) || unknown_plain_status=$?
+unknown_plain_checks=$(jq -c '.checks | map(.kind)' "$unknown_case/verification.json")
+printf '%s\n' '- There are 21 templates [source:S999] [inference, counted by glob].' > "$unknown_case/draft.md"
+unknown_annotated_status=0
+( RESEARCH_RUN_DIR="$unknown_case" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+  research_verify_synthesis "$unknown_case/draft.md" ) || unknown_annotated_status=$?
+if [[ "$unknown_plain_status" == "$unknown_annotated_status" && "$unknown_plain_checks" == '["unknown_source"]' ]] &&
+   jq -e '.checks | map(.kind) == ["unknown_source"]' "$unknown_case/verification.json" >/dev/null; then test_pass
+else test_fail "annotation changed the unknown-source citation gate"; fi
+
+_source_verification_case() {
+    local name="$1" catalog="$2" text="$3" expected_status="$4" expected_failures="$5" expected_kinds="$6"
+    local case_dir="$marker_fixture/source-$name" status=0 kinds
+    mkdir -p "$case_dir/snapshots"
+    : > "$case_dir/sources.jsonl"
+    if [[ "$catalog" != empty ]]; then
+        printf '%s\n' '{"source_id":"S001","independence_key":"content:fixture"}' > "$case_dir/sources.jsonl"
+        [[ "$catalog" == unfetched ]] || printf '%s\n' 'There are 21 templates.' > "$case_dir/snapshots/S001.body"
+    fi
+    printf '%s\n' "$text" > "$case_dir/draft.md"
+    test_case "source identity verification: $name"
+    ( RESEARCH_RUN_DIR="$case_dir" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+      research_verify_synthesis "$case_dir/draft.md" ) || status=$?
+    kinds=$(jq -r '.checks[].kind' "$case_dir/verification.json" | sort | tr '\n' ' ')
+    if [[ "$status" == "$expected_status" && "$kinds" == "$expected_kinds" ]] &&
+       jq -e --argjson failures "$expected_failures" --argjson status "$expected_status" \
+           '.claims_checked == 1 and .failures == $failures and .status == (if $status == 0 then "passed" else "failed" end)' \
+           "$case_dir/verification.json" >/dev/null; then test_pass
+    else test_fail "status=$status checks=$kinds report=$(cat "$case_dir/verification.json")"; fi
+}
+_source_verification_case empty-number empty '- There are 21 templates [source:S999].' 1 1 'unknown_source '
+_source_verification_case empty-annotated empty '- There are 21 templates [source:S999] [inference, counted by glob].' 1 1 'unknown_source '
+_source_verification_case empty-prose empty '- A supported statement [source:S999].' 1 1 'unknown_source '
+_source_verification_case populated-unknown populated '- There are 21 templates [source:S999].' 1 1 'unknown_source '
+_source_verification_case populated-mixed populated '- There are 21 templates [source:S001] [source:S999].' 1 1 'unknown_source '
+_source_verification_case two-unknown populated '- There are 21 templates [source:S998] [source:S999].' 1 2 'unknown_source unknown_source '
+_source_verification_case known-match populated '- There are 21 templates [source:S001] [inference, counted by glob].' 0 0 ''
+_source_verification_case known-mismatch populated '- There are 901 templates [source:S001] [inference, counted by glob].' 1 1 'number_mismatch '
+_source_verification_case known-unfetched unfetched '- There are 21 templates [source:S001].' 0 0 'number_unverified '
 
 test_summary
