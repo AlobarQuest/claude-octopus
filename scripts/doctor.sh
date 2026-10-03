@@ -10,4 +10,9 @@ PLUGIN_DIR="${PLUGIN_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 source "${SCRIPT_DIR}/lib/doctor.sh"
 
-do_doctor "$@"
+# Early dispatch skips the orchestrator's capability setup. Reuse its shared
+# detector (there is no persisted host-version result), with live probes off.
+if ! declare -f log >/dev/null 2>&1; then
+    log() { :; }
+fi
+DOCTOR_DETECT_HOST_VERSION=true do_doctor "$@"

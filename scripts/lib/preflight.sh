@@ -5,7 +5,7 @@
 _preflight_registry_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_preflight_registry_dir}/provider-registry.sh" 2>/dev/null || true
 
-for _preflight_dependency in provider-allowlist auth provider-routing qwen openai-compatible grok kimi copilot quota-watcher events; do
+for _preflight_dependency in provider-allowlist auth provider-routing cheaperinference qwen openai-compatible grok kimi copilot quota-watcher events; do
     # shellcheck source=/dev/null
     source "${_preflight_registry_dir}/${_preflight_dependency}.sh" 2>/dev/null || true
 done
@@ -125,6 +125,7 @@ _octo_provider_static_readiness() {
             commandcode) [[ -n "${COMMAND_CODE_API_KEY:-}" ]] || resolve_provider_env COMMAND_CODE_API_KEY 2>/dev/null || true ;;
             orcarouter) [[ -n "${ORCAROUTER_API_KEY:-}" ]] || resolve_provider_env ORCAROUTER_API_KEY 2>/dev/null || true ;;
             atlascloud) [[ -n "${ATLASCLOUD_API_KEY:-}" ]] || resolve_provider_env ATLASCLOUD_API_KEY 2>/dev/null || true ;;
+            cheaperinference) [[ -n "${CHEAPER_INFERENCE_API_KEY:-}" ]] || resolve_provider_env CHEAPER_INFERENCE_API_KEY 2>/dev/null || true ;;
             grok) [[ -n "${XAI_API_KEY:-}" ]] || resolve_provider_env XAI_API_KEY 2>/dev/null || true ;;
             vibe) [[ -n "${MISTRAL_API_KEY:-}" ]] || resolve_provider_env MISTRAL_API_KEY 2>/dev/null || true ;;
         esac
@@ -216,6 +217,16 @@ _octo_provider_static_readiness() {
                     status="available"; reason_code="ready"; remediation=""
                 else
                     status="degraded"; reason_code="model-missing"; remediation="Set ATLASCLOUD_MODEL or OCTOPUS_ATLASCLOUD_MODEL."
+                fi
+            fi
+            ;;
+        cheaperinference)
+            remediation="Set CHEAPER_INFERENCE_API_KEY and CHEAPER_INFERENCE_MODEL."
+            if _octo_value_has_nonwhitespace "${CHEAPER_INFERENCE_API_KEY:-}"; then
+                if octo_cheaperinference_model >/dev/null; then
+                    status="available"; reason_code="ready"; remediation=""
+                else
+                    status="degraded"; reason_code="model-missing"; remediation="Set CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, or providers.json cheaperinference.default."
                 fi
             fi
             ;;

@@ -2084,6 +2084,263 @@ council_response_is_substantive() {
     return 0
 }
 
+council_response_content_match_count() {
+    # Count DISTINCTIVE verbatim code fragments the response quotes that actually
+    # appear (whitespace-normalized) in a source file under the evidence root. This
+    # is the content-match grounding signal (sail-cruisey #2931/#2947): a seat that
+    # quotes real source it read is grounded even when it cites in prose/table form
+    # without a `path:line` (the #2947 claude seats did exactly this), while a seat
+    # that only names bare filenames, package names, or echoes prompt numbers quotes
+    # nothing that resolves and scores zero (the agy "Assumptions" seats). A fragment
+    # counts only if it is long and carries multiple code operators, so ubiquitous
+    # tokens (`toBeUndefined()`), bare paths, and prose never match. Bounded scan:
+    # source extensions only; response, fragment, file, aggregate-byte, entry and
+    # depth caps; no symlink traversal, response aliases or private/tool-state reads.
+    local response_path="$1" evidence_root="$2" run_dir="${3:-${COUNCIL_RUN_DIR:-}}"
+    [[ -f "$response_path" && -d "$evidence_root" ]] || { printf '0\n'; return 0; }
+    command -v python3 >/dev/null 2>&1 || { printf '0\n'; return 0; }
+    python3 - "$response_path" "$evidence_root" "$run_dir" <<'PY'
+import os
+import re
+import stat
+import sys
+from itertools import chain
+from pathlib import Path
+
+# Fixed budgets cannot be widened by provider output or environment overrides.
+MAX_RESPONSE_BYTES = 1_048_576
+MAX_FRAGMENT_BYTES = 4096
+MAX_FRAGMENTS = 256
+MAX_FILES = 4000
+MAX_FILE_BYTES = 1_500_000
+MAX_TOTAL_BYTES = 16_777_216
+MAX_ENTRIES = 20_000
+MAX_DEPTH = 64
+if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+    print(0)
+    sys.exit(2)
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+def signature(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+def read_bounded(descriptor, metadata, limit):
+    # Read only the size checked on this descriptor, then reject changed files.
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+        raise ValueError("not a bounded regular file")
+    chunks = []
+    remaining = metadata.st_size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, 65_536))
+        if not chunk:
+            raise ValueError("file shrank during read")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if signature(metadata) != signature(os.fstat(descriptor)):
+        raise ValueError("file changed during read")
+    return b"".join(chunks)
+
+try:
+    response_fd = os.open(sys.argv[1], FILE_FLAGS)
+    try:
+        response_stat = os.fstat(response_fd)
+        resp = read_bounded(response_fd, response_stat, MAX_RESPONSE_BYTES).decode("utf-8", "replace")
+    finally:
+        os.close(response_fd)
+    # The caller may explicitly select a symlinked root. Resolve that authority
+    # once, then use the same no-follow directory walk as confined-read.py.
+    root = Path(sys.argv[2]).resolve(strict=True)
+except (OSError, ValueError, RuntimeError):
+    print(0)
+    sys.exit(0)
+
+CODE_OP = re.compile(r"[=(){}\[\].:;<>?|&+*/-]")
+def distinctive(fragment):
+    if len(fragment.encode("utf-8")) > MAX_FRAGMENT_BYTES:
+        return None
+    fragment = re.sub(r"\s+", " ", fragment).strip()
+    if len(fragment) < 18 or len(CODE_OP.findall(fragment)) < 2:
+        return None
+    if " " not in fragment and "/" in fragment:
+        return None
+    return fragment
+
+def code_fragments():
+    for match in re.finditer(r"`([^`\n]+)`|```[^\n]*\n(.*?)```", resp, re.S):
+        if match.group(1) is not None:
+            yield match.group(1)
+        else:
+            yield from match.group(2).splitlines()
+
+cands = set()
+# Preserve established code spans inside prose wrappers. Plain quotations use
+# a second bounded pass, with the same set and no additional candidate budget.
+plain_fragments = (match.group(1) for match in re.finditer(r'"([^"\n]{1,400})"', resp))
+for fragment in chain(code_fragments(), plain_fragments):
+    candidate = distinctive(fragment)
+    if candidate:
+        cands.add(candidate)
+    if len(cands) >= MAX_FRAGMENTS:
+        break
+if not cands:
+    print(0)
+    sys.exit(0)
+
+SRC_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".sass", ".less",
+           ".html", ".htm", ".vue", ".svelte", ".py", ".go", ".rb", ".rs", ".java", ".kt",
+           ".swift", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".sh", ".bash",
+           ".zsh", ".ps1", ".sql", ".yaml", ".yml", ".toml", ".json", ".jsonc", ".xml",
+           ".proto", ".graphql", ".gql", ".ini", ".cfg", ".conf", ".gradle", ".md",
+           ".mdx", ".php", ".pl", ".lua", ".ex", ".exs", ".scala", ".dart", ".m", ".mm",
+           ".jl", ".tf", ".r"}
+SKIP = {"node_modules", "dist", "build", "coverage", "vendor", "__pycache__", "private"}
+PRIVATE_NAME = re.compile(r"(^|[._-])(credentials?|secrets?|private|service[-_]account|id[-_]rsa)([._-]|$)", re.I)
+remaining = set(cands)
+scanned = entries = total_bytes = 0
+response_identity = (response_stat.st_dev, response_stat.st_ino)
+run_identity = None
+
+def open_directory(path, excluded=None):
+    # Pin physical components without following replacement aliases.
+    descriptor = os.open(os.sep, DIRECTORY_FLAGS)
+    try:
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == excluded:
+            raise ValueError("active run is not source evidence")
+        for part in path.parts[1:]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            metadata = os.fstat(descriptor)
+            if (metadata.st_dev, metadata.st_ino) == excluded:
+                raise ValueError("active run is not source evidence")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+if sys.argv[3]:
+    try:
+        run_fd = open_directory(Path(sys.argv[3]).resolve(strict=True))
+        try:
+            run_stat = os.fstat(run_fd)
+            run_identity = (run_stat.st_dev, run_stat.st_ino)
+        finally:
+            os.close(run_fd)
+    except (OSError, ValueError, RuntimeError):
+        # An explicit run that cannot be identified cannot be safely excluded.
+        print(0)
+        sys.exit(0)
+    except (TypeError, NotImplementedError):
+        print(0)
+        sys.exit(2)
+
+def exhausted():
+    return not remaining or scanned >= MAX_FILES or entries >= MAX_ENTRIES or total_bytes >= MAX_TOTAL_BYTES
+
+def scan(directory, depth):
+    global scanned, entries, total_bytes
+    with os.scandir(directory) as listing:
+        while not exhausted():
+            try:
+                entry = next(listing)
+            except StopIteration:
+                return
+            entries += 1
+            name = entry.name
+            # Prune before opening or enumerating a subtree. Hidden files and
+            # tool state are not implicit source evidence, even with a source suffix.
+            if name.startswith(".") or name.lower() in SKIP or PRIVATE_NAME.search(name):
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode):
+                    if (metadata.st_dev, metadata.st_ino) == run_identity:
+                        continue
+                    if depth >= MAX_DEPTH:
+                        continue
+                    child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory)
+                    try:
+                        opened = os.fstat(child)
+                        if (opened.st_dev, opened.st_ino) != run_identity and \
+                           (opened.st_dev, opened.st_ino) == (metadata.st_dev, metadata.st_ino):
+                            scan(child, depth + 1)
+                    finally:
+                        os.close(child)
+                elif stat.S_ISREG(metadata.st_mode) and Path(name).suffix.lower() in SRC_EXT:
+                    scanned += 1
+                    descriptor = os.open(name, FILE_FLAGS, dir_fd=directory)
+                    try:
+                        opened = os.fstat(descriptor)
+                        identity = (opened.st_dev, opened.st_ino)
+                        if identity == response_identity or signature(opened) != signature(metadata):
+                            continue
+                        limit = min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total_bytes)
+                        if opened.st_size > limit:
+                            continue
+                        # Charge the full allowance before reading so rejected
+                        # changing files cannot bypass the aggregate byte budget.
+                        total_bytes += opened.st_size
+                        data = read_bounded(descriptor, opened, limit)
+                    finally:
+                        os.close(descriptor)
+                    hay = re.sub(r"\s+", " ", data.decode("utf-8", "replace"))
+                    remaining.difference_update(candidate for candidate in tuple(remaining) if candidate in hay)
+            except (OSError, ValueError):
+                continue
+
+# Opening every physical-root component with NOFOLLOW rejects replacement aliases
+# after resolution. All child lookups stay relative to an already-open directory.
+directory = None
+try:
+    directory = open_directory(root, run_identity)
+    scan(directory, 0)
+except (TypeError, NotImplementedError):
+    # Descriptor-relative traversal is unavailable on some Python platforms.
+    print(0)
+    sys.exit(2)
+except (OSError, ValueError):
+    pass
+finally:
+    if directory is not None:
+        os.close(directory)
+print(len(cands) - len(remaining))
+PY
+}
+
+council_response_makes_code_claims() {
+    # True when the response asserts code-level facts (vs a purely process/plan
+    # discussion with nothing to ground). Includes token-bounded security and
+    # control-flow terms. Used only to decide whether the positive
+    # grounding gate applies — a review with no code claims is never gated.
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -ciE '(^|[^[:alnum:]])(test(s|ed|ing|cases?)?|coverage|render(s|ed|ing)?|outputs?|type[- ]?check(s|ed|ing)?|tsc|lint(s|ed|ing|er)?|implement(s|ed|ing|ations?)?|propagat(e|es|ed|ing|ion)?|pass(es|ing|ed)?|regress(es|ed|ions?)?|contracts?|behaviou?r(s|al)?|diff(s|ed)?|assert(s|ed|ing|ions?)?|snapshots?|dom|css|class(es)?|components?|functions?|api(s)?|endpoints?|schema(s|ta)?|payloads?|fields?|joins?|quer(y|ies)|gate[ds]?|fallback|routing?|resolver|interface|serializ|compiler?|reject(s|ed|ing|ion)?|validat(e|es|ed|ing|ion|or|ors)|saniti[sz](e|es|ed|ing|ation)|escap(e|es|ed|ing)|permissions?|middleware|tokens?|sessions?|cookies?|headers?|guards?|unauthenticated|unauthori[sz]ed|authenticat(e|es|ed|ing|ion)|authori[sz](e|es|ed|ing|ation)|control[- ]flow|conditionals?|branches|branch|short[- ]circuit(s|ed|ing)?)([^[:alnum:]]|$)' "$f" >/dev/null
+}
+
+council_response_has_grounding() {
+    # True when the response carries at least one grounding signal: a validated
+    # `path:line` citation that resolves under the evidence root, OR a content-match
+    # (a distinctive quoted fragment that appears verbatim in a source file). This is
+    # the single gate the quorum tally and the §4 raw-body rule share.
+    local f="$1" evidence_root="${2:-}"
+    [[ -f "$f" ]] || return 1
+    [[ -n "$evidence_root" && -d "$evidence_root" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local validated
+    validated="$(council_response_evidence_paths_json "$f" "$evidence_root")" || validated='[]'
+    [[ "$(jq 'length' <<< "$validated" 2>/dev/null || printf 0)" -gt 0 ]] && return 0
+    local matches scan_rc=0
+    matches="$(council_response_content_match_count "$f" "$evidence_root")" || scan_rc=$?
+    # Preserve the prose fallback when safe descriptor reads are unsupported.
+    # This is availability, not validated evidence or a comprehension claim.
+    (( scan_rc == 2 )) && return 0
+    [[ "$matches" =~ ^[0-9]+$ ]] && (( matches > 0 )) && return 0
+    return 1
+}
+
 council_response_is_blind() {
     # A "blind" seat returned a verdict WITHOUT reading the artifact — it was
     # dispatched without file-read tools (e.g. permissionMode "plan") and says so.
@@ -2115,6 +2372,36 @@ council_response_is_blind() {
 
     local nlen
     nlen="$(tr -d '[:space:]' < "$f" | wc -c | tr -d '[:space:]')"
+
+    # Positive-grounding gate (sail-cruisey #2931/#2947). A full-length, confident
+    # review that makes code-level claims but grounds NONE of them — no validated
+    # path:line AND no verbatim quote that resolves in a source file under the
+    # evidence root — reviewed nothing it can prove it read. Several agy seats
+    # approved exactly this way (bare filenames + echoed prompt numbers, framed as
+    # "Assumptions") and were wrongly counted toward quorum. Scoped so it cannot
+    # over-blind: skipped in fixture mode; only when a live evidence root + validator
+    # are present (a no-source-tree plan review keeps the prose exemption); only for
+    # responses long enough to be a full review (OCTOPUS_COUNCIL_GROUNDING_MIN_CHARS,
+    # default 700 — a terse "looks good, APPROVE" is not the targeted shape); and
+    # only when the body actually makes code claims. A seat that quotes real source
+    # in prose/table form WITHOUT a path:line (the #2947 claude seats) passes via the
+    # content-match arm of council_response_has_grounding. Runs before the length
+    # short-circuit below because the targeted bodies are long.
+    local grounding_min="${OCTOPUS_COUNCIL_GROUNDING_MIN_CHARS:-700}"
+    # Capture a bounded decimal value after leading-zero padding.
+    if [[ "$grounding_min" =~ ^0*([0-9]{1,9})$ ]]; then
+        grounding_min=$((10#${BASH_REMATCH[1]}))
+    else
+        grounding_min=700
+    fi
+    if [[ -z "${COUNCIL_FIXTURE:-}" && -n "$evidence_root" && -d "$evidence_root" ]] \
+        && (( nlen >= grounding_min )) \
+        && command -v python3 >/dev/null 2>&1 \
+        && council_response_makes_code_claims "$f" \
+        && ! council_response_has_grounding "$f" "$evidence_root"; then
+        return 0
+    fi
+
     (( nlen < 1600 )) || return 1
     if grep -ciE "(cannot|could not|couldn'?t|unable to|can'?t)[[:space:]]+(access|read|open|locate|find|view|retrieve)[^.]{0,60}(file|plan|prd|diff|patch|artifact|document|spec)|no[[:space:]]+(file|read)[[:space:]]+access" "$f" >/dev/null; then
         return 0
@@ -2180,13 +2467,9 @@ council_response_defers_without_reading() {
     #     stated in the summary" (sail-cruisey #2570)
     #   - prior-phase deference: "given the rigorous validations in previous
     #     rounds ... I recommend proceeding" (#2463)
-    # This is length-independent (the evasions are long) but gated on ZERO
-    # `path.ext:line` citations: a genuinely grounded review carries a concrete
-    # file:line, so it is never flagged for merely mentioning a summary or a prior
-    # round. The colon citation form is deliberately the ONLY grounding signal
-    # here — prose "lines 251-263" or a bare filename can be copied from the
-    # plan/summary without reading it (#2463 does exactly that). When an
-    # evidence root is available, the cited path must also resolve beneath it.
+    # This is length-independent, but a validated source citation or a verified
+    # quoted fragment exempts source-backed analysis that also cites a summary.
+    # Bare filenames and prose line ranges are not evidence of reading source.
     local f="$1" evidence_root="${2:-}"
     [[ -f "$f" ]] || return 1
 
@@ -2228,7 +2511,7 @@ council_response_defers_without_reading() {
     # inflections so common plural/tense forms still match.
     local code_token='(^|[^[:alnum:]])(test(s|ed|ing|cases?)?|coverage|render(s|ed|ing)?|outputs?|type[- ]?check(s|ed|ing)?|tsc|lint(s|ed|ing|er)?|implement(s|ed|ing|ations?)?|propagat(e|es|ed|ing|ion)?|byte-identical|pass(es|ing|ed)?|regress(es|ed|ions?)?|contracts?|behaviou?r(s|al)?|diff(s|ed)?|assert(s|ed|ing|ions?)?|snapshots?|dom|css|class(es)?|components?|functions?|api(s)?|endpoints?|schema(s|ta)?|payloads?|fields?)([^[:alnum:]]|$)'
 
-    printf '%s\n' "$normalized_without_urls" | awk -v ct="$code_token" '
+    if printf '%s\n' "$normalized_without_urls" | awk -v ct="$code_token" '
         {
             # NOTE: a bare "based on the provided summary" is deliberately NOT a
             # trigger — a legitimate plan/design review (no code to cite) uses that
@@ -2253,7 +2536,17 @@ council_response_defers_without_reading() {
             if (summary_reliance || prior_deference) found=1
         }
         END { exit(found ? 0 : 1) }
-    ' >/dev/null 2>&1
+    ' >/dev/null 2>&1; then
+        # Only a verified match exempts summary attribution. Scan exhaustion or
+        # unavailable confinement does not establish source-backed analysis.
+        local content_matches
+        content_matches="$(council_response_content_match_count "$f" "$evidence_root")" || content_matches=0
+        if [[ "$content_matches" =~ ^[0-9]+$ ]] && (( content_matches > 0 )); then
+            return 1
+        fi
+        return 0
+    fi
+    return 1
 }
 
 _council_parse_final_verdict() {

@@ -801,4 +801,162 @@ else
     test_fail "unresolved citations were misreported: $unresolved_kinds"
 fi
 
+test_case "an annotated [inference ...] marker exempts a claim the way [opinion ...] does"
+annotated_draft="$RESEARCH_RUN_DIR/annotated-inference.md"
+{
+    printf '%s\n' '- There are 21 templates to edit [inference — counted by glob].'
+    printf '%s\n' '- Regeneration rewrites 60 deployments [inference: counted by glob].'
+    printf '%s\n' '- 17 monitor files would need the filter [inference].'
+    printf '%s\n' '- The 9 pods restart on every rollout [inferences are cheap].'
+    printf '%s\n' '- Regeneration touches 5 more files.'
+} > "$annotated_draft"
+annotated_status=0
+research_verify_synthesis "$annotated_draft" || annotated_status=$?
+annotated_kinds=$(jq -r '.checks[] | "\(.line):\(.kind)"' "$RESEARCH_RUN_DIR/verification.json" | tr '\n' ' ')
+if [[ "$annotated_status" -ne 0 && "$annotated_kinds" == "4:missing_citation 5:missing_citation " ]]; then
+    test_pass
+else
+    test_fail "annotated inference markers were not honoured, or unmarked numbers escaped: $annotated_kinds"
+fi
+
+# Check the actual verifier, including the marker's effect on missing citations.
+marker_fixture="$tmp_root/marker-boundaries"
+mkdir -p "$marker_fixture/project/src"
+printf '%s\n' 'There are 21 templates. "verified source fragment"' > "$marker_fixture/project/src/counts.txt"
+_marker_verification_case() {
+    local name="$1" text="$2" expected_status="$3" expected_kind="${4:-}"
+    local case_dir="$marker_fixture/$name" status=0 kinds
+    mkdir -p "$case_dir/snapshots"
+    : > "$case_dir/sources.jsonl"
+    printf '%s\n' "$text" > "$case_dir/draft.md"
+    test_case "inference marker boundary: $name"
+    ( RESEARCH_RUN_DIR="$case_dir" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+      research_verify_synthesis "$case_dir/draft.md" ) || status=$?
+    kinds=$(jq -r '.checks[].kind' "$case_dir/verification.json" | sort -u | tr '\n' ' ')
+    if [[ "$status" == "$expected_status" && "$kinds" == "$expected_kind" ]]; then test_pass
+    else test_fail "status=$status checks=$kinds expected=$expected_status/$expected_kind"; fi
+}
+_marker_verification_case comma '- There are 21 templates [inference, counted by glob].' 0
+_marker_verification_case colon '- There are 21 templates [inference: counted by glob].' 0
+_marker_verification_case unicode '- There are 21 templates [inference — comptées par glob].' 0
+_marker_verification_case unicode-possessive "José's 21 templates [inference: counted by glob]." 0
+_marker_verification_case unicode-annotation-possessive "There are 21 templates [inference: José's count by glob]." 0
+_marker_verification_case quoted-unicode-possessive "There are 901 templates containing 'José's [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case quoted-ascii-possessive "There are 901 templates containing 'Jose's [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case ascii-adjacent-quote "There are 901 templates in value'[inference: estimated]' as a literal value." 1 'missing_citation '
+_marker_verification_case numeric-adjacent-quote "There are 901 templates in 7'[inference: estimated]' as a literal value." 1 'missing_citation '
+_marker_verification_case possessive-then-marker "The value's 21 templates [inference: estimated]." 0
+_marker_verification_case adjacent-quote-then-marker "There are 21 templates in value'[inference: literal]' [inference: estimated]." 0
+_marker_verification_case unicode-adjacent-quote "There are 901 templates containing é'[inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case unicode-punctuation-quote "There are 901 templates containing —'count [inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case plural-ascii "The users' 21 templates [inference: counted]." 0
+_marker_verification_case name-possessive "James' 21 templates [inference: counted]." 0
+_marker_verification_case plural-unicode "Les employés' 21 templates [inference: counted]." 0
+_marker_verification_case multiple-trailing-possessives "The users' and James' 21 templates [inference: counted]." 0
+_marker_verification_case plural-quoted-annotation "The users' 21 templates [inference: counted 'template' entries]." 0
+_marker_verification_case plural-double-quoted-annotation "The users' 21 templates [inference: counted \"template\" entries]." 0
+_marker_verification_case closed-plural-literal "There are 901 templates in users' counted [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-then-marker "There are 21 templates in users' counted [inference: literal]' [inference: estimated]." 0
+_marker_verification_case adjacent-spaced-quote "There are 901 templates in value' [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case adjacent-spaced-unclosed-quote "There are 901 templates in value' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case numeric-spaced-unclosed-quote "There are 901 templates in 7' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case plural-spaced-label-quote "There are 901 templates in users' [inference: estimated]' as a literal." 1 'missing_citation '
+_marker_verification_case plural-spaced-label-unclosed-quote "There are 901 templates in users' [inference: estimated] as a literal." 1 'missing_citation '
+_marker_verification_case multiple-trailing-possessives-three "The users' and James' and employés' 21 templates [inference: counted]." 0
+_marker_verification_case closed-plural-literal-word-ending "There are 901 templates in users' counted [inference: estimated] files' as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-adjacent-suffix "There are 901 templates in users' counted [inference: estimated]'suffix as a literal." 1 'missing_citation '
+_marker_verification_case ambiguous-paired-possessives "The users' 21 templates [inference: counted] and James' 21 templates." 1 'missing_citation '
+_marker_verification_case unicode-following-word "Les employés' évaluations include 21 templates [inference: counted]." 0
+_marker_verification_case unicode-following-inword-possessive "The users' José's 21 templates [inference: counted]." 0
+_marker_verification_case unicode-following-punctuation "There are 901 templates in users' —literal [inference: estimated]." 1 'missing_citation '
+_marker_verification_case unicode-following-emoji "There are 901 templates in users' 😀literal [inference: estimated]." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-slash "There are 901 templates in users' counted [inference: estimated] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-dash "There are 901 templates in users' counted [inference: estimated] files'--suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-paren "There are 901 templates in users' counted [inference: estimated] files'(suffix) as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-double-quote "There are 901 templates in users' counted [inference: estimated] files'\"suffix\" as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-spaced-close "There are 901 templates in users' counted [inference: estimated] '/suffix as a literal." 1 'missing_citation '
+_marker_verification_case closed-plural-literal-escaped-interior "There are 901 templates in users' counted \\' [inference: estimated] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case escaped-apostrophe-after-marker "The users' 21 templates [inference: counted] contain an escaped \\' apostrophe." 0
+_marker_verification_case closed-plural-literal-two-markers "There are 901 templates in users' counted [inference: one] and [inference: two] files'/suffix as a literal." 1 'missing_citation '
+_marker_verification_case marker-before-closed-plural-literal "There are 21 templates [inference: counted] containing users' counted [inference: literal] files'/suffix." 0
+_marker_verification_case marker-after-closed-plural-literal "There are 21 templates containing users' counted [inference: literal] files'/suffix [inference: counted]." 0
+_marker_verification_case genuine-quote-in-annotation "The users' 21 templates [inference: 'quoted annotation' counted]." 0
+_marker_verification_case annotation-s-quote-borrowed-close "There are 901 templates [inference: users' counted ]' text." 1 'missing_citation '
+_marker_verification_case annotation-s-quote-real-close "There are 21 templates [inference: users' counted ]' text]." 0
+_marker_verification_case adjacent-punctuation '- There are 21 templates [inference,counted by glob].' 0
+_marker_verification_case nonletter-delimiter '- There are 21 templates [inference2 passes of glob].' 0
+_marker_verification_case prefix '[inference: counted by glob] There are 21 templates.' 0
+_marker_verification_case middle '- There are [inference: counted by glob] 21 templates.' 0
+_marker_verification_case quoted-annotation '- There are 21 templates [inference: counted "template" entries].' 0
+_marker_verification_case bare '- There are 21 templates [inference].' 0
+_marker_verification_case legacy-bare-literal '- There are 21 templates containing "[inference]" as a literal value.' 0
+_marker_verification_case unclosed '- There are 901 templates [inference' 1 'missing_citation '
+_marker_verification_case unclosed-annotation '- There are 901 templates [inference, counted by glob.' 1 'missing_citation '
+_marker_verification_case nested '- There are 901 templates [inference: unfinished [other note].' 1 'missing_citation '
+_marker_verification_case nested-label '- There are 901 templates [label: [inference: counted by glob]].' 1 'missing_citation '
+_marker_verification_case quote-is-not-a-close '- There are 901 templates [inference: the string "]" is not a close.' 1 'missing_citation '
+_marker_verification_case double-quoted '- There are 901 templates containing "[inference: counted by glob]" as a literal value.' 1 'missing_citation '
+_marker_verification_case single-quoted "- There are 901 templates containing '[inference: counted by glob]' as a literal value." 1 'missing_citation '
+_marker_verification_case inline-code '- There are 901 templates containing `[inference: counted by glob]` as a literal value.' 1 'missing_citation '
+_marker_verification_case double-tick-code '- There are 901 templates containing ``[inference: counted by glob]`` as a literal value.' 1 'missing_citation '
+_marker_verification_case escaped '- There are 901 templates containing \[inference: counted by glob] as a literal value.' 1 'missing_citation '
+_marker_verification_case unclosed-literal '- There are 901 templates containing "[inference: counted by glob] as a literal value.' 1 'missing_citation '
+_marker_verification_case quoted-then-marker '- There are 21 templates containing "[inference: an example]" [inference, counted by glob].' 0
+_marker_verification_case lookalike '- There are 901 templates [inferences are cheap].' 1 'missing_citation '
+_marker_verification_case unmarked '- There are 901 templates.' 1 'missing_citation '
+_marker_verification_case next-line $'[inference: counted by glob]\n- There are 901 templates.' 1 'missing_citation '
+_marker_verification_case split-marker $'- There are 901 templates [inference:\ncounted by glob].' 1 'missing_citation '
+_marker_verification_case citation-number '- There are 901 templates (`src/counts.txt:1`) [inference, counted by glob].' 1 'number_mismatch '
+_marker_verification_case citation-quote '- The phrase "invented source fragment" appears (`src/counts.txt:1`) [inference, counted by glob].' 1 'quote_mismatch '
+_marker_verification_case unresolved-local '- There are 21 templates (`src/missing.txt:1`) [inference, counted by glob].' 1 'unresolved_local_citation '
+_marker_verification_case false-consensus '- Multiple independent sources confirm 21 templates (`src/counts.txt:1`) [inference, counted by glob].' 1 'false_consensus '
+
+# Compare the existing unknown-source diagnostic without changing its status gate.
+test_case "annotation does not suppress an unknown-source diagnostic"
+unknown_case="$marker_fixture/unknown-source"
+mkdir -p "$unknown_case/snapshots"
+: > "$unknown_case/sources.jsonl"
+printf '%s\n' '- There are 21 templates [source:S999].' > "$unknown_case/draft.md"
+unknown_plain_status=0
+( RESEARCH_RUN_DIR="$unknown_case" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+  research_verify_synthesis "$unknown_case/draft.md" ) || unknown_plain_status=$?
+unknown_plain_checks=$(jq -c '.checks | map(.kind)' "$unknown_case/verification.json")
+printf '%s\n' '- There are 21 templates [source:S999] [inference, counted by glob].' > "$unknown_case/draft.md"
+unknown_annotated_status=0
+( RESEARCH_RUN_DIR="$unknown_case" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+  research_verify_synthesis "$unknown_case/draft.md" ) || unknown_annotated_status=$?
+if [[ "$unknown_plain_status" == "$unknown_annotated_status" && "$unknown_plain_checks" == '["unknown_source"]' ]] &&
+   jq -e '.checks | map(.kind) == ["unknown_source"]' "$unknown_case/verification.json" >/dev/null; then test_pass
+else test_fail "annotation changed the unknown-source citation gate"; fi
+
+_source_verification_case() {
+    local name="$1" catalog="$2" text="$3" expected_status="$4" expected_failures="$5" expected_kinds="$6"
+    local case_dir="$marker_fixture/source-$name" status=0 kinds
+    mkdir -p "$case_dir/snapshots"
+    : > "$case_dir/sources.jsonl"
+    if [[ "$catalog" != empty ]]; then
+        printf '%s\n' '{"source_id":"S001","independence_key":"content:fixture"}' > "$case_dir/sources.jsonl"
+        [[ "$catalog" == unfetched ]] || printf '%s\n' 'There are 21 templates.' > "$case_dir/snapshots/S001.body"
+    fi
+    printf '%s\n' "$text" > "$case_dir/draft.md"
+    test_case "source identity verification: $name"
+    ( RESEARCH_RUN_DIR="$case_dir" RESEARCH_PROJECT_ROOT="$marker_fixture/project"
+      research_verify_synthesis "$case_dir/draft.md" ) || status=$?
+    kinds=$(jq -r '.checks[].kind' "$case_dir/verification.json" | sort | tr '\n' ' ')
+    if [[ "$status" == "$expected_status" && "$kinds" == "$expected_kinds" ]] &&
+       jq -e --argjson failures "$expected_failures" --argjson status "$expected_status" \
+           '.claims_checked == 1 and .failures == $failures and .status == (if $status == 0 then "passed" else "failed" end)' \
+           "$case_dir/verification.json" >/dev/null; then test_pass
+    else test_fail "status=$status checks=$kinds report=$(cat "$case_dir/verification.json")"; fi
+}
+_source_verification_case empty-number empty '- There are 21 templates [source:S999].' 1 1 'unknown_source '
+_source_verification_case empty-annotated empty '- There are 21 templates [source:S999] [inference, counted by glob].' 1 1 'unknown_source '
+_source_verification_case empty-prose empty '- A supported statement [source:S999].' 1 1 'unknown_source '
+_source_verification_case populated-unknown populated '- There are 21 templates [source:S999].' 1 1 'unknown_source '
+_source_verification_case populated-mixed populated '- There are 21 templates [source:S001] [source:S999].' 1 1 'unknown_source '
+_source_verification_case two-unknown populated '- There are 21 templates [source:S998] [source:S999].' 1 2 'unknown_source unknown_source '
+_source_verification_case known-match populated '- There are 21 templates [source:S001] [inference, counted by glob].' 0 0 ''
+_source_verification_case known-mismatch populated '- There are 901 templates [source:S001] [inference, counted by glob].' 1 1 'number_mismatch '
+_source_verification_case known-unfetched unfetched '- There are 21 templates [source:S001].' 0 0 'number_unverified '
+
 test_summary

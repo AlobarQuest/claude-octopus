@@ -4,6 +4,13 @@
 
 ### Added
 
+- Cheaper Inference is available through `cheaperinference-agent`, an
+  OpenAI-compatible tool-loop provider. Set `CHEAPER_INFERENCE_API_KEY` and
+  an explicit model pin or configured default to enable it.
+- `scripts/helpers/council-wait.sh` waits for a backgrounded Council result and
+  prints its summary path. It supports explicit runs, current keyed rounds and
+  creation-time filters, with a configurable deadline and short poll interval.
+
 - Spec and planning workflows keep distilled research, intent, decisions and
   stable task identities in portable feature directories. Existing root specs
   and Spec Kit layouts remain usable. `OCTOPUS_FEATURE_LAYOUT=legacy` retains
@@ -16,6 +23,53 @@
 
 ### Fixed
 
+- Council recognizes distinctive quoted source text alongside validated
+  path-and-line citations. Full-length reviews with code claims need verified
+  grounding to count toward quorum. The quoted-source scan excludes private
+  files, outside symlinks and response self-matches, and bounds traversal and
+  reads. Short, fixture and no-source-tree reviews keep their prose exemption.
+- Review findings and debate documents preserve literal illegal backslash
+  escapes during a JSON retry. Existing shape checks still reject malformed
+  documents. Private temporary inputs preserve raw bytes for jq and are removed
+  after parsing, including on failure.
+- A deep probe no longer seats Perplexity web research when the provider
+  allowlist excludes it. The seat was added on `PERPLEXITY_API_KEY` alone, so
+  the allowlist refused its spawn and `probe_discover` cancelled every other
+  seat it had already launched, ending the run with no research output.
+- Grok seats no longer fail with "Argument list too long" on large review or
+  council prompts. Prompts above 100000 bytes now use a temporary prompt file
+  instead of exceeding the operating system's per-argument limit. The file is
+  removed after the direct child exits, including bounded cancellation;
+  `OCTOPUS_GROK_ARGV_MAX` can lower the threshold. Direct stdin file capture
+  preserves prompt bytes without a large Bash string.
+- Headless Grok seats could return only a promise to run a command because tool
+  approval was unavailable. The shim now grants approval within Grok's sandbox,
+  giving advisory seats a read-tool ceiling and eligible implementation seats
+  workspace tools. Sandbox overrides preserve the advisory ceiling. Unsupported
+  read-tool controls reject execution; explicit sandbox and approval settings
+  remain available.
+- `octo doctor` reported false Claude version and missing smoke-cache warnings
+  because early dispatch skipped startup state. It now reuses shared version,
+  smoke, and model helpers without live probes or config/cache writes, recognizes
+  the first-party Anthropic API, and accepts disabled `--bare` when no environment
+  API key is set. Missing or syntactically invalid smoke helpers produce failed
+  diagnostic JSON instead of aborting output. Local host-version discovery is
+  bounded for version-dependent checks and reports command failure. Missing
+  optional host CLIs warn. Version diagnostics follow the selected category;
+  help and unrelated categories skip discovery.
+- Research verification rejects a citation whose source ID is absent from
+  the source catalog. The diagnostic now increments the failure count, so an
+  unknown citation cannot leave the report passed or publish the synthesis.
+- Annotated inference markers require a closing bracket outside quoted text
+  or inline code. Literal examples and nested labels do not exempt uncited
+  counts. Bare `[inference]` markers keep their existing behavior.
+- Research verification honours an annotated inference marker. A synthesis
+  line tagged `[inference — counted by glob]` or `[inference: ...]` failed
+  with `missing_citation`, because the verifier exempted only the exact text
+  `[inference]` while it already accepted any `[opinion ...]`. The repair pass
+  could not clear it, so a repo-grounded probe whose counts came from globbing
+  failed verification. `[inferences ...]` and other words that merely start
+  with "inference" still count as uncited.
 - The Perplexity provider now uses the Agent API directly. Sonar chat
   completions support ended on 2026-09-27; Perplexity is gradually
   reformulating synchronous and streaming Sonar calls as Agent API requests.
@@ -36,6 +90,11 @@
 - Review and brainstorm advisors read provider answers from completed result files
   and permit Team mode dispatch. Codex guards allow supported noninteractive
   subcommands and help requests while continuing to reject interactive prompts.
+- The advisor launcher's wait deadline (`OCTOPUS_ADVISOR_WAIT_SECONDS`) also bounds a
+  synchronous spawn (agy), whose provider call runs inside `orchestrate.sh spawn` itself;
+  it used to wait for that spawn without limit. Late jobs keep their lifecycle
+  hook files after timeout so they can finish and run the caller's hook. The
+  launcher reports the retained directory for cleanup after those jobs exit.
 - Planner reconsideration accepts a valid empty scope-decision list, checks that
   the revised decomposition can be materialized, and retains the explanation for
   the next adequacy review.

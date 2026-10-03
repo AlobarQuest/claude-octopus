@@ -15,7 +15,7 @@ octo_consultative_provider_is_launchable() {
     case "$provider" in
         codex|commandcode|grok|agy|gemini|antigravity|copilot|qwen|\
         cursor-agent|opencode|ollama|vibe|openrouter|openai-compatible|\
-        atlascloud-agent|perplexity)
+        atlascloud-agent|cheaperinference-agent|perplexity)
             return 0
             ;;
         *)
@@ -171,6 +171,33 @@ _octo_advisor_collect() {
     return 1
 }
 
+# Wait for one advisor's `orchestrate.sh spawn` job, but not past the deadline.
+# An asynchronous spawn returns within seconds; a synchronous one (agy) runs the
+# whole provider call inside spawn. At the deadline the launcher stops waiting
+# and leaves it running, as it does for an asynchronous worker. A job that has
+# finished is no longer listed by `jobs -r`, and `wait` then returns its status.
+_octo_advisor_spawn_running() {
+    local pid="$1" job
+    while IFS= read -r job; do
+        [[ "$job" == "$pid" ]] && return 0
+    done < <(jobs -pr 2>/dev/null)
+    return 1
+}
+
+_octo_advisor_wait_spawn() {
+    local pid="$1" deadline="$2"
+    while _octo_advisor_spawn_running "$pid"; do
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            # Look once more: a spawn that finished at the deadline still counts.
+            _octo_advisor_spawn_running "$pid" || break
+            printf 'ERROR: advisor spawn %s did not finish before the wait deadline; it is still running\n' "$pid" >&2
+            return 1
+        fi
+        sleep 1
+    done
+    wait "$pid"
+}
+
 # Launch every selected external advisor, wait for each worker to finish, and
 # print the number whose answer was collected. Return nonzero when fewer than
 # required_successes produce usable output. This blocks for the whole provider
@@ -181,7 +208,7 @@ octo_launch_advisors() {
     local filename_prefix="$4" prompt_template="$5" required_successes="$6"
     local advisor safe_advisor prompt response_file pid index successful_count=0
     local advisor_list=() advisor_pids=() advisor_files=() advisor_events=() advisor_spawn_out=()
-    local aux_dir hook event_log spawn_out deadline
+    local aux_dir hook event_log spawn_out deadline worker_pid keep_aux=0
     local wait_seconds="${OCTOPUS_ADVISOR_WAIT_SECONDS:-3600}"
     local prev_hook="${OCTOPUS_AGENT_LIFECYCLE_HOOK:-}"
 
@@ -254,14 +281,30 @@ octo_launch_advisors() {
     while [[ $index -lt ${#advisor_pids[@]} ]]; do
         pid="${advisor_pids[$index]}"
         response_file="${advisor_files[$index]}"
-        if wait "$pid" &&
+        if _octo_advisor_wait_spawn "$pid" "$deadline" &&
            _octo_advisor_collect "${advisor_events[$index]}" "${advisor_spawn_out[$index]}" \
                "$response_file" "$deadline"; then
             successful_count=$((successful_count + 1))
         fi
         index=$((index + 1))
     done
-    rm -rf "$aux_dir"
+    # Late jobs keep running under the same policy as asynchronous workers.
+    # Keep their hook and event paths valid until they finish. Retained paths
+    # are reported so the caller can remove them after the late jobs exit.
+    for index in "${!advisor_pids[@]}"; do
+        if kill -0 "${advisor_pids[$index]}" 2>/dev/null; then
+            keep_aux=1
+        fi
+        worker_pid="$(awk -F'\t' '$1 == "spawned" { p = $2 } END { print p }' "${advisor_events[$index]}" 2>/dev/null)"
+        if [[ -n "$worker_pid" ]] && kill -0 "$worker_pid" 2>/dev/null; then
+            keep_aux=1
+        fi
+    done
+    if [[ "$keep_aux" -eq 1 ]]; then
+        printf 'WARNING: advisor work files retained for late jobs: %s\n' "$aux_dir" >&2
+    else
+        rm -rf "$aux_dir"
+    fi
 
     if [[ "$successful_count" -lt "$required_successes" ]]; then
         printf 'ERROR: only %s of %s required external advisors succeeded\n' \

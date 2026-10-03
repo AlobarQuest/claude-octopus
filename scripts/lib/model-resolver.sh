@@ -21,6 +21,7 @@ _model_resolver_load_error() {
     fi
 }
 source "${_model_resolver_lib_dir}/provider-registry.sh" || { _model_resolver_load_error "failed to load provider-registry.sh"; return 1 2>/dev/null || exit 1; }
+source "${_model_resolver_lib_dir}/cheaperinference.sh" || return 1
 source "${_model_resolver_lib_dir}/kimi-model-name.sh" || { _model_resolver_load_error "failed to load kimi-model-name.sh"; return 1 2>/dev/null || exit 1; }
 if ! declare -f octo_model_cache_file >/dev/null 2>&1; then
     source "${_model_resolver_lib_dir}/model-cache-path.sh" 2>/dev/null || true
@@ -159,6 +160,9 @@ validate_agy_model_name() {
         *\\*) return 1 ;;
     esac
 
+    # Static diagnostics display configured labels without contacting agy.
+    [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" == "true" ]] && return 0
+
     case "$model" in
         default|agy/default)
             return 0
@@ -242,6 +246,9 @@ validate_model_name_for_provider() {
             ;;
         anthropic-api)
             case "$model" in claude-sonnet-5-5|claude-opus-5-5) return 0 ;; *) return 1 ;; esac
+            ;;
+        cheaperinference)
+            octo_cheaperinference_model "$model" >/dev/null
             ;;
         kimi)
             validate_kimi_model_name "$model"
@@ -387,6 +394,10 @@ resolve_octopus_model() {
         antigravity|agy-research|gemini|gemini-*) canonical_provider="agy" ;;
     esac
     provider="$canonical_provider"
+    if [[ "$canonical_provider" == cheaperinference ]]; then
+        octo_cheaperinference_model
+        return $?
+    fi
     local env_var
     if declare -f octo_provider_model_env >/dev/null 2>&1; then
         env_var="$(octo_provider_model_env "$canonical_provider")" || return 1
@@ -443,7 +454,9 @@ resolve_octopus_model() {
     # Persistent File Cache (optional, for parallel execution speed).
     # Path comes from lib/model-cache-path.sh so writers and invalidators agree.
     local persistent_cache=""
-    persistent_cache="$(octo_model_cache_file 2>/dev/null)" || persistent_cache=""
+    if [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" != "true" ]]; then
+        persistent_cache="$(octo_model_cache_file 2>/dev/null)" || persistent_cache=""
+    fi
     # v8.49.0: Invalidate cache if config file changed since cache was written
     if [[ -n "$persistent_cache" && -f "$persistent_cache" && -f "$config_file" && "$config_file" -nt "$persistent_cache" ]]; then
         rm -f "$persistent_cache"
@@ -821,6 +834,7 @@ resolve_octopus_model() {
             kimi*)           resolved_model="default" ;; # Kimi's own default from ~/.kimi-code/config.toml; the shim omits --model for "default"
             vibe*)           resolved_model="default" ;; # Mistral Vibe's own default from ~/.vibe/config.toml; never wired to --model (#797)
             atlascloud*)     resolved_model="" ;; # No safe universal default; atlascloud-agent dispatch already requires an explicit model pin (#797)
+            cheaperinference*) resolved_model="" ;; # Like atlascloud: cheaperinference-agent dispatch requires an explicit model pin
             *)              resolved_model="$(codex_default_model)" ;; # Safest universal fallback
         esac
         [[ -n "$_trace" ]] && echo "[model-trace] Tier 7 (hardcoded fallback): $resolved_model ← SELECTED" >&2
@@ -965,6 +979,17 @@ is_agent_available_v2() {
             fi
             [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && \
                 { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }
+            ;;
+        cheaperinference|cheaperinference-*)
+            if [[ -z "${CHEAPER_INFERENCE_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                resolve_provider_env "CHEAPER_INFERENCE_API_KEY" 2>/dev/null || true
+            fi
+            [[ "${CHEAPER_INFERENCE_API_KEY:-}" =~ [^[:space:]] ]] || return 1
+            if [[ "$agent" == *:* ]]; then
+                octo_cheaperinference_model "${agent#*:}" >/dev/null
+            else
+                octo_cheaperinference_model >/dev/null
+            fi
             ;;
         kimi|kimi-*)
             declare -f kimi_is_available >/dev/null 2>&1 && kimi_is_available

@@ -2,6 +2,7 @@
 _profile_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_profile_lib_dir}/agent-spec.sh" 2>/dev/null || true
 source "${_profile_lib_dir}/provider-registry.sh" || { echo "dispatch: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "${_profile_lib_dir}/cheaperinference.sh" || return 1
 if ! declare -f get_model_capability >/dev/null 2>&1; then
     source "${_profile_lib_dir}/models.sh" 2>/dev/null || true
 fi
@@ -594,6 +595,44 @@ get_agent_command() {
             octo_tool_loop_requires_no_tools "$phase" "$role" && atlas_tool_fragment="--tool-policy none"
             echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider atlascloud --model ${model} ${atlas_tool_fragment} --cwd ${PWD}"
             ;;
+        cheaperinference-agent)  # Cheaper Inference via the OpenAI-compatible tool-loop agent
+            if [[ "$agent_type" == *:* ]]; then
+                model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
+            else
+                if ! model="$(octo_cheaperinference_model)"; then
+                    log ERROR "CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, OPENAI_COMPAT_MODEL, or providers.json cheaperinference.default is required"
+                    return 1
+                fi
+            fi
+            if ! octo_cheaperinference_model "$model" >/dev/null; then
+                log ERROR "Invalid Cheaper Inference model name: ${model}"
+                return 1
+            fi
+            local ci_fallback
+            ci_fallback=$(validate_model_allowed "cheaperinference" "$model")
+            if [[ $? -ne 0 ]]; then
+                if [[ -n "$ci_fallback" ]]; then
+                    if ! octo_cheaperinference_model "$ci_fallback" >/dev/null; then
+                        log ERROR "Invalid Cheaper Inference fallback model name"
+                        return 1
+                    fi
+                    if ! octo_model_automatic_target_allowed "$ci_fallback" cheaperinference; then
+                        log ERROR "Cheaper Inference fallback requires an explicit model pin"
+                        return 1
+                    fi
+                    model="$ci_fallback"
+                else
+                    return 1
+                fi
+            fi
+            if ! _octopus_is_safe_openai_compatible_dispatch_value "${PWD}"; then
+                log ERROR "Invalid Cheaper Inference cwd: ${PWD}"
+                return 1
+            fi
+            local ci_tool_fragment=""
+            octo_tool_loop_requires_no_tools "$phase" "$role" && ci_tool_fragment="--tool-policy none"
+            echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider cheaperinference --model ${model} ${ci_tool_fragment} --cwd ${PWD}"
+            ;;
         perplexity|perplexity-fast)  # v8.24.0: Perplexity Sonar — web-grounded research (Issue #22)
             if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
                 return 1
@@ -644,11 +683,34 @@ get_agent_command() {
             # Without this, providers.json model picks were silently ignored (the shim
             # only saw a shell-exported OCTOPUS_GROK_MODEL).
             if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then return 1; fi
-            if [[ -n "$model" && "$model" != "default" ]]; then
-                echo "env OCTOPUS_GROK_MODEL=${model} ${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
-            else
-                echo "${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
+            # Codex defaults to workspace-write and consultative calls even set
+            # danger-full-access. Keep Grok advisory seats read-only; only grant
+            # workspace to implementation roles/phases where Codex allows writes.
+            local grok_default_sandbox="read-only" grok_sandbox grok_approve=1 grok_tool_policy="read-only"
+            if [[ "$phase" == tangle || "$phase" == develop ]] && [[ "$codex_sandbox" != read-only ]]; then
+                case "$role" in
+                    implementer|developer|tdd-orchestrator|debugger|python-pro|typescript-pro|frontend-developer)
+                        if [[ "$(get_agent_readonly "$role")" != true ]]; then
+                            grok_default_sandbox="workspace"
+                            grok_tool_policy="full"
+                        fi
+                        ;;
+                esac
             fi
+            grok_sandbox="${OCTOPUS_GROK_SANDBOX:-$grok_default_sandbox}"
+            [[ "${OCTOPUS_GROK_APPROVE:-1}" == 0 ]] && grok_approve=0
+            case "$grok_sandbox" in
+                off|workspace|read-only|strict) ;;
+                *)
+                    if [[ "$grok_approve" == 1 ]]; then
+                        log WARN "Invalid OCTOPUS_GROK_SANDBOX '$grok_sandbox'; using $grok_default_sandbox"
+                    fi
+                    grok_sandbox="$grok_default_sandbox"
+                    ;;
+            esac
+            [[ "$grok_sandbox" != read-only ]] || grok_tool_policy="read-only"
+            # Explicit prefixes survive provider-routing's env -i boundary.
+            echo "env OCTOPUS_GROK_MODEL=${model:-default} OCTOPUS_GROK_APPROVE=${grok_approve} OCTOPUS_GROK_SANDBOX=${grok_sandbox} OCTOPUS_GROK_TOOL_POLICY=${grok_tool_policy} ${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
             ;;
         kimi|kimi-research)  # Moonshot Kimi Code CLI — headless single-turn via helpers/kimi-exec.sh
             # Kimi's non-interactive print mode auto-approves tool calls and has
@@ -1469,7 +1531,7 @@ get_agent_model() {
     # Auto-migrate stale model names on first call when the routing helper is
     # part of the current harness. dispatch.sh is also sourced independently by
     # hooks and compatibility tests, where the migration helper is optional.
-    if declare -F migrate_provider_config >/dev/null 2>&1; then
+    if [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" != "true" ]] && declare -F migrate_provider_config >/dev/null 2>&1; then
         migrate_provider_config
     fi
 
@@ -1504,6 +1566,11 @@ get_agent_model() {
         elif [[ -n "$fallback" ]]; then
             if ! validate_model_name "$fallback"; then
                 log ERROR "Invalid fallback model name for $provider"
+                return 1
+            fi
+            if [[ "$provider" == cheaperinference ]] &&
+               ! octo_cheaperinference_model "$fallback" >/dev/null; then
+                log ERROR "Invalid Cheaper Inference fallback model name"
                 return 1
             fi
             if ! octo_model_automatic_target_allowed "$fallback" "$provider"; then

@@ -729,6 +729,85 @@ research_normalize_snapshot() {
         | tr '\n\r\t' '   ' | sed 's/[[:space:]][[:space:]]*/ /g'
 }
 
+research_has_annotated_inference_marker() {
+    # An annotation must close outside literal source text and cannot borrow a
+    # nested label's closing bracket. Bare markers retain their existing rules.
+    local marker marker_pattern='^\[inference([^[:alpha:]]|$)'
+    local lexical_line="$1" word_apostrophe_pattern="^(.*[[:alnum:]])'([[:alnum:]].*)$"
+    # Classify in-word apostrophes in the shell's text locale before
+    # byte scanning. Possessives remain text even inside a quoted literal.
+    while [[ "$lexical_line" =~ $word_apostrophe_pattern ]]; do
+        lexical_line="${BASH_REMATCH[1]}\\'${BASH_REMATCH[2]}"
+    done
+    # Flag ordinary following tokens in the text locale. The byte scanner
+    # cannot classify a UTF-8 first byte as alnum; punctuation gets no flag.
+    lexical_line=$(printf '%s\n' "$lexical_line" | sed -E "s/([sS])'([[:space:]]+)([[:alnum:]])/\\1'\\2A\\3/g")
+    while IFS= read -r marker; do
+        [[ "$marker" =~ $marker_pattern ]] && return 0
+    done < <(printf '%s\n' "$lexical_line" | LC_ALL=C awk '
+        {
+            depth=0; candidate=0; quote=""; ticks=0; possessive=0; found=0
+            size=split($0, chars, "")
+            for (i=1; i<=size; i++) {
+                c=chars[i]
+                if (c == "\\") { i++; continue }
+                if (ticks == 0 && quote != "" && c == quote) { quote=""; continue }
+                if (ticks == 0 && quote == "" && (c == "\"" || c == "\047")) {
+                    # A terminal s possessive introduces an ordinary word or
+                    # number, not a label or punctuation after whitespace.
+                    # Closed pairs around labels take priority over ambiguous
+                    # possessive readings, including a later s apostrophe.
+                    if (c == "\047" && depth == 0 && chars[i-1] ~ /[sS]/ &&
+                        chars[i+1] ~ /[[:space:]]/) {
+                        next_word=i+1
+                        while (chars[next_word] ~ /[[:space:]]/) next_word++
+                        if (chars[next_word] ~ /[[:alnum:]]/) {
+                            if (possessive && found && starts[found] > possessive) {
+                                while (found && starts[found] > possessive) found--
+                                possessive=0
+                            } else if (!possessive) possessive=i
+                            continue
+                        }
+                    }
+                    # Any unescaped apostrophe outside a label or ordinary
+                    # quote closes a provisional span. Defer emitting labels
+                    # so that closing it revokes all enclosed exemptions.
+                    if (c == "\047" && possessive && depth == 0) {
+                        while (found && starts[found] > possessive) found--
+                        possessive=0
+                        continue
+                    }
+                    quote=c; continue
+                }
+                if (quote == "" && c == "`") {
+                    run=1
+                    while (chars[i+run] == "`") run++
+                    if (ticks == 0) ticks=run
+                    else if (ticks == run) ticks=0
+                    i+=run-1; continue
+                }
+                if (quote != "" || ticks != 0) continue
+                if (c == "[") {
+                    if (depth == 0) {
+                        delimiter=chars[i+10]
+                        candidate=(substr($0,i,10) == "[inference" && delimiter != "" && delimiter != "]")
+                        start=i
+                    } else candidate=0
+                    depth++
+                } else if (c == "]" && depth > 0) {
+                    if (depth == 1 && candidate) {
+                        starts[++found]=start
+                        markers[found]=substr($0,start,i-start+1)
+                    }
+                    depth--
+                }
+            }
+            for (j=1; j<=found; j++) print markers[j]
+        }
+    ')
+    return 1
+}
+
 research_verify_synthesis() {
     local draft="$1" run_dir="${RESEARCH_RUN_DIR:?}"
     local sources="$run_dir/sources.jsonl" claims="$run_dir/claims.jsonl"
@@ -783,7 +862,8 @@ research_verify_synthesis() {
         numbers=$(research_extract_numbers "$plain_line")
         quotes=$(printf '%s\n' "$plain_line" | awk '{ s=$0; while (match(s, /"[^"][^"][^"][^"]+"/)) { print substr(s,RSTART+1,RLENGTH-2); s=substr(s,RSTART+RLENGTH) } }')
         if [[ -z "$ids" && -z "$local_refs" && "$unresolved_refs" == "false" && ( -n "$numbers" || -n "$quotes" ) \
-              && "$line" != *"[inference]"* && "$line" != *"[opinion"* ]]; then
+              && "$line" != *"[inference]"* && "$line" != *"[opinion"* ]] \
+           && ! research_has_annotated_inference_marker "$line"; then
             failures=$((failures + 1))
             printf 'missing_citation|%s|%s\n' "$line_no" "$line" >> "$findings"
             continue
@@ -794,6 +874,7 @@ research_verify_synthesis() {
             [[ -n "$id" ]] || continue
             if ! grep -c '"source_id":"'"$id"'"' "$sources" >/dev/null 2>&1; then
                 invalid=true
+                failures=$((failures + 1))
                 printf 'unknown_source|%s|%s\n' "$line_no" "$id" >> "$findings"
                 continue
             fi
