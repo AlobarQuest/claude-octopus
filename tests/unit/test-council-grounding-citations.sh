@@ -715,6 +715,9 @@ class Listing:
             replace()
         self.listing = original_scandir(path)
         self.iterator = iter(self.listing)
+        if mode in ("named-first", "named-second"):
+            self.iterator = iter(sorted(self.iterator, key=lambda entry: entry.name == target.name,
+                                        reverse=mode == "named-first"))
         self.repeated = None
         self.count = 0
     def __enter__(self):
@@ -748,12 +751,35 @@ sys.argv = sys.argv[1:]
 exec(compile(sys.stdin.read(), "council-content-match", "exec"))
 PYTEST
 
+# Keep the helper's isolated-mode flag on the real interpreter, before the
+# instrument script, so its positional response/root arguments stay unchanged.
+_grounding_python() {
+    if [[ "${1:-}" == -I ]]; then
+        shift
+        command python3 -I "$INSTRUMENT" "$@"
+    else
+        command python3 "$INSTRUMENT" "$@"
+    fi
+}
+
 _instrumented_count() (
     export GROUNDING_TEST_MODE="$1" GROUNDING_TEST_TARGET="$2" GROUNDING_TEST_OUTSIDE="${3:-$OUTSIDE}"
     export GROUNDING_TEST_METRICS="$TEST_TMP_DIR/grounding-metrics.json"
-    python3() { command python3 "$INSTRUMENT" "$@"; }
+    python3() { _grounding_python "$@"; }
     council_response_content_match_count "$BOUNDARY_RESPONSE" "$BOUNDARY_ROOT"
 )
+
+for order in named-first named-second; do
+    test_case "proximity grounding survives duplicate source content: $order"
+    cp "$OUTSIDE" "$BOUNDARY_ROOT/duplicate.ts"
+    cp "$OUTSIDE" "$BOUNDARY_ROOT/named.ts"
+    printf 'The function in named.ts contains `%s`.\n' "$FRAGMENT" > "$BOUNDARY_RESPONSE"
+    actual="$(OCTOPUS_COUNCIL_CONTENT_MATCH_PROXIMITY_CHARS=1500 _instrumented_count "$order" "$BOUNDARY_ROOT/named.ts")"
+    if [[ "$actual" == 1 ]]; then test_pass
+    else test_fail "valid named source quote scored $actual with $order traversal"; fi
+    rm "$BOUNDARY_ROOT/duplicate.ts" "$BOUNDARY_ROOT/named.ts"
+done
+printf 'The function contains `%s`.\n' "$FRAGMENT" > "$BOUNDARY_RESPONSE"
 
 test_case "a leaf replaced after metadata validation cannot supply evidence"
 printf 'const initialValue = unrelatedValue;\n' > "$BOUNDARY_ROOT/race.ts"
@@ -795,7 +821,7 @@ rm "$BOUNDARY_ROOT/ignored.txt"
 test_case "entry-budget exhaustion cannot admit an unverified approval"
 printf 'unrelated\n' > "$BOUNDARY_ROOT/ignored.txt"
 if ( export GROUNDING_TEST_MODE=entries GROUNDING_TEST_TARGET="$BOUNDARY_ROOT/ignored.txt" GROUNDING_TEST_OUTSIDE="$OUTSIDE" GROUNDING_TEST_METRICS="$TEST_TMP_DIR/grounding-metrics.json"
-     python3() { command python3 "$INSTRUMENT" "$@"; }
+     python3() { _grounding_python "$@"; }
      ! council_response_has_grounding "$ACTIVE_VOTE" "$BOUNDARY_ROOT" &&
      council_response_is_blind "$ACTIVE_VOTE" "$BOUNDARY_ROOT" &&
      ! council_response_is_substantive "$ACTIVE_VOTE" "$BOUNDARY_ROOT" ) &&
@@ -944,7 +970,7 @@ else test_fail "validated path/line semantics changed: $citations"; fi
 
 test_case "unsupported descriptor APIs retain the prose fallback without scanning"
 if ( export GROUNDING_TEST_MODE=unsupported GROUNDING_TEST_TARGET="$ROOT/functions-v2/sailing-compare.ts" GROUNDING_TEST_OUTSIDE="$OUTSIDE" GROUNDING_TEST_METRICS="$TEST_TMP_DIR/grounding-metrics.json"
-     python3() { command python3 "$INSTRUMENT" "$@"; }
+     python3() { _grounding_python "$@"; }
      OCTOPUS_COUNCIL_GROUNDING_MIN_CHARS=1 council_response_is_substantive "$A4" "$ROOT" ) &&
    jq -e '.source_bytes == 0 and .source_opens == 0 and .entries == 0' "$TEST_TMP_DIR/grounding-metrics.json" >/dev/null; then test_pass
 else test_fail "unsupported confinement read sources or created a false blind vote"; fi

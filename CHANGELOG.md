@@ -13,8 +13,33 @@
   `OCTOPUS_COUNCIL_REQUIRE_CONTEXT=1` to fail closed instead of warning. Bare
   prose, a context file already supplied, or a filename mentioned without a path
   pass silently.
+- Optional named-file proximity for council content-match grounding, off by
+  default. `OCTOPUS_COUNCIL_CONTENT_MATCH_PROXIMITY_CHARS=N` requires a quoted
+  fragment to sit within `N` characters of a *resolving* named-file mention (a
+  basename the scan actually reached) before it counts as grounding. Unset or
+  `0` preserves the shipped quote-sufficiency behavior exactly. Lets a consumer
+  that wants the runner's `blind_seats` accounting to match a stricter grounding
+  gate opt in without changing the default (sail-cruisey #2970).
 
 ### Fixed
+
+- Council proximity grounding continues its bounded scan when a duplicate quote
+  matches before the named source file, preserving valid evidence in either
+  traversal order.
+
+- Council's optional source-quote proximity check no longer stalls on large
+  responses with repeated quotes and filenames within the response size limit.
+- Council source-evidence checks isolate Python imports so project files cannot
+  execute as standard-library modules during grounding.
+
+- Council content-match grounding no longer counts a seat that merely echoes
+  agent-instruction boilerplate. `CLAUDE.md`, `AGENTS.md`, their `-OCTO.md`
+  twins, `GEMINI.md`, and similar files are injected into every seat's prompt
+  context, so a seat could quote their verbatim prose and score a false
+  content-match without reading any source. The scan already skipped hidden
+  paths (`.claude/…`); it now also skips these boilerplate basenames wherever
+  they appear, including the visible repo-root twins (sail-cruisey #2970). Real
+  source quotes still ground.
 
 - Deliver no longer runs the "Quality gate FAILED in tangle phase"
   retrospective after a tangle phase that passed or recorded no quality gate.

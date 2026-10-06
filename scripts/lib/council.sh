@@ -2099,11 +2099,20 @@ council_response_content_match_count() {
     local response_path="$1" evidence_root="$2" run_dir="${3:-${COUNCIL_RUN_DIR:-}}"
     [[ -f "$response_path" && -d "$evidence_root" ]] || { printf '0\n'; return 0; }
     command -v python3 >/dev/null 2>&1 || { printf '0\n'; return 0; }
-    python3 - "$response_path" "$evidence_root" "$run_dir" <<'PY'
+    # Opt-in named-file proximity (default 0 = off = quote-sufficiency, the shipped
+    # behavior). A positive integer requires a quoted fragment to sit within that
+    # many chars of a RESOLVING named-file mention to count — the sail-cruisey #2970
+    # C2 safeguard, for consumers that want the runner's blind-seat accounting to
+    # match a stricter grounding gate. Only ever tightens; never widens a budget.
+    local proximity_chars="${OCTOPUS_COUNCIL_CONTENT_MATCH_PROXIMITY_CHARS:-0}"
+    [[ "$proximity_chars" =~ ^[0-9]+$ ]] || proximity_chars=0
+    # Source evidence is data; never import project-local Python modules.
+    python3 -I - "$response_path" "$evidence_root" "$run_dir" "$proximity_chars" <<'PY'
 import os
 import re
 import stat
 import sys
+from bisect import bisect_left
 from itertools import chain
 from pathlib import Path
 
@@ -2116,6 +2125,11 @@ MAX_FILE_BYTES = 1_500_000
 MAX_TOTAL_BYTES = 16_777_216
 MAX_ENTRIES = 20_000
 MAX_DEPTH = 64
+# Opt-in (argv[4], default 0 = off). Clamped so an override can only ever require
+# a tighter window, never exceed what the response itself could span.
+PROXIMITY_CHARS = 0
+if len(sys.argv) > 4 and sys.argv[4].isdigit():
+    PROXIMITY_CHARS = min(int(sys.argv[4]), MAX_RESPONSE_BYTES)
 if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
     print(0)
     sys.exit(2)
@@ -2170,18 +2184,29 @@ def distinctive(fragment):
 def code_fragments():
     for match in re.finditer(r"`([^`\n]+)`|```[^\n]*\n(.*?)```", resp, re.S):
         if match.group(1) is not None:
-            yield match.group(1)
+            yield match.group(1), match.start(1)
         else:
-            yield from match.group(2).splitlines()
+            # Each fenced line carries its OWN response offset (advance by the
+            # full line length incl. its ending) so the proximity gate measures
+            # distance from where the line actually sits, not the block start.
+            pos = match.start(2)
+            for line in match.group(2).splitlines(keepends=True):
+                yield line.rstrip("\r\n"), pos
+                pos += len(line)
 
 cands = set()
+# Candidate -> response offsets, recorded only when proximity is enabled so the
+# default path keeps its exact cost and result.
+cand_offsets = {}
 # Preserve established code spans inside prose wrappers. Plain quotations use
 # a second bounded pass, with the same set and no additional candidate budget.
-plain_fragments = (match.group(1) for match in re.finditer(r'"([^"\n]{1,400})"', resp))
-for fragment in chain(code_fragments(), plain_fragments):
+plain_fragments = ((match.group(1), match.start(1)) for match in re.finditer(r'"([^"\n]{1,400})"', resp))
+for fragment, offset in chain(code_fragments(), plain_fragments):
     candidate = distinctive(fragment)
     if candidate:
         cands.add(candidate)
+        if PROXIMITY_CHARS:
+            cand_offsets.setdefault(candidate, []).append(offset)
     if len(cands) >= MAX_FRAGMENTS:
         break
 if not cands:
@@ -2196,7 +2221,27 @@ SRC_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".sass
            ".mdx", ".php", ".pl", ".lua", ".ex", ".exs", ".scala", ".dart", ".m", ".mm",
            ".jl", ".tf", ".r"}
 SKIP = {"node_modules", "dist", "build", "coverage", "vendor", "__pycache__", "private"}
+# Agent-instruction / governing-law boilerplate is injected into every seat's
+# prompt context, so a seat can echo its verbatim prose without reading any
+# source. Those files are instructions, not the code under review — exclude them
+# from the content-match scan so an echo cannot forge a grounding signal. The
+# hidden-name prune already drops `.claude/…`; this also covers the visible
+# repo-root twins like AGENTS-OCTO.md that otherwise remain scannable
+# (sail-cruisey #2970). Fixed set — a security tightening, never widened by env.
+BOILERPLATE = {"claude.md", "claude-octo.md", "agents.md", "agents-octo.md",
+               "gemini.md", "copilot-instructions.md", "cursor.md", "cursorrules.md"}
 PRIVATE_NAME = re.compile(r"(^|[._-])(credentials?|secrets?|private|service[-_]account|id[-_]rsa)([._-]|$)", re.I)
+# Named-file mentions in the response (basename, offset), and the basenames the
+# scan actually resolves — both only when proximity is enabled. A mention counts
+# as "resolving" when its basename matches a source file reached by the scan.
+file_mentions = []
+seen_basenames = set()
+if PROXIMITY_CHARS:
+    # Attempt a filename once per token, not once per character of a long token
+    # with no source extension. The latter makes regex backtracking quadratic.
+    FILE_MENTION = re.compile(r"(?<![A-Za-z0-9_./@+-])[A-Za-z0-9_./@+-]*[A-Za-z0-9_@+-]\.(" +
+                              "|".join(sorted((ext[1:] for ext in SRC_EXT), key=len, reverse=True)) + r")\b")
+    file_mentions = [(os.path.basename(m.group(0)).lower(), m.start()) for m in FILE_MENTION.finditer(resp)]
 remaining = set(cands)
 scanned = entries = total_bytes = 0
 response_identity = (response_stat.st_dev, response_stat.st_ino)
@@ -2238,7 +2283,9 @@ if sys.argv[3]:
         sys.exit(2)
 
 def exhausted():
-    return not remaining or scanned >= MAX_FILES or entries >= MAX_ENTRIES or total_bytes >= MAX_TOTAL_BYTES
+    # Proximity also needs named-file resolution after every quote has matched.
+    # Keep that traversal within the same fixed file, entry and byte budgets.
+    return (not remaining and not PROXIMITY_CHARS) or scanned >= MAX_FILES or entries >= MAX_ENTRIES or total_bytes >= MAX_TOTAL_BYTES
 
 def scan(directory, depth):
     global scanned, entries, total_bytes
@@ -2250,9 +2297,11 @@ def scan(directory, depth):
                 return
             entries += 1
             name = entry.name
-            # Prune before opening or enumerating a subtree. Hidden files and
-            # tool state are not implicit source evidence, even with a source suffix.
-            if name.startswith(".") or name.lower() in SKIP or PRIVATE_NAME.search(name):
+            # Prune before opening or enumerating a subtree. Hidden files, tool
+            # state, and injected agent-instruction boilerplate are not implicit
+            # source evidence, even with a source suffix.
+            lowered = name.lower()
+            if name.startswith(".") or lowered in SKIP or lowered in BOILERPLATE or PRIVATE_NAME.search(name):
                 continue
             try:
                 metadata = entry.stat(follow_symlinks=False)
@@ -2287,6 +2336,8 @@ def scan(directory, depth):
                     finally:
                         os.close(descriptor)
                     hay = re.sub(r"\s+", " ", data.decode("utf-8", "replace"))
+                    if PROXIMITY_CHARS:
+                        seen_basenames.add(name.lower())
                     remaining.difference_update(candidate for candidate in tuple(remaining) if candidate in hay)
             except (OSError, ValueError):
                 continue
@@ -2306,7 +2357,25 @@ except (OSError, ValueError):
 finally:
     if directory is not None:
         os.close(directory)
-print(len(cands) - len(remaining))
+matched = cands - remaining
+if PROXIMITY_CHARS:
+    # A matched fragment counts only if one of its occurrences sits within the
+    # window of a named-file mention whose basename the scan actually resolved.
+    resolving = sorted(offset for basename, offset in file_mentions if basename in seen_basenames)
+    grounded = 0
+    for candidate in matched:
+        offsets = cand_offsets.get(candidate, ())
+        # Check the first mention in each window rather than the Cartesian
+        # product: repeated quotes and filenames can otherwise cost billions
+        # of comparisons inside the fixed response-size budget.
+        for offset in offsets:
+            first = bisect_left(resolving, offset - PROXIMITY_CHARS)
+            if first < len(resolving) and resolving[first] <= offset + PROXIMITY_CHARS:
+                grounded += 1
+                break
+    print(grounded)
+else:
+    print(len(matched))
 PY
 }
 
