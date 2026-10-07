@@ -2,13 +2,43 @@
 
 ## [Unreleased]
 
+## [11.12.0] - 2026-10-06
+
+### Added
+
+- Council warns before dispatch when a task names a supported artifact path and
+  no `--context-file` was supplied. Pass the file with `--context-file <path>`
+  so every seat receives the same contents without relying on file tools. Set
+  `OCTOPUS_COUNCIL_REQUIRE_CONTEXT=1` to reject these runs with exit code 2.
+  Bare filenames and prose without a supported path do not trigger the guard.
+  The path-text check does not inspect file-tool access or copied-workspace
+  visibility. It can warn or reject a tracked-file review that a CLI seat could
+  perform. Supplying any context file suppresses it; the guard does not verify
+  that every referenced file was supplied.
+  See [council evidence](https://github.com/nyldn/claude-octopus/blob/v11.12.0/docs/COUNCIL.md). (#1176)
+- Optional council quote proximity through
+  `OCTOPUS_COUNCIL_CONTENT_MATCH_PROXIMITY_CHARS=N`. A positive integer requires
+  source-matching quotes to appear within `N` characters of a filename whose
+  basename the bounded scan reached. Unset or `0` retains quote-only matching.
+  Filename proximity is an additional evidence signal, not proof that a seat
+  read that specific file. (#1177)
+
 ### Fixed
 
-- Deliver no longer runs the "Quality gate FAILED in tangle phase"
-  retrospective after a tangle phase that passed or recorded no quality gate.
-  The ceremony ran whenever a tangle results file existed, adding a failure
-  retrospective of about two minutes to healthy runs. It now runs only when the
-  tangle results record `Quality Gate: FAILED`.
+- Package archives include the public documentation, including the council
+  evidence guide, so installed copies can read the release guidance locally.
+- Council source checks exclude injected agent-instruction files, including
+  `CLAUDE.md`, `AGENTS.md`, their `-OCTO.md` variants, `GEMINI.md`, and Cursor
+  and Copilot instruction basenames, including nested and mixed-case names.
+  Echoing those instructions no longer counts as source evidence. (#1177)
+- Optional quote proximity preserves valid evidence when a duplicate quote
+  matches before the named source file. Repeated quotes and filename mentions
+  stay within the existing response and scan budgets without a quadratic
+  comparison. Project-local Python modules cannot execute during source checks.
+  (#1177)
+- Deliver runs the failure retrospective only when the development report
+  records `Quality Gate: FAILED`. Successful runs and reports without a quality
+  gate skip the unnecessary failure ceremony. (#1173)
 
 ## [11.11.0] - 2026-10-05
 
