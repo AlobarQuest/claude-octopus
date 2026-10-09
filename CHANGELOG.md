@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+## [11.13.1] - 2026-10-09
+
+### Fixed
+
+- Model configuration rejects unsafe names before saving configuration, while preserving supported Antigravity display labels. Existing provider model identifiers remain supported. Resolves [#1181](https://github.com/nyldn/claude-octopus/issues/1181).
+- Concurrent provider-history writes use exclusive kernel directory creation. This prevents lost entries when a directory utility reports success to multiple writers. History recording safely skips the optional write when Python 3 or the lock is unavailable. Resolves [#1187](https://github.com/nyldn/claude-octopus/issues/1187).
+- GitHub CI uses the repository's test selector to route unmapped and shared changes to the full unit-test lane. MCP dependency updates no longer run the full suite in the shorter focused lane.
+
+### Security
+
+- Upgrade `@modelcontextprotocol/sdk` from 1.26.0 to 1.31.0, incorporating the fix for [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h). The advisory concerns OAuth client credential forwarding; Octopus's MCP server uses the SDK's stdio server APIs. This update does not establish that credentials were disclosed by Octopus. The dependency update originates from [Dependabot PR #1186](https://github.com/nyldn/claude-octopus/pull/1186).
+
+## [11.13.0] - 2026-10-08
+
+### Fixed
+
+- Parallel work packages use their own branches and retain committed work after
+  cleanup. Uncommitted worktrees stay available for recovery, retries validate
+  worktree identity and clear stale markers, and failed launches report completion.
+  ([#1179](https://github.com/nyldn/claude-octopus/pull/1179),
+  commit `9f7aadaafff253d6d6754eb3ef2983ffd167cbf5`.)
+- Reviews and research preserve substantial results that discuss context limits
+  instead of discarding them as oversized-prompt rejections. Error-channel
+  rejections and recorded terminal failures remain failures.
+  ([#1180](https://github.com/nyldn/claude-octopus/pull/1180),
+  commit `4d152db0cd580167cdde7629a9fc70bc20d66f39`.)
+- Tangle's codex execution boundary gives `thread-writer-locks` and `.tmp` in
+  `CODEX_HOME` a private tmpfs, like the other runtime directories. `codex exec`
+  could not start a thread inside the boundary (`EROFS` on
+  `thread-writer-locks/.coordination.lock`), so a codex seat still produced no
+  code after #1164. Checked on Codex 0.155.1 and 0.161.0.
+  ([#1184](https://github.com/nyldn/claude-octopus/pull/1184), fixes
+  [#1182](https://github.com/nyldn/claude-octopus/issues/1182),
+  commit `0b9fd98386ef6197a06de9267037043a4656ece6`.)
+
+### Added
+
+- `OCTO_PROVIDER_REJECTION_MAX_OUTPUT_BYTES` configures when provider stdout
+  is substantial enough to retain despite a rejection phrase. The default is
+  4096 bytes; invalid or overflowing values use that default. Error-channel
+  rejection detection is independent of this setting. (#1180)
+
 ## [11.12.0] - 2026-10-06
 
 ### Added
