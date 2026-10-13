@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- `litellm-agent` runs the OpenAI-compatible tool-loop helper against a
+  self-hosted [LiteLLM](https://docs.litellm.ai/docs/simple_proxy) proxy. Set
+  `LITELLM_BASE_URL` (default `http://localhost:4000`), `LITELLM_API_KEY`, and
+  `LITELLM_MODEL` or an exact `litellm-agent:<model>` seat;
+  `LITELLM_ALLOWED_MODELS` restricts dispatch. The proxy URL must be an
+  HTTPS URL without credentials; HTTP is allowed only for `localhost` or
+  `127.0.0.1`. Export the endpoint in the operator's environment; project
+  `.env` files cannot redirect an independently supplied key. Detection,
+  health, readiness and dispatch share this URL policy.
+  With `OCTOPUS_PREFLIGHT_PROBE=1`, live readiness
+  checks `GET /v1/models` on the proxy and reports a rejected key as
+  `auth-invalid`. The provider is excluded from Council,
+  and a proxy model name does not establish model-family independence.
+
 ## [11.13.2] - 2026-10-10
 
 Provider routing and host detection fixes from [PR #1190](https://github.com/nyldn/claude-octopus/pull/1190), commit `b34780d48d9360d6c349c988e593be440b091c0f`.
