@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [11.14.0] - 2026-10-15
+
 ### Added
 
 - `litellm-agent` runs the OpenAI-compatible tool-loop helper against a
@@ -20,6 +22,11 @@
 
 ### Fixed
 
+- Concurrent installation receipt writers retry when the lock holder releases
+  its directory during contention inspection. Stale-owner inspection uses a
+  non-following directory handle, preserving foreign metadata even if the
+  lock is replaced by a symlink. File and symlink lock objects remain rejected.
+
 - Tangle adequacy review accepts a JSON `pass` verdict that omits the empty
   `scope_review` list instead of rejecting it as semantic-invalid and paying
   for a fallback reviewer. A `fail` verdict still requires the field.
@@ -27,6 +34,24 @@
   "Deprecated Tangle textual adequacy compatibility path used" for a JSON
   review: the already materialized verdict is checked structurally instead of
   being materialized again.
+- `commandcode-exec.sh` no longer leaves the Command Code CLI running after the
+  helper is killed. A Tangle stall watchdog kill used to orphan the CLI, which
+  kept editing the shared worktree next to its own retry. The helper now uses
+  an isolated process group where `setsid` is available and a watcher-backed,
+  child-first process-tree fallback otherwise. The CLI remains alive until
+  the watcher can stop its descendants when process-group isolation is absent.
+  TERM, INT and HUP cleanup removes private temporary files and preserves
+  termination status even when the watcher has already exited.
+- Supervised Tangle implementers on Command Code are no longer stopped as
+  stalled while the model is still reading and planning. The helper buffers
+  the CLI's NDJSON event stream until the final result, so the watchdog saw
+  no output; it now writes a progress line to stderr at most once per
+  `OCTOPUS_COMMANDCODE_HEARTBEAT_SECS` (default 60, forwarded through the
+  provider's isolated environment) while that stream grows.
+
+### Maintenance
+
+- CI artifact uploads use the verified immutable upload-artifact v7.0.2 commit.
 
 ## [11.13.2] - 2026-10-10
 
