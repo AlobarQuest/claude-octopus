@@ -2,6 +2,73 @@
 
 ## [Unreleased]
 
+## [11.14.1] - 2026-10-16
+
+### Fixed
+
+- Codex dispatch accepts `OCTOPUS_CODEX_REASONING=ultra` and the shared
+  `OCTOPUS_REASONING_LEVEL=ultra` setting instead of failing with
+  `Unknown agent type: codex`. Claude seats map `ultra` to `max`, and
+  OpenAI-compatible seats map it to `high`.
+  Resolves [#1200](https://github.com/nyldn/claude-octopus/issues/1200)
+  via [#1201](https://github.com/nyldn/claude-octopus/pull/1201),
+  commit `04b24c6eec77a88e39d2f8d5c2a8cd51aade7b78`.
+
+## [11.14.0] - 2026-10-15
+
+### Added
+
+- `litellm-agent` runs the OpenAI-compatible tool-loop helper against a
+  self-hosted [LiteLLM](https://docs.litellm.ai/docs/simple_proxy) proxy. Set
+  `LITELLM_BASE_URL` (default `http://localhost:4000`), `LITELLM_API_KEY`, and
+  `LITELLM_MODEL` or an exact `litellm-agent:<model>` seat;
+  `LITELLM_ALLOWED_MODELS` restricts dispatch. The proxy URL must be an
+  HTTPS URL without credentials; HTTP is allowed only for `localhost` or
+  `127.0.0.1`. Export the endpoint in the operator's environment; project
+  `.env` files cannot redirect an independently supplied key. Detection,
+  health, readiness and dispatch share this URL policy.
+  With `OCTOPUS_PREFLIGHT_PROBE=1`, live readiness
+  checks `GET /v1/models` on the proxy and reports a rejected key as
+  `auth-invalid`. The provider is excluded from Council,
+  and a proxy model name does not establish model-family independence.
+
+### Fixed
+
+- Concurrent installation receipt writers retry when the lock holder releases
+  its directory during contention inspection. Stale-owner inspection uses a
+  non-following directory handle, preserving foreign metadata even if the
+  lock is replaced by a symlink. File and symlink lock objects remain rejected.
+
+- Tangle adequacy review accepts a JSON `pass` verdict that omits the empty
+  `scope_review` list instead of rejecting it as semantic-invalid and paying
+  for a fallback reviewer. A `fail` verdict still requires the field.
+- The second adequacy review after a planner reconsideration no longer logs
+  "Deprecated Tangle textual adequacy compatibility path used" for a JSON
+  review: the already materialized verdict is checked structurally instead of
+  being materialized again.
+- `commandcode-exec.sh` no longer leaves the Command Code CLI running after the
+  helper is killed. A Tangle stall watchdog kill used to orphan the CLI, which
+  kept editing the shared worktree next to its own retry. The helper now uses
+  an isolated process group where `setsid` is available and a watcher-backed,
+  child-first process-tree fallback otherwise. The CLI remains alive until
+  the watcher can stop its descendants when process-group isolation is absent.
+  TERM, INT and HUP cleanup removes private temporary files and preserves
+  termination status even when the watcher has already exited.
+- Supervised Tangle implementers on Command Code are no longer stopped as
+  stalled while the model is still reading and planning. The helper buffers
+  the CLI's NDJSON event stream until the final result, so the watchdog saw
+  no output; it now writes a progress line to stderr at most once per
+  `OCTOPUS_COMMANDCODE_HEARTBEAT_SECS` (default 60, forwarded through the
+  provider's isolated environment) while that stream grows.
+
+### Maintenance
+
+- CI artifact uploads use the verified immutable upload-artifact v7.0.2 commit.
+
+## [11.13.2] - 2026-10-10
+
+Provider routing and host detection fixes from [PR #1190](https://github.com/nyldn/claude-octopus/pull/1190), commit `b34780d48d9360d6c349c988e593be440b091c0f`.
+
 ### Fixed
 
 - Automatic research, design, copywriting, and image routes load provider configuration before choosing a fallback. Authenticated Codex and installed Claude seats remain available when Antigravity is absent. Resolves [#1174](https://github.com/nyldn/claude-octopus/issues/1174).
