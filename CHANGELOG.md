@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A council seat that exits non-zero now leaves its cause in the run dir. When
+  the provider fails, `run_agent_sync` appends the exit code and the provider's
+  stderr to `stderr/<seat>.log`, with secrets scrubbed and file mode 0600. When
+  stderr is empty it captures the tail of stdout, where some CLIs print their
+  errors. The seat's `summary.json` record gets
+  `failure: {exit_code, detail, stderr_file}`, and the end-of-run warnings name
+  the cause. Chair-fallback attempts are captured the same way. Before this, a
+  failing Claude seat showed only `no-response` in `summary.json` and
+  "Agent claude failed with exit code 1" in the log (sail-cruisey #3032).
+  Redaction covers the failure reason as well as captured output. If the
+  sanitizer is unavailable or fails, provider diagnostics are not retained.
+  Output is redacted before byte limits are applied so truncation cannot leave
+  credential suffixes. Accepted complete responses remove their diagnostic
+  capture even when the provider exits nonzero.
+  Basic Authorization credentials are also scrubbed from retained diagnostics.
+  This includes JSON and bare Basic values, case variants of Bearer tokens,
+  fine-grained GitHub tokens, and recognizable provider credential prefixes.
+  Short Basic credentials preserve their token boundaries. Diagnostics also
+  pass the shared credential-safety check before byte limits and retention;
+  unsupported sensitive assignments or output that fails that check are
+  omitted. Missing captures report that diagnostics were not retained rather
+  than assuming the provider never ran. Failed-attempt captures also survive a
+  retry that exits zero but returns an unusable response, with the original
+  failure exit code in seat metadata and warnings.
+
 ## [11.14.2] - 2026-10-17
 
 ### Fixed
