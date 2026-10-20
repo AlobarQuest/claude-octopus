@@ -5,11 +5,12 @@ ecosystem = "npm-no-deps"
 release_tag_pattern = '^v(\d+\.\d+\.\d+)$'
 # The suites that read upstream's own .github/ are excluded: the lane removes it. So is the
 # work-queue hook test, which assumes the checkout's remote is nyldn's, and the council contract,
-# which upstream's own `make test-unit` excludes.
+# which upstream's own `make test-unit` excludes. The MCP server suite builds mcp-server, whose
+# dependencies the lane never installs; .mcp.json registers no server, so nothing here runs it.
 test_commands = [
   "make test-plugin-name",
   "./tests/run-all.sh smoke --exclude=smoke/test-packaging-integrity.sh",
-  "./tests/run-all.sh unit --exclude=unit/test-council-command.sh --exclude=unit/test-github-work-queue-hook.sh --exclude=unit/test-ci-changed.sh --exclude=unit/test-explicit-activation.sh --exclude=unit/test-feature-policy.sh --exclude=unit/test-pr-review-workflow.sh --exclude=unit/test-reported-issue-pattern-coverage.sh --exclude=unit/test-retired-gemini-provider.sh --exclude=unit/test-suite-reachability.sh --exclude=unit/test-tangle-write-scope-safety.sh",
+  "./tests/run-all.sh unit --exclude=unit/test-council-command.sh --exclude=unit/test-mcp-server.sh --exclude=unit/test-github-work-queue-hook.sh --exclude=unit/test-ci-changed.sh --exclude=unit/test-explicit-activation.sh --exclude=unit/test-feature-policy.sh --exclude=unit/test-pr-review-workflow.sh --exclude=unit/test-reported-issue-pattern-coverage.sh --exclude=unit/test-retired-gemini-provider.sh --exclude=unit/test-suite-reachability.sh --exclude=unit/test-tangle-write-scope-safety.sh",
 ]
 
 [review]
