@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [11.14.2] - 2026-10-17
+
+### Fixed
+
+- `council-wait.sh --pool` now sees councils in the runner's per-session
+  sub-pools. The runner writes each default-pool run under
+  `councils/session-<slug>/<run_id>/` and its `latest-<key>` pointer inside
+  that session dir, but the waiter only scanned `councils/2*/` and
+  `councils/latest-<key>`, so it reported `run: pending` until its timeout even
+  after the council finished (sail-cruisey #3011: seven waits timed out at
+  570s, 1.6–6.9 minutes after their councils completed). The waiter now
+  searches `session-*/` sub-pools, follows their `latest-<key>` pointers, and
+  compares sub-pools by UTC run name because creation counters are per pool.
+  The runner also mirrors the keyed pointer to the shared pool as
+  `session-<slug>/<run_id>` and prints `Council run dir: <path>` on stderr at
+  creation, so callers can use `--run-dir` directly. Pointers still cannot
+  leave the pool or follow a symlinked sub-pool.
+
+- Council selection fails closed when different session runs share the newest
+  UTC creation second. A stale shared pointer cannot choose an old summary;
+  the timeout explains the ambiguity and directs callers to `--run-dir`.
+  A clearly newer round still wins over ambiguity among older rounds.
+
+- The prompt token estimate now sums ASCII text at 4 characters per token and
+  non-ASCII text at 3 UTF-8 bytes per token. It used to charge the whole prompt
+  at the byte rate as soon as one non-ASCII character appeared, so a handful of
+  em-dashes or arrows (a project `AGENTS.md`, a plan, a diff comment) cut the
+  effective context budget of every seat by about a quarter. That is what
+  refused a 32457-character council prompt under a 41856-character limit in
+  sail-cruisey #3011. A prompt of 3300 ASCII characters and 50 em-dashes now
+  estimates 875 tokens, not 1150. Pure-ASCII prompts are unchanged, and prompts
+  that are mostly non-ASCII (CJK text) are still counted by bytes.
+
+- Token estimates classify UTF-8 bytes independently of the shell locale, so
+  C-locale processes cannot admit dense Unicode prompts at the ASCII rate.
+  Failed ASCII-byte counts retain the conservative byte rate.
+
 ## [11.14.1] - 2026-10-16
 
 ### Fixed
