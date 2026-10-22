@@ -3041,6 +3041,9 @@ for start, end, info, body in fences:
     remaining, header_end = None, -1
     for index, line in enumerate(lines):
         if diff_like:
+            # Git metadata does not quote source or consume hunk capacity.
+            if line.rstrip("\r") == "\\ No newline at end of file":
+                continue
             hunk = DIFF_HUNK.fullmatch(line)
             if hunk:
                 remaining = [int(n) if n is not None else 1 for n in hunk.groups()]
@@ -3714,7 +3717,11 @@ council_contribution_record_json() {
             jq -se 'length == 1 and (.[0] | type == "object")' <<< "$grounding" >/dev/null 2>&1 \
                 || grounding="$COUNCIL_FAILED_GROUNDING_JSON"
         fi
-        if council_response_quotes_fabricated "$response_path" "$evidence_root" "$grounding"; then
+        if council_response_has_access_failure "$response_path"; then
+            # Keep file-access guidance authoritative even when quotes fail.
+            access_state="failed"
+            validation_result="invalid-access"
+        elif council_response_quotes_fabricated "$response_path" "$evidence_root" "$grounding"; then
             # Distinct from invalid-access: evidence is rejected for fabricated
             # quotes, verification failure, or a response above the budgets.
             access_state="evidence-rejected"
@@ -4373,11 +4380,11 @@ council_run_chair_fallback() {
         grounding_report="$(jq -ce '.grounding | objects' <<< "$contribution_json" 2>/dev/null)" \
             || grounding_report="$COUNCIL_FAILED_GROUNDING_JSON"
         if council_response_nonempty "$output_path" \
-                && { jq -e '.access_state == "evidence-rejected"' <<< "$contribution_json" >/dev/null 2>&1 \
+                && { council_response_quotes_fabricated "$output_path" "$evidence_root" "$grounding_report" \
                      || council_response_is_substantive "$output_path" "$evidence_root" "$grounding_report"; } \
                 && { (( dispatch_rc == 0 )) || council_response_has_verdict "$output_path"; }; then
             # Persist completed fallback attempts, including rejected metadata,
-            # so their output and admission state remain inspectable.
+            # even when access failure takes priority in their classification.
             seat_agent_spec="$(jq -r '.agent_spec // .provider // ""' <<< "$member_json")"
             seat_org="$(jq -r '.provider_org // ""' <<< "$member_json")"
             seat_model="$(jq -r '.model // ""' <<< "$member_json")"

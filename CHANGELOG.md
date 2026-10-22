@@ -6,6 +6,11 @@
 
 ### Fixed
 
+- Council preserves file-access recovery advice when a seat also fails quote
+  grounding, including rejected chair fallbacks. Their responses and grounding
+  reports remain inspectable while their votes stay excluded.
+- Git's no-newline marker no longer counts as source inside quoted diffs.
+  Genuine added and removed source still verifies; invented source stays rejected.
 - Council admission and contribution records share one fresh grounding report,
   including retained and newly dispatched chair fallbacks. A second verifier
   failure or stale preliminary report cannot contradict the recorded result.

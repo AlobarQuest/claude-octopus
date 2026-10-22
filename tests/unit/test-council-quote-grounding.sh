@@ -60,6 +60,110 @@ else
     test_fail "fallback record lacks grounding: $record"
 fi
 
+# PR #1212 Actions follow-up: access guidance and diff metadata.
+for quote_kind in real fabricated; do
+    test_case "explicit access failure takes priority over $quote_kind quotes"
+    access_quote="$REAL_NEAR"
+    [[ "$quote_kind" == fabricated ]] && access_quote="$FAKE"
+    access_response="$(_resp "I cannot read the file.
+src/pricing.ts:2 contains \`$access_quote\`
+VERDICT: APPROVE")"
+    access_record="$(council_contribution_record_json "$access_response" "$ROOT" sha256:test)"
+    if council_response_has_access_failure "$access_response" &&
+       jq -e '.access_state == "failed" and .validation_result == "invalid-access"
+               and .evidence_paths == []' <<< "$access_record" >/dev/null; then
+        test_pass
+    else
+        test_fail "access failure lost its classification: $access_record"
+    fi
+    test_case "$quote_kind quote access failures preserve the grounding report"
+    if jq -e --arg kind "$quote_kind" '.grounding.quotes_checked == 1
+            and .grounding.fabricated == ($kind == "fabricated")' <<< "$access_record" >/dev/null; then
+        test_pass
+    else
+        test_fail "grounding evidence lost: $access_record"
+    fi
+    test_case "$quote_kind quote access failures give file-access guidance"
+    access_warnings="$(
+        COUNCIL_BLIND_SEATS=fixture
+        COUNCIL_SEAT_RECORDS_JSON="$(jq -cn --argjson record "$access_record" \
+            '[{status:"blind",provider:"fixture",contribution:$record}]')"
+        council_print_run_warnings
+    )"
+    if [[ "$access_warnings" == *"give it file-read tools"* &&
+          "$access_warnings" != *"grounding verification failed"* ]]; then
+        test_pass
+    else
+        test_fail "wrong access guidance: $access_warnings"
+    fi
+done
+
+marker_root="$(mktemp -d "$TEST_TMP_DIR/diff-marker.XXXXXX")"
+mkdir -p "$marker_root/src"
+marker_old='const amount = calculateLegacyRate(pricing.base);'
+marker_new='const amount = calculateCurrentRate(pricing.base);'
+printf '%s' "$marker_old" > "$marker_root/src/pricing.ts"
+git -C "$marker_root" init -q
+git -C "$marker_root" add src/pricing.ts
+git -C "$marker_root" -c user.name=Test -c user.email=test@example.invalid \
+    -c core.hooksPath=/dev/null commit -qm initial
+printf '%s' "$marker_new" > "$marker_root/src/pricing.ts"
+for marker_ending in lf crlf; do
+    marker_text='\ No newline at end of file'
+    [[ "$marker_ending" == crlf ]] && marker_text="${marker_text}"$'\r'
+    for marker_shape in added removed mixed hunk; do
+        marker_body="+$marker_new
+$marker_text"
+        case "$marker_shape" in
+            removed) marker_body="-$marker_old
+$marker_text" ;;
+            mixed|hunk) marker_body="-$marker_old
+$marker_text
++$marker_new
+$marker_text" ;;
+        esac
+        if [[ "$marker_shape" == hunk ]]; then
+            marker_body="--- a/src/pricing.ts
++++ b/src/pricing.ts
+@@ -1 +1 @@
+$marker_body"
+        fi
+        test_case "$marker_ending no-newline markers are metadata in $marker_shape quotes"
+        marker_response="$(_resp "src/pricing.ts:1 contains
+\`\`\`diff
+$marker_body
+\`\`\`
+VERDICT: APPROVE")"
+        marker_report="$(council_response_quote_verification_json "$marker_response" "$marker_root")"
+        if jq -e '.verification_failed == false and .diff_unavailable == false
+                and .quotes_checked == 1 and .quotes_verified == 1
+                and .quotes_unverified == 0 and .fabricated == false' <<< "$marker_report" >/dev/null; then
+            test_pass
+        else
+            test_fail "diff metadata counted as source: $marker_report"
+        fi
+    done
+done
+for marker_side in added removed; do
+    test_case "no-newline marker does not excuse invented $marker_side source"
+    marker_body="+$FAKE"
+    [[ "$marker_side" == removed ]] && marker_body="-$FAKE"
+    marker_response="$(_resp "src/pricing.ts:1 contains
+\`\`\`diff
+$marker_body
+\ No newline at end of file
+\`\`\`
+VERDICT: APPROVE")"
+    marker_report="$(council_response_quote_verification_json "$marker_response" "$marker_root")"
+    if jq -e '.quotes_checked == 1 and .quotes_verified == 0 and .fabricated == true' \
+            <<< "$marker_report" >/dev/null; then
+        test_pass
+    else
+        test_fail "invented source accepted: $marker_report"
+    fi
+done
+# End PR #1212 Actions follow-up.
+
 # Grounding report privacy: exercise both direct reports and the contribution
 # object that is persisted in summary.json, without redaction prerequisites.
 sample_root="$(mktemp -d "$TEST_TMP_DIR/quote-private.XXXXXX")"
@@ -1932,8 +2036,10 @@ source "$PROJECT_ROOT/scripts/lib/council.sh"
 rec="$(jq -c '[.[] | select(.seat == "chair")][0] // {}' <<< "$COUNCIL_SEAT_RECORDS_JSON")"
 if jq -e '.grounding.quotes_verified == 1 and .grounding == .contribution.grounding' <<< "$rec" >/dev/null; then test_pass; else test_fail "record: $rec"; fi
 
+# Chair fallback rejection retention controls.
+for fallback_access in available failed; do
 for fallback_scenario in quiet failure retry missing; do
-test_case "chair fallback retains rejected evidence and $fallback_scenario diagnostics without admission"
+test_case "chair fallback retains $fallback_access access rejected evidence and $fallback_scenario diagnostics without admission"
 record="$(
     d="$(mktemp -d "$TEST_TMP_DIR/fallback-refresh.XXXXXX")"
     mkdir -p "$d/evidence/src" "$d/run/responses" "$d/run/stderr"
@@ -1944,7 +2050,7 @@ record="$(
     git -C "$d/evidence" -c user.name=Test -c user.email=test@example.invalid commit -qm baseline
     printf '%s\n' "$REAL_NEAR" > "$d/evidence/src/pricing.ts"
     OCTOPUS_COUNCIL_DIFF_BASE=HEAD
-    OCTOPUS_PROJECT_DIR="$d/evidence"; COUNCIL_RUN_DIR="$d/run"
+    OCTOPUS_PROJECT_DIR="$d/evidence"; COUNCIL_RUN_DIR="$d/run"; COUNCIL_FIXTURE=""
     COUNCIL_RESPONSES_RECEIVED=0; COUNCIL_CHAIR_RESPONSE_RECEIVED=false
     COUNCIL_CHAIR_FALLBACK_USED=false; COUNCIL_SEAT_RECORDS_JSON='[]'
     COUNCIL_TIMEOUT_WARNINGS=""
@@ -1954,7 +2060,12 @@ record="$(
     council_pick_provider() { printf 'claude\n'; }
     council_provider_is_available() { return 0; }
     council_dispatch_member_detached() {
-        printf 'Reviewed src/pricing.ts:1: `%s` handles the fallback.\nVERDICT: APPROVE\n' "$REAL_NEAR" > "$3"
+        if [[ "$fallback_access" == failed ]]; then
+            printf 'I cannot read the file.\n' > "$3"
+        else
+            : > "$3"
+        fi
+        printf 'Reviewed src/pricing.ts:1: `%s` handles the fallback.\nVERDICT: APPROVE\n' "$REAL_NEAR" >> "$3"
         if [[ "$fallback_scenario" == failure || "$fallback_scenario" == retry ]]; then
             printf '== 2026-10-21T20:00:00Z claude exited 17: transport failure\n-- stderr --\nError: fixture transport failure\n' > "$_OCTOPUS_SEAT_STDERR_FILE"
         fi
@@ -1976,11 +2087,11 @@ record="$(
         '{rc:$rc, seats:$seats, received:$received, chair:$chair, used:$used,
           warnings:$warnings, responses:$responses, captures:$captures}'
 )"
-if jq -e --arg scenario "$fallback_scenario" '.rc != 0 and .received == 0 and .chair == false and .used == false
+if jq -e --arg scenario "$fallback_scenario" --arg access "$fallback_access" '.rc != 0 and .received == 0 and .chair == false and .used == false
         and .responses == 1 and (.seats | length == 1)
         and (.seats[0] | .seat == "chair" and .status == "no-response"
             and .counted_as_approver == false
-            and .contribution.access_state == "evidence-rejected"
+            and .contribution.access_state == (if $access == "failed" then "failed" else "evidence-rejected" end)
             and .grounding.fabricated == true and .grounding == .contribution.grounding)
         and (if $scenario == "quiet" then .warnings == "" and .captures == 0
              elif $scenario == "missing" then .captures == 1 and (.warnings | contains("exited 17: no provider diagnostics were retained;"))
@@ -1990,6 +2101,8 @@ else
     test_fail "invalid contribution became a recovered chair: $record"
 fi
 done
+done
+# End chair fallback rejection retention controls.
 
 # Retained chair response admission controls.
 for reuse_mode in grounded unverified invalid-verdict record-failure malformed-record; do
