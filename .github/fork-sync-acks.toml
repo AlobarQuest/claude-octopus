@@ -1,2 +1,8 @@
 # Findings a person has read and accepted, by fingerprint (fork-sync review).
 # One [[ack]] per finding: fingerprint, by, date, reason. See onboarding-a-fork.md.
+
+[[ack]]
+fingerprint = "ec48759cfb286b85"
+by = "devon (approved in session 2026-10-24; recorded by Claude)"
+date = 2026-10-24
+reason = "AlobarQuest/claude-octopus Upstream sync: v11.15.1 npm-lifecycle-file scripts/orchestrate.sh: a file an install-time script runs changed. Process-ownership guard and printf logging in orchestrate.sh, read in session; held only by the gate's publish-only lifecycle false positive"
