@@ -2,6 +2,199 @@
 
 ## [Unreleased]
 
+## [11.15.1] - 2026-10-23
+
+### Fixed
+
+- `/octo:discover` and `/octo:research` now use the quick, standard, or deep
+  intensity you selected. The command passes `--intensity=` to the research
+  engine, avoiding a bracket token that became prompt text in Bash and failed
+  as an unmatched glob in zsh. Research focus and output format stay in the
+  prompt. [#1213](https://github.com/nyldn/claude-octopus/pull/1213),
+  commit [fa1eab5](https://github.com/nyldn/claude-octopus/commit/fa1eab5e7e2d49d274c06f81dd0d1ebada1ee9c3).
+- Knowledge-work and security-audit examples use supported command arguments.
+  Parallel workflow examples pass the previous phase's result file positionally
+  so the next phase receives it. Focus, depth, and audit scope go in the prompt.
+  [#1223](https://github.com/nyldn/claude-octopus/pull/1223),
+  commit [733e717](https://github.com/nyldn/claude-octopus/commit/733e717f3ef3a8619da9f9edfa381c68c2a88b14).
+- SessionEnd writes preferences and Markdown session learnings to the current
+  project's existing Claude auto-memory directory; SessionStart restores
+  preferences from that directory. The hooks no longer create repository-local
+  `memory/` or fall back to another project's storage. Custom `CLAUDE_CONFIG_DIR`
+  and CWD fallback use the same mapping at session start and end. Structured
+  cross-task JSON learnings remain shared across projects under
+  `~/.claude-octopus/learnings` and are not automatically read by SessionStart.
+  Fixes [#1183](https://github.com/nyldn/claude-octopus/issues/1183).
+  [#1225](https://github.com/nyldn/claude-octopus/pull/1225),
+  commit [286ef4d](https://github.com/nyldn/claude-octopus/commit/286ef4d75c0a782416854d0ac8d8f9b31756e090).
+
+### Development
+
+- Add regression coverage for orchestrator EXIT cleanup when ownership is
+  unknown. [#1210](https://github.com/nyldn/claude-octopus/pull/1210),
+  commit [c06ffc0](https://github.com/nyldn/claude-octopus/commit/c06ffc0ddb35600c5498e51da22eb24394be9b2c).
+
+## [11.15.0] - 2026-10-20
+
+### Fixed
+
+- Council preserves file-access recovery advice when a seat also fails quote
+  grounding, including rejected chair fallbacks. Their responses and grounding
+  reports remain inspectable while their votes stay excluded.
+- Git's no-newline marker no longer counts as source inside quoted diffs.
+  Genuine added and removed source still verifies; invented source stays rejected.
+- Council admission and contribution records share one fresh grounding report,
+  including retained and newly dispatched chair fallbacks. A second verifier
+  failure or stale preliminary report cannot contradict the recorded result.
+- Council checks multiline code spans with matching backtick delimiters and
+  preserves literal backticks within source. Direct source attributions retain
+  verification through ordinary modifiers and command-shaped quoted content.
+- Mixed council diff quotes must verify both their removed and retained or added
+  portions. A genuine portion cannot validate an invented opposite portion.
+  Prefix increment and decrement source lines remain checked, including short
+  portions that resemble diff file headers.
+- Context files supply diff evidence only within unified hunk line counts.
+  Markdown rules and bullets outside hunks cannot fabricate removed source.
+  Git's suppressed blank context markers preserve later source evidence and
+  cannot turn prefix-operator source inside a hunk into file headers.
+- Colored seat-failure reasons receive control-byte cleanup before whole-record
+  redaction, preserving safe error details that certification previously omitted.
+
+- Upgrade the MCP SDK from 1.31.0 to 1.32.0 for
+  [GHSA-22jm-h49p-29qw](https://github.com/advisories/GHSA-22jm-h49p-29qw).
+  Octopus uses stdio without the HTTP task store required by this advisory.
+
+- Unattributed prose blockquotes no longer reject council seats as fabricated.
+  Attributed and code-shaped blockquotes retain source verification.
+- Reused chair responses must pass current contribution validation. Retained
+  output without a verdict or a usable record cannot recover the chair.
+- Council grounding reports omit provider quote excerpts from `summary.json`.
+  Counts and rejection decisions remain available without redaction prerequisites.
+- Council checks source quotes inside malformed backtick fences whose info
+  strings contain backticks, matching verdict parsing so they cannot hide invention.
+- Council recognizes `defines` and `declares` source attributions. A genuine
+  quote cannot mask an invented quote introduced by either verb.
+- Uncited quote spans no longer consume council's citation-bound verification
+  budget. Bound overflow still rejects approval.
+- Colored provider failures retain safe diagnostic text. Control bytes are
+  removed before redaction and certification, with no partial output on failure.
+- Council verifies tilde-fenced source quotes and matches fence markers and
+  widths, preventing invented quotes from bypassing grounding through Markdown.
+- Rejected chair fallbacks retain their grounding report, response and failed
+  attempt diagnostics while remaining excluded from chair admission and quorum.
+- The subshell TERM regression requires proof that its restored trap executed.
+- Council warnings distinguish rejected grounding from provider access failures.
+  Both remain blind and excluded from quorum; only access failures suggest
+  switching provider mode/model or supplying file access.
+- Council quote verification has a 15-second process-group budget. Stalled
+  parsing or evidence reads reject the seat and discard partial reports.
+- Short inline identifiers no longer exhaust council's quote budget. The
+  256-unit limit still rejects unchecked specific quotes beyond the budget.
+- Council quorum counts and chair admission use the refreshed contribution's
+  validation and verdict. Rejected or unavailable records cannot retain a vote
+  from preliminary checks.
+- Council contribution records reverify current evidence instead of reusing
+  preliminary quote reports after source, context or diff contents change.
+- Direct diagnostic-tail callers receive no partial output when sanitization
+  fails. Successful tails retain their exact byte limit and trailing newlines.
+- Blank lines between a proposal lead-in and its code no longer make council
+  label the proposal fabricated. Inline formatting inside a blockquote counts
+  once, preventing duplicate units from exhausting the quote budget.
+- Council verification failures cannot grant grounding. Crashed
+  verifiers and malformed grounding reports reject the seat; partial output is
+  discarded and unverified quotes are not labeled fabricated.
+- Real code wrapped in inline backticks inside a blockquote keeps its council
+  grounding. Markdown formatting no longer creates a duplicate fabricated quote;
+  literal backticks within source expressions are preserved.
+- Council responses with quotes beyond the 256-unit verification budget cannot
+  count toward quorum, including when earlier quotes verify. Git filter driver
+  names containing `=` prevent diff capture because they cannot be safely
+  overridden through `git -c`; unavailable diff evidence retains uncertainty.
+- Council verifier diffs disable repository clean and process filters as well
+  as textconv, external diff drivers and fsmonitor. Filters selected through
+  tracked, private or configured attributes cannot execute repository commands
+  during quote verification. Filter lookup is bounded and fails closed.
+- Multi-line source quotes need the same whole-block or two-thirds match in
+  reviewed diffs as in source files. One real diff line cannot verify an
+  otherwise invented block. Responses above 1 MiB report `response_oversized`
+  and receive `invalid-ungrounded` instead of gaining credit for unchecked
+  citations. Unavailable contribution records retain the grounding schema.
+- Provider stderr diagnostics now use the same redaction and certification as
+  stdout. Log messages preserve literal backslashes after certification, so
+  provider output cannot turn escape text into terminal control bytes.
+- A council seat that exits non-zero now leaves its cause in the run dir. When
+  the provider fails, `run_agent_sync` appends the exit code and the provider's
+  stderr to `stderr/<seat>.log`, with secrets scrubbed and file mode 0600. When
+  stderr is empty it captures the tail of stdout, where some CLIs print their
+  errors. The seat's `summary.json` record gets
+  `failure: {exit_code, detail, stderr_file}`, and the end-of-run warnings name
+  the cause. Chair-fallback attempts are captured the same way. Before this, a
+  failing Claude seat showed only `no-response` in `summary.json` and
+  "Agent claude failed with exit code 1" in the log (sail-cruisey #3032).
+  Redaction covers the failure reason as well as captured output. If the
+  sanitizer is unavailable or fails, provider diagnostics are not retained.
+  Output is redacted before byte limits are applied so truncation cannot leave
+  credential suffixes. Accepted complete responses remove their diagnostic
+  capture even when the provider exits nonzero.
+  Basic Authorization credentials are also scrubbed from retained diagnostics.
+  This includes JSON and bare Basic values, case variants of Bearer tokens,
+  fine-grained GitHub tokens, and recognizable provider credential prefixes.
+  Short Basic credentials preserve their token boundaries. Diagnostics also
+  pass the shared credential-safety check before byte limits and retention;
+  unsupported sensitive assignments or output that fails that check are
+  omitted. Missing captures report that diagnostics were not retained rather
+  than assuming the provider never ran. Failed-attempt captures also survive a
+  retry that exits zero but returns an unusable response, with the original
+  failure exit code in seat metadata and warnings.
+- Council grounding now checks the code a seat quotes, not just the shape of
+  its citations. A real `path:line` citation used to make a seat
+  `valid-grounded` even when the code quoted beside it existed nowhere
+  (sail-cruisey #2997, #3005). Each specific quote near a resolving citation is
+  now checked against the cited files and the reviewed diff, including removed
+  lines from a `--context-file` diff or `git diff OCTOPUS_COUNCIL_DIFF_BASE`.
+  - A seat is marked blind, with contribution `invalid-ungrounded`, when none
+    of its quotes verify.
+  - It is also marked blind when a quote it attributes to one citation is in
+    no cited file and not in the diff. Attributed means directly under the
+    citation, or introduced as "`x.ts:12` reads `...`".
+  - A multi-line block verifies as a whole, or when two thirds of its specific
+    lines are in the file.
+
+  Grounded seats are not marked blind in these cases from sail-cruisey #3032:
+  - They cite an attached `--context-file` by basename, or a file under a
+    hidden directory such as `.todo/`.
+  - They quote as `>` or HTML-escaped `&gt;` blockquotes.
+  - They quote a command they ran.
+  - They quote a file outside the evidence root.
+  - They write proposed code.
+
+  Unreadable files and quotes tied to a citation that resolves nowhere are
+  unverifiable, never fabricated. Per-seat counts appear in `summary.json`
+  under `seats[].grounding`. Set `OCTOPUS_COUNCIL_QUOTE_VERIFY=0` to opt out.
+  Repeated checks share a report for unchanged response bytes. Verification
+  disables repository textconv and external diff drivers. Citation filenames
+  such as `example.ts` cannot classify invented source as proposed code.
+- A worker subshell that receives SIGTERM no longer deletes the orchestrator's
+  temporary directory or cancels the whole run. Helpers that save and restore
+  signal traps read them with `$(trap -p TERM)`, which inside a subshell
+  reports the parent's trap, so they re-armed the orchestrator's TERM handler
+  in the worker. When the Tangle correction stall watchdog then sent SIGTERM to
+  the stalled correction, the worker ran that handler, removed
+  `$OCTOPUS_TMP_DIR` and cancelled the active task group while the orchestrator
+  kept running; the next contextual review failed at `mktemp` ("unable to
+  collect complete all-changes diff for tangle review snapshot"). The EXIT and
+  signal handlers now act only in the orchestrator process itself. Unknown
+  ownership also denies cleanup, including when portable PID capture fails.
+  Regression tests wait for the worker to install its traps before signaling.
+- A synchronous provider call that fails now logs a bounded tail of its
+  redacted stdout (`OCTOPUS_SYNC_FAILURE_OUTPUT_TAIL_BYTES`, default 2000,
+  accepted range 1 through 65536) next to the
+  stderr details. Claude Code reports errors such as "Prompt is too long" or
+  "Not logged in" on stdout and exits 1 with only warnings on stderr, so the
+  failure log showed the warnings and the cause was deleted with the temp file.
+  Invalid limits use the default. Diagnostics pass redaction and credential
+  checks before truncation and are omitted if those checks fail.
+
 ## [11.14.2] - 2026-10-17
 
 ### Fixed

@@ -51,6 +51,32 @@ A provider is used only when its CLI is installed AND its auth check passes. If 
 
 **Empty results from a dispatch that "succeeded"** — check `~/.claude-octopus/results/` for the raw artifact and `~/.claude-octopus/logs/` for the dispatch log. `--verbose` on the next run shows the constructed command.
 
+## Session preferences and memory
+
+SessionEnd writes `octopus-preferences.md` and `octopus-learnings.md` in the
+current project's existing Claude auto-memory directory under
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<project-key>/memory`.
+SessionStart restores preferences from `octopus-preferences.md`. Both hooks use
+`CLAUDE_PROJECT_DIR`, or the working directory when it is absent, to select that
+project, including punctuation in the project path.
+
+If preferences are not restored, check that this project's memory directory
+exists and its preferences file is readable. Saving these project files also
+requires write access. Missing or inaccessible project storage skips these
+writes without choosing another project's directory. A `memory/` folder inside
+your repository is not used for session preferences. Existing repository-local
+memory files are left for you to review; the hooks do not migrate or remove them.
+
+Project paths that Claude maps to the same project key can still share a memory
+directory. Octopus follows that native key convention and does not distinguish
+colliding paths.
+
+Separately, SessionEnd can write structured cross-task learnings as JSON under
+`~/.claude-octopus/learnings`. This global store is shared across projects,
+including when project auto-memory storage is missing. SessionStart does not
+automatically read these JSON records. This store is separate from the project
+preferences and Markdown session learnings described above.
+
 ## Uninstall the plugin and keep local data
 
 Run this from a terminal:
