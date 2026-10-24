@@ -22,6 +22,9 @@ paths_watched = [
   "managed-settings.d/*",
   "scripts/ide-attach.sh",
   "scripts/lib/plugin-update.sh",
+  # octo's dispatcher: its hooks run it in every session that uses octo, so every change to it is
+  # read by a person (Devon, 2026-10-24; ADR-0056 amendment 7).
+  "scripts/orchestrate.sh",
 ]
 # What runs when the plugin loads or a command runs.
 trust_critical = [
