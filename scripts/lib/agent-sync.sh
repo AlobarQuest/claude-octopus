@@ -1281,6 +1281,67 @@ run_agent_sync_consultative() {
     return "$rc"
 }
 
+# Redact and certify a diagnostic stream before returning a bounded tail.
+octo_safe_diagnostic_tail() {
+    local file="$1" limit="${2:-2000}" diagnostic
+    local scanner="${BASH_SOURCE[0]%/*}/../helpers/artifact-safety.py"
+    # Reject tail's +N form, invalid counts, and overrides above 64 KiB.
+    [[ "$limit" =~ ^[1-9][0-9]{0,4}$ && "$limit" -le 65536 ]] || limit=2000
+    [[ -s "$file" ]] || return 1
+    declare -F sanitize_secrets >/dev/null 2>&1 || return 1
+    command -v python3 >/dev/null 2>&1 && [[ -f "$scanner" ]] || return 1
+    # Redact and certify the complete stream before truncation can hide a key's
+    # prefix or field name. Remove prohibited control bytes before redaction so
+    # colored output stays useful and split credentials cannot evade matching.
+    # Discard partial output if any stage fails.
+    if diagnostic="$(
+        set -o pipefail
+        LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' < "$file" \
+            | sanitize_secrets | python3 "$scanner" --redact | tail -c "$limit" || exit "$?"
+        # Prevent command substitution from stripping diagnostic newlines.
+        printf '.'
+    )"; then
+        printf '%s' "${diagnostic%.}"
+    else
+        return "$?"
+    fi
+}
+
+# Council seats run detached, so a failed provider's stderr reaches no one and
+# summary.json could only say "no-response". When the caller names a capture
+# file, append this failed attempt there: the exit code and reason, the
+# provider's stderr, or the tail of its stdout when stderr is empty (some CLIs
+# print their error there). Secrets are scrubbed and the file is private.
+octo_capture_seat_failure() {
+    local file="${_OCTOPUS_SEAT_STDERR_FILE:-}" agent="$1" rc="$2" reason="$3" err="$4" out="$5" body="" record=""
+    local section="-- no stderr or stdout --"
+    local scanner="${BASH_SOURCE[0]%/*}/../helpers/artifact-safety.py"
+    [[ -n "$file" ]] || return 0
+    declare -F sanitize_secrets >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 && [[ -f "$scanner" ]] || return 0
+    # Redact the stream first: a raw byte tail can remove a credential prefix.
+    # Certify before truncation too: a tail can remove an opaque key's field name.
+    # Keep pipefail local so a failed sanitizer or gate cannot publish partial output.
+    if [[ -s "$err" ]]; then
+        body="$(octo_safe_diagnostic_tail "$err" 16384)" || return 0
+        section="-- stderr --"
+    elif [[ -s "$out" ]]; then
+        body="$(octo_safe_diagnostic_tail "$out" 4096)" || return 0
+        section="-- stdout tail (stderr was empty) --"
+    fi
+    record="$(
+        printf '== %s %s exited %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$agent" "$rc" "$reason"
+        printf '%s\n' "$section" "$body"
+    )"
+    # The reason can contain provider output too. Clean controls before
+    # redacting the entire event, discarding partial output on any failure.
+    record="$(set -o pipefail; printf '%s\n' "$record" \
+        | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' \
+        | sanitize_secrets | python3 "$scanner" --redact)" || return 0
+    mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
+    (umask 077; printf '%s\n' "$record" >> "$file") 2>/dev/null || true
+}
+
 # Print the timeout that replaces run_agent_sync's caller value, or return 1
 # when the caller value (or the dynamic default) stands.
 # OCTOPUS_AGENT_TIMEOUT overrides all caller-hardcoded values. Without this,
@@ -1659,6 +1720,8 @@ ${provider_ctx}"
         if [[ "$exit_code" -eq 139 && "$_sync_retry_count" -lt "$_sync_sigsegv_retries" ]]; then
             _sync_retry_count=$((_sync_retry_count + 1))
             log WARN "Agent $agent_type exited 139 (SIGSEGV); retrying once within the original ${timeout_secs}s budget (stderr: ${_sync_signal_artifact:-unavailable})"
+            # Record this attempt before its output is cleared for the retry.
+            octo_capture_seat_failure "$agent_type" "$exit_code" "SIGSEGV; retrying once" "$temp_err" "$temp_out"
             : > "$temp_err"
             : > "$temp_out"
             continue
@@ -1676,8 +1739,18 @@ ${provider_ctx}"
     # Check exit code and handle errors
     if [[ $exit_code -ne 0 ]]; then
         log ERROR "Agent $agent_type failed with exit code $exit_code (role=$role, phase=$phase)"
-        if [[ -s "$temp_err" ]]; then
-            log ERROR "Error details: $(cat "$temp_err")"
+        local _sync_error_tail=""
+        if _sync_error_tail="$(octo_safe_diagnostic_tail "$temp_err" 16384 2>/dev/null)" && [[ -n "$_sync_error_tail" ]]; then
+            log ERROR "Error details: $_sync_error_tail"
+        fi
+        # Some CLIs report the failure itself on stdout (Claude Code prints
+        # "Prompt is too long" or "Not logged in" there and exits 1), leaving
+        # only warnings on stderr. Keep a bounded tail so the cause survives
+        # the temp file cleanup below.
+        local _sync_failure_tail=""
+        if _sync_failure_tail="$(octo_safe_diagnostic_tail "$temp_out" "${OCTOPUS_SYNC_FAILURE_OUTPUT_TAIL_BYTES:-2000}" 2>/dev/null)" \
+           && [[ -n "$_sync_failure_tail" ]]; then
+            log ERROR "Output tail: $_sync_failure_tail"
         fi
         # Hint callers when codex wrote deliverables under workspace-write
         # before SIGTERM — a bare "TIMEOUT" banner otherwise hides that work.
@@ -1718,6 +1791,7 @@ ${provider_ctx}"
             _sync_status="timeout"
             _sync_reason="Timed out before completion"
         fi
+        octo_capture_seat_failure "$agent_type" "$exit_code" "$_sync_reason" "$temp_err" "$temp_out"
         run_contract_transition "$_sync_seat_id" "$_sync_status" \
             "reason=$_sync_reason" "stderr_file=$_sync_signal_artifact" \
             "duration_ms=$_elapsed_ms" >/dev/null 2>&1 || true
@@ -1754,6 +1828,7 @@ ${provider_ctx}"
                 return 0
             fi
             log ERROR "Agent $agent_type returned unusable output: $_sync_reason"
+            octo_capture_seat_failure "$agent_type" "$exit_code" "unusable output: $_sync_reason" "$temp_err" "$temp_out"
             type update_agent_status >/dev/null 2>&1 && update_agent_status \
                 "$agent_type" "failed" "$_elapsed_ms" "$_estimated_cost" "$timeout_secs" \
                 "$_progress_task_id" "${phase:-unknown}" "$_sync_signal_artifact" || true
@@ -1934,8 +2009,9 @@ ${provider_ctx}"
     # Check if output is suspiciously empty or placeholder
     if [[ -z "$output" || "$output" == "Provider available" ]]; then
         log WARN "Agent $agent_type returned empty or placeholder output (role=$role, phase=$phase)"
-        if [[ -s "$temp_err" ]]; then
-            log WARN "Possible issue: $(cat "$temp_err")"
+        local _sync_empty_tail=""
+        if _sync_empty_tail="$(octo_safe_diagnostic_tail "$temp_err" 16384 2>/dev/null)" && [[ -n "$_sync_empty_tail" ]]; then
+            log WARN "Possible issue: $_sync_empty_tail"
         fi
     fi
 
