@@ -33,7 +33,7 @@ violations=0
 package_files=""
 if command -v npm >/dev/null 2>&1; then
     package_files=$(npm pack --dry-run --json --ignore-scripts 2>/dev/null | \
-        python3 -c 'import json, sys; data = json.load(sys.stdin); print("\\n".join(item["path"] for item in data[0].get("files", [])))' \
+        python3 -I -c 'import json, sys; data = json.load(sys.stdin); print("\\n".join(item["path"] for item in data[0].get("files", [])))' \
         2>/dev/null || true)
 else
     log WARN "npm is unavailable; checking tracked files only"

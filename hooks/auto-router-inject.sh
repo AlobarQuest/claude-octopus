@@ -56,7 +56,7 @@ json_pref_value() {
     local key="$2"
     [[ -f "$file" ]] || return 1
     command -v python3 &>/dev/null || return 1
-    python3 -c "
+    python3 -I -c "
 import json, sys
 try:
     with open(sys.argv[1]) as f:

@@ -119,7 +119,7 @@ main() {
         if command -v jq &>/dev/null; then
             bash_command=$(printf '%s' "$stdin_data" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
         elif command -v python3 &>/dev/null; then
-            bash_command=$(printf '%s' "$stdin_data" | python3 -c "
+            bash_command=$(printf '%s' "$stdin_data" | python3 -I -c "
 import sys, json
 d = json.load(sys.stdin)
 print(d.get('tool_input', {}).get('command', ''))" 2>/dev/null) || true

@@ -58,7 +58,7 @@ env \
 "_OCTOPUS_FORMAT=${FORMAT}" \
 "_OCTOPUS_VIEW=${VIEW}" \
 "_OCTOPUS_MODEL_PRICING_FILE=${MODEL_PRICING_FILE}" \
-python3 - <<'PYEOF'
+python3 -I - <<'PYEOF'
 import csv, glob, json, os, sys
 from collections import defaultdict
 

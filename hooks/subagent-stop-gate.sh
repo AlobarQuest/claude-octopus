@@ -54,7 +54,7 @@ _OCTOPUS_MIN_QUALITY="${OCTOPUS_SUBAGENT_MIN_QUALITY:-0}" \
 _OCTOPUS_PHASE="${OCTOPUS_WORKFLOW_PHASE:-}" \
 _OCTOPUS_SKILL="${OCTOPUS_ACTIVE_SKILL:-}" \
 _OCTOPUS_MODEL=${OCTOPUS_RESOLVED_MODEL:-${OCTOPUS_MODEL:-}} \
-python3 - <<'PYEOF' 2>/dev/null || exit 0
+python3 -I - <<'PYEOF' 2>/dev/null || exit 0
 import json, os, re, sys, time
 
 try:

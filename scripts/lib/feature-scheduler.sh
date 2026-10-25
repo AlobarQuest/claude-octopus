@@ -3,7 +3,7 @@
 source "${BASH_SOURCE[0]%/*}/feature-tasks.sh"
 
 _feature_tasks_json_digest() {
-    python3 - "$1" <<'PY'
+    python3 -I - "$1" <<'PY'
 import hashlib,json,sys
 with open(sys.argv[1], "rb") as handle:
     raw=handle.read(2*1024*1024+1)

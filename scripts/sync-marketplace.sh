@@ -22,19 +22,19 @@ CHECK_ONLY=false
 
 # Count packaged plugin artifacts from the manifest users install.
 PLUGIN_JSON="$ROOT_DIR/.claude-plugin/plugin.json"
-SKILL_COUNT=$(python3 -c "import json; print(len(json.load(open('$PLUGIN_JSON')).get('skills', [])))")
-COMMAND_COUNT=$(python3 -c "import json; print(len(json.load(open('$PLUGIN_JSON')).get('commands', [])))")
+SKILL_COUNT=$(python3 -I -c "import json; print(len(json.load(open('$PLUGIN_JSON')).get('skills', [])))")
+COMMAND_COUNT=$(python3 -I -c "import json; print(len(json.load(open('$PLUGIN_JSON')).get('commands', [])))")
 PERSONA_COUNT=$(find "$ROOT_DIR/agents/personas" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 
 # Get current version from plugin.json (source of truth)
-VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_JSON')).get('version', ''))")
+VERSION=$(python3 -I -c "import json; print(json.load(open('$PLUGIN_JSON')).get('version', ''))")
 if [[ -z "$VERSION" ]]; then
     echo "ERROR: version missing in $PLUGIN_JSON" >&2
     exit 1
 fi
 
 # Read the current marketplace description (compared against expected below)
-CURRENT_DESC=$(python3 -c "
+CURRENT_DESC=$(python3 -I -c "
 import json, sys
 m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
 for p in m.get('plugins', []):
@@ -53,13 +53,13 @@ else:
 # into v9.51 and how a hand-written "42 agents, ..." fragment stacked with the
 # generated counts. Strip: version prefix, any counts fragments (agents or
 # personas variants), and the trailing "Run /octo:setup." (re-appended below).
-PLUGIN_DESC=$(python3 -c "import json; print(json.load(open('$PLUGIN_JSON')).get('description', ''))")
+PLUGIN_DESC=$(python3 -I -c "import json; print(json.load(open('$PLUGIN_JSON')).get('description', ''))")
 if [[ -z "$PLUGIN_DESC" ]]; then
     log ERROR "description missing in $PLUGIN_JSON"
     exit 1
 fi
-PLUGIN_KEYWORDS=$(python3 -c "import json; print(json.dumps(json.load(open('$PLUGIN_JSON')).get('keywords', []), separators=(',', ':')))")
-CURRENT_KEYWORDS=$(python3 -c "
+PLUGIN_KEYWORDS=$(python3 -I -c "import json; print(json.dumps(json.load(open('$PLUGIN_JSON')).get('keywords', []), separators=(',', ':')))")
+CURRENT_KEYWORDS=$(python3 -I -c "
 import json, sys
 m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
 for p in m.get('plugins', []):
@@ -69,7 +69,7 @@ for p in m.get('plugins', []):
 else:
     sys.exit(1)
 ")
-CURRENT_ENTRY_VERSION=$(python3 -c "
+CURRENT_ENTRY_VERSION=$(python3 -I -c "
 import json, sys
 m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
 for p in m.get('plugins', []):
@@ -79,7 +79,7 @@ for p in m.get('plugins', []):
 else:
     sys.exit(1)
 ")
-CURRENT_METADATA_VERSION=$(python3 -c "
+CURRENT_METADATA_VERSION=$(python3 -I -c "
 import json
 m = json.load(open('$ROOT_DIR/.claude-plugin/marketplace.json'))
 print(m.get('metadata', {}).get('version', ''))
@@ -112,7 +112,7 @@ if $CHECK_ONLY; then
 fi
 
 # Update marketplace.json
-OCTO_MARKETPLACE_KEYWORDS_JSON="$PLUGIN_KEYWORDS" python3 -c "
+OCTO_MARKETPLACE_KEYWORDS_JSON="$PLUGIN_KEYWORDS" python3 -I -c "
 import json, os
 
 with open('$ROOT_DIR/.claude-plugin/marketplace.json') as f:

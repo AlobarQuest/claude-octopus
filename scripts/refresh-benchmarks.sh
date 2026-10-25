@@ -30,7 +30,7 @@ raw_manifest="$tmp_dir/manifest.json"
 curl -fsSL "$UPSTREAM_CSV_URL" -o "$raw_csv"
 curl -fsSL "$UPSTREAM_MANIFEST_URL" -o "$raw_manifest"
 
-python3 - "$raw_csv" "$CSV_PATH" <<'PY'
+python3 -I - "$raw_csv" "$CSV_PATH" <<'PY'
 import csv
 import sys
 

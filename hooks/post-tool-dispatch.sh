@@ -84,7 +84,7 @@ CONTEXTS=""
 if [[ "${OCTOPUS_CONTEXT_AWARENESS:-off}" == "on" && -f "$BRIDGE" ]]; then
     ctx=$("$HOOKS_DIR/context-awareness.sh" <<< "" 2>/dev/null || echo "")
     if [[ -n "$ctx" ]] && echo "$ctx" | grep -q 'additionalContext'; then
-        msg=$(echo "$ctx" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || echo "")
+        msg=$(echo "$ctx" | python3 -I -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || echo "")
         [[ -n "$msg" ]] && CONTEXTS="${CONTEXTS}${CONTEXTS:+ | }${msg}"
     fi
 fi
@@ -98,14 +98,14 @@ fi
 if [[ ${#STDIN_DATA} -gt 3000 && "${OCTOPUS_COMPRESS_ENABLED:-false}" == "true" ]]; then
     comp=$("$HOOKS_DIR/output-compressor.sh" <<< "$STDIN_DATA" 2>/dev/null || echo "")
     if [[ -n "$comp" ]] && echo "$comp" | grep -q 'additionalContext'; then
-        msg=$(echo "$comp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || echo "")
+        msg=$(echo "$comp" | python3 -I -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || echo "")
         [[ -n "$msg" ]] && CONTEXTS="${CONTEXTS}${CONTEXTS:+ | }${msg}"
     fi
 fi
 
 # Emit combined response
 if [[ -n "$CONTEXTS" ]]; then
-    escaped=$(echo "$CONTEXTS" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null | sed 's/^"//;s/"$//')
+    escaped=$(echo "$CONTEXTS" | python3 -I -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null | sed 's/^"//;s/"$//')
     echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"${escaped}\"}}"
 else
     : # pass-through — current hook schema treats silence as continue

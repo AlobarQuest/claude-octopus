@@ -45,7 +45,7 @@ if ! command -v python3 &>/dev/null; then
     exit 0
 fi
 
-USED_PCT=$(BRIDGE_PATH="$BRIDGE" python3 -c "
+USED_PCT=$(BRIDGE_PATH="$BRIDGE" python3 -I -c "
 import json, os
 try:
     d = json.load(open(os.environ['BRIDGE_PATH']))
@@ -124,7 +124,7 @@ if command -v rtk &>/dev/null; then
     if [[ "$SEVERITY" == "CRITICAL" || "$SEVERITY" == "AUTO_COMPACT" ]]; then
         RTK_SAVED=""
         if command -v python3 &>/dev/null; then
-            RTK_SAVED=$(rtk gain --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get('summary',d); print(s.get('total_saved',''))" 2>/dev/null) || RTK_SAVED=""
+            RTK_SAVED=$(rtk gain --json 2>/dev/null | python3 -I -c "import json,sys; d=json.load(sys.stdin); s=d.get('summary',d); print(s.get('total_saved',''))" 2>/dev/null) || RTK_SAVED=""
         fi
         if [[ -n "$RTK_SAVED" && "$RTK_SAVED" != "0" ]]; then
             RTK_TIP=" RTK active (${RTK_SAVED} tokens saved). Use Read/Grep tools instead of bash cat/grep to save more."

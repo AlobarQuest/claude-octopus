@@ -987,7 +987,7 @@ review_extract_findings_text() {
         return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
-        printf '%s' "$output_text" | python3 -c '
+        printf '%s' "$output_text" | python3 -I -c '
 import json, sys
 text = sys.stdin.read()
 decoder = json.JSONDecoder()

@@ -69,8 +69,8 @@ for vdir in "${VENDOR_DIRS[@]}"; do
         continue
     fi
     if command -v python3 &>/dev/null; then
-        if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['upstream'] and d['tag']" "$manifest" 2>/dev/null; then
-            tag=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['tag'])" "$manifest")
+        if python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['upstream'] and d['tag']" "$manifest" 2>/dev/null; then
+            tag=$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))['tag'])" "$manifest")
             pass "$vname: manifest valid (vendored tag: $tag)"
         else
             fail "$vname: VENDOR.json unparseable or missing upstream/tag fields"
@@ -143,7 +143,7 @@ if [ -d "$UX_VENDOR" ]; then
     fi
 
     if command -v python3 &>/dev/null; then
-        if python3 -c "import csv, re, math, argparse, sys, io" 2>/dev/null; then
+        if python3 -I -c "import csv, re, math, argparse, sys, io" 2>/dev/null; then
             pass "python3 stdlib modules available"
         else
             fail "python3 stdlib modules missing"
@@ -166,8 +166,8 @@ if [ "$MODE" != "--local" ]; then
         [ -f "$manifest" ] || continue
         command -v python3 &>/dev/null || { warn "$vname: python3 unavailable — skipping"; continue; }
 
-        upstream=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['upstream'])" "$manifest" 2>/dev/null || echo "")
-        pinned_tag=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['tag'])" "$manifest" 2>/dev/null || echo "")
+        upstream=$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))['upstream'])" "$manifest" 2>/dev/null || echo "")
+        pinned_tag=$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))['tag'])" "$manifest" 2>/dev/null || echo "")
         [ -n "$upstream" ] && [ -n "$pinned_tag" ] || { warn "$vname: manifest incomplete"; continue; }
 
         # owner/repo from the upstream URL
@@ -179,7 +179,7 @@ if [ "$MODE" != "--local" ]; then
         fi
         if [ -z "$latest_tag" ] && command -v curl &>/dev/null; then
             latest_tag=$(curl -fsSL --max-time 10 "https://api.github.com/repos/$slug/releases/latest" 2>/dev/null |
-                python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
+                python3 -I -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
         fi
 
         if [ -z "$latest_tag" ]; then

@@ -42,7 +42,7 @@ _octo_json_string() {
     esac
 
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$value" <<'PY' 2>/dev/null && return 0
+        python3 -I - "$value" <<'PY' 2>/dev/null && return 0
 import json
 import sys
 
@@ -85,7 +85,7 @@ PY
 # best-effort unlocked fallback when the runtime is unavailable.
 _octo_event_mkdir() {
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$1" <<'PY'
+    python3 -I - "$1" <<'PY'
 import os
 import sys
 

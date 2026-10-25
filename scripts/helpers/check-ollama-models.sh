@@ -42,7 +42,7 @@ _octo_parse_models() {
   local tmpf
   tmpf=$(mktemp 2>/dev/null) || tmpf="/tmp/octo-ollama-parse-$$.json"
   printf '%s' "$json" > "$tmpf"
-  python3 - "$tmpf" <<'PYEOF' 2>/dev/null
+  python3 -I - "$tmpf" <<'PYEOF' 2>/dev/null
 import sys, json
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
@@ -99,7 +99,7 @@ fi
 
 # --json output
 print_json_models() {
-  python3 - "$TOTAL_COUNT" "$STALE_COUNT" "${OCTO_OLLAMA_STALE_DAYS}" <<'PYEOF'
+  python3 -I - "$TOTAL_COUNT" "$STALE_COUNT" "${OCTO_OLLAMA_STALE_DAYS}" <<'PYEOF'
 import json
 import os
 import sys

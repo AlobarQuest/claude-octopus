@@ -62,7 +62,7 @@ create_checkpoint() {
     # Add last message summary to checkpoint if available
     local ESCAPED_MESSAGE=""
     if [[ -n "$LAST_MESSAGE" ]]; then
-        ESCAPED_MESSAGE=$(printf '%s' "$LAST_MESSAGE" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null | sed 's/^"//;s/"$//' || echo "$LAST_MESSAGE")
+        ESCAPED_MESSAGE=$(printf '%s' "$LAST_MESSAGE" | python3 -I -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null | sed 's/^"//;s/"$//' || echo "$LAST_MESSAGE")
     fi
 
     # Write checkpoint data

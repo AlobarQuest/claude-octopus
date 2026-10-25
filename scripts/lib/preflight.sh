@@ -32,7 +32,7 @@ _octo_readiness_json_field() {
         return
     fi
 
-    OCTO_READINESS_JSON="$readiness_json" python3 - "$field" <<'PY'
+    OCTO_READINESS_JSON="$readiness_json" python3 -I - "$field" <<'PY'
 import json
 import os
 import sys
@@ -93,7 +93,7 @@ _octo_provider_readiness_emit() {
     OCTO_READINESS_CHECKED_AT="$checked_at" \
     OCTO_READINESS_DURATION_MS="$duration_ms" \
     OCTO_READINESS_REMEDIATION="$remediation" \
-        python3 - <<'PY'
+        python3 -I - <<'PY'
 import json
 import os
 

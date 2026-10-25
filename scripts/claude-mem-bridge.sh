@@ -8,7 +8,7 @@ set -euo pipefail
 # Port discovery: settings.json > UID-based formula > Windows fallback
 if [[ -z "${CLAUDE_MEM_PORT:-}" ]]; then
     # Try settings.json first
-    CLAUDE_MEM_PORT=$(python3 -c "
+    CLAUDE_MEM_PORT=$(python3 -I -c "
 import json, os, pathlib
 settings = pathlib.Path.home() / '.claude-mem' / 'settings.json'
 if settings.exists():
@@ -44,7 +44,7 @@ claude_mem_search() {
     local limit="${2:-5}"
     local project="${3:-}"
 
-    local url="${CLAUDE_MEM_URL}/api/search?query=$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$query" 2>/dev/null || printf '%s' "$query")&limit=${limit}"
+    local url="${CLAUDE_MEM_URL}/api/search?query=$(python3 -I -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$query" 2>/dev/null || printf '%s' "$query")&limit=${limit}"
     if [[ -n "$project" ]]; then
         url="${url}&project=${project}"
     fi
@@ -65,7 +65,7 @@ claude_mem_observe() {
     local session_id
     session_id=$(curl -sf --max-time "$CLAUDE_MEM_TIMEOUT" \
         "${CLAUDE_MEM_URL}/api/sessions?status=active&limit=1" 2>/dev/null \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['memory_session_id'] if d else '')" 2>/dev/null || echo "")
+        | python3 -I -c "import sys,json; d=json.load(sys.stdin); print(d[0]['memory_session_id'] if d else '')" 2>/dev/null || echo "")
 
     if [[ -z "$session_id" ]]; then
         return 0  # No active session — silently skip
@@ -97,7 +97,7 @@ claude_mem_context() {
     fi
 
     # Format results as brief context
-    printf '%s' "$results" | python3 -c "
+    printf '%s' "$results" | python3 -I -c "
 import json, sys
 try:
     data = json.loads(sys.stdin.read())

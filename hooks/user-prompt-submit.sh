@@ -78,7 +78,7 @@ json_pref_value() {
     local key="$2"
     [[ -f "$file" ]] || return 1
     command -v python3 &>/dev/null || return 1
-    python3 -c "
+    python3 -I -c "
 import json, sys
 try:
     with open(sys.argv[1]) as f:
@@ -123,7 +123,7 @@ fi
 
 # Extract the user's prompt text (python3 preferred, jq fallback)
 if command -v python3 &>/dev/null; then
-    PROMPT=$(printf '%s' "$INPUT" | python3 -c "
+    PROMPT=$(printf '%s' "$INPUT" | python3 -I -c "
 import sys, json
 d = json.load(sys.stdin)
 print(d.get('prompt', d.get('message', '')))" 2>/dev/null) || true
@@ -200,7 +200,7 @@ octo_fuzzy_suggestions() {
     local names="$2"
     [[ -n "$names" ]] || return 1
     if command -v python3 &>/dev/null; then
-        python3 - "$raw" "$names" <<'PY' 2>/dev/null
+        python3 -I - "$raw" "$names" <<'PY' 2>/dev/null
 import difflib
 import sys
 
@@ -387,7 +387,7 @@ if [[ -z "$INTENT" ]]; then
     # Promotion safeguards for prompts that lack explicit router keywords but
     # still clearly need multi-model breadth.
     if [[ "$PROMPT_LOWER" == *" or "* ]] || [[ "$PROMPT_LOWER" == *" vs "* ]]; then
-        _proper_count=$(printf '%s' "$PROMPT" | python3 -c 'import re,sys; s=sys.stdin.read(); print(len(re.findall(r"`[^`]+`|\b[A-Z][A-Za-z0-9_.-]{2,}\b", s)))' 2>/dev/null || echo 0)
+        _proper_count=$(printf '%s' "$PROMPT" | python3 -I -c 'import re,sys; s=sys.stdin.read(); print(len(re.findall(r"`[^`]+`|\b[A-Z][A-Za-z0-9_.-]{2,}\b", s)))' 2>/dev/null || echo 0)
         if [[ "${_proper_count:-0}" -ge 2 ]]; then
             set_intent "debate" 2 "strong"
         fi
@@ -434,7 +434,7 @@ if [[ -n "$INTENT" && -f "$SESSION_FILE" ]] && command -v jq &>/dev/null; then
     command -v codex &>/dev/null && [[ -n "${OPENAI_API_KEY:-}" || -f "${HOME}/.codex/auth.json" ]] && _codex=true
     command -v agy &>/dev/null && _agy=true
     command -v opencode &>/dev/null && _opencode=true
-    PRIMED=$(python3 -c "
+    PRIMED=$(python3 -I -c "
 import json
 p = ['claude']
 if $_codex: p.insert(0, 'codex')

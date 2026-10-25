@@ -113,7 +113,7 @@ provider_history_lock() {
     # Match event/lifecycle admission: utility mkdir statuses can race. Keep
     # the bounded retry beside the kernel call and fail closed without Python.
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "${1}.lock" <<'PY'
+    python3 -I - "${1}.lock" <<'PY'
 import os
 import sys
 import time

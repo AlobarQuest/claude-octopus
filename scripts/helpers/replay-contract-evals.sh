@@ -46,7 +46,7 @@ eval_provider_isolation() {
 
 eval_process_tree_timeout() {
     OCTO_EVAL_HELPER="$PROJECT_ROOT/scripts/helpers/openai-compatible-agent.py" \
-    OCTO_EVAL_TMP="$TMP_ROOT" python3 - <<'PY'
+    OCTO_EVAL_TMP="$TMP_ROOT" python3 -I - <<'PY'
 import importlib.util
 import os
 import subprocess

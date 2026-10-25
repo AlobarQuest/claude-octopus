@@ -60,7 +60,7 @@ yaml_unquote_scalar() {
         log ERROR "python3 is required to decode quoted YAML metadata"
         return 1
       fi
-      YAML_QUOTED_SCALAR="$value" python3 - <<'PY'
+      YAML_QUOTED_SCALAR="$value" python3 -I - <<'PY'
 import os
 import sys
 

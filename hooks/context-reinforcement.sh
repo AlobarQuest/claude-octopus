@@ -45,7 +45,7 @@ All Octopus commands and skills are explicit-only. Continue only the active work
 RULES
 
 # Escape the context for JSON output
-ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//')
+ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -I -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//')
 
 # Return the hook response
 cat <<EOF

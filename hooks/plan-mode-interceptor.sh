@@ -38,7 +38,7 @@ payload_cwd=""
 if command -v jq >/dev/null 2>&1; then
     payload_cwd="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
 elif command -v python3 >/dev/null 2>&1; then
-    payload_cwd="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; value=json.load(sys.stdin).get("cwd", ""); print(value if isinstance(value, str) else "")' 2>/dev/null || true)"
+    payload_cwd="$(printf '%s' "$INPUT" | python3 -I -c 'import json,sys; value=json.load(sys.stdin).get("cwd", ""); print(value if isinstance(value, str) else "")' 2>/dev/null || true)"
 fi
 if [[ -n "$payload_cwd" && -d "$payload_cwd" ]]; then
     HOOK_CWD="$(cd "$payload_cwd" && pwd -P)"
@@ -126,7 +126,7 @@ ${INTENT_CONTEXT}
 fi
 
 # Escape the context for JSON output
-ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//')
+ESCAPED_CONTEXT=$(echo "$CONTEXT" | python3 -I -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//')
 
 # Return the hook response
 cat <<EOF

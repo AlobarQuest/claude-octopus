@@ -72,7 +72,7 @@ agentmemory_context() {
     local results
     results=$(agentmemory_search "recent work" "$limit" "$scope")
     [[ -z "$results" || "$results" == "[]" ]] && { echo ""; return 0; }
-    printf '%s' "$results" | python3 -c "
+    printf '%s' "$results" | python3 -I -c "
 import json, sys
 try:
     data = json.loads(sys.stdin.read())

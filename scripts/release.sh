@@ -83,7 +83,7 @@ if [[ "$ON_RELEASE_BRANCH" == "false" ]]; then
     git pull --quiet "$REMOTE" main
 fi
 
-CURRENT=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+CURRENT=$(python3 -I -c "import json; print(json.load(open('package.json'))['version'])")
 echo "Releasing: ${CURRENT} → ${VERSION}"
 echo "Summary: ${SUMMARY}"
 echo ""
@@ -93,7 +93,7 @@ echo ""
 echo "1/8 Updating version files..."
 
 # package.json
-python3 -c "
+python3 -I -c "
 import json
 p = json.load(open('package.json'))
 p['version'] = '${VERSION}'
@@ -102,7 +102,7 @@ print('   package.json')
 "
 
 # plugin.json — use the release summary as the new marketplace source text
-python3 - "$VERSION" "$SUMMARY" <<'PY'
+python3 -I - "$VERSION" "$SUMMARY" <<'PY'
 import json
 import sys
 
@@ -116,7 +116,7 @@ print('   .claude-plugin/plugin.json')
 PY
 
 # marketplace.json — strip old version prefix, prepend new one
-python3 -c "
+python3 -I -c "
 import json, re
 m = json.load(open('.claude-plugin/marketplace.json'))
 for plugin in m.get('plugins', []):
@@ -131,7 +131,7 @@ print('   .claude-plugin/marketplace.json')
 "
 
 # Public adapter manifests — keep every public root surface on the release version
-python3 -c "
+python3 -I -c "
 import json, pathlib, re, sys
 
 version = '${VERSION}'

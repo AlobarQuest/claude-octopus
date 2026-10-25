@@ -24,7 +24,7 @@ feature_workflow_begin() {
         local remote identity
         remote="$(git -C "$root" config --get remote.origin.url 2>/dev/null || true)"
         identity="${remote}|${root}"
-        tag="$(printf '%s' "$identity" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
+        tag="$(printf '%s' "$identity" | python3 -I -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
     fi
     FEATURE_SOURCE_ROOT="$root"
     FEATURE_RUNTIME_DIR="${FEATURE_RUNTIME_DIR:-${OCTOPUS_WORKFLOW_STATE_DIR:-${WORKSPACE_DIR:-${CLAUDE_OCTOPUS_WORKSPACE:-${HOME}/.claude-octopus}}/projects/${tag}}/feature-contract}"
@@ -349,7 +349,7 @@ feature_workflow_verify_resume() {
     [[ "$(git -C "$FEATURE_SOURCE_ROOT" rev-parse --verify HEAD 2>/dev/null)" == "$baseline" ]] || return 1
     summary="$(jq -c '[.tasks[]? | {id,identity}]' "$candidates")" || return 1
     local FEATURE_RESUME_VERIFICATION_ACTIVE=true
-    local OCTOPUS_VERIFY_RUN_ID="feature-resume-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+    local OCTOPUS_VERIFY_RUN_ID="feature-resume-$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
     [[ "$OCTOPUS_VERIFY_RUN_ID" != feature-resume- ]] || return 1
     tangle_verify "Verify the current committed implementation against the selected feature spec, plan and task contract. Historical candidates ${summary} have matching committed file evidence; independently run the repository checks required by this feature. Return success only when those checks pass. Do not implement or change files." || return 1
     jq -e --arg baseline "$baseline" '.status == "VERIFIED_NO_CHANGE" and .sourceCommit == $baseline and (.evidence.commands | length > 0) and (.evidence.failingTests | length == 0)' \

@@ -47,16 +47,16 @@ fi
 [[ -z "$INPUT" ]] && exit 0
 
 # Extract last_assistant_message and agent_id — bail if message empty
-LAST_MSG=$(printf '%s' "$INPUT" | python3 -c "
+LAST_MSG=$(printf '%s' "$INPUT" | python3 -I -c "
 import sys, json
 d = json.load(sys.stdin)
 print(d.get('last_assistant_message', ''))" 2>/dev/null) || true
 
-AGENT_ID=$(printf '%s' "$INPUT" | python3 -c "
+AGENT_ID=$(printf '%s' "$INPUT" | python3 -I -c "
 import sys, json; print(json.load(sys.stdin).get('agent_id', ''))" 2>/dev/null) || true
 
 # v8.40.0: Capture agent_type from hook event for cost attribution (CC v2.1.69+)
-AGENT_TYPE=$(printf '%s' "$INPUT" | python3 -c "
+AGENT_TYPE=$(printf '%s' "$INPUT" | python3 -I -c "
 import sys, json; print(json.load(sys.stdin).get('agent_type', ''))" 2>/dev/null) || true
 
 # Find the matching instruction JSON to get result_file path.
@@ -65,7 +65,7 @@ RESULT_FILE=""
 CONTRACT_RUN_ID=""
 CONTRACT_SEAT_ID=""
 if [[ -d "$TEAMS_DIR" ]]; then
-    HOOK_MATCH=$(_OCTOPUS_TEAMS_DIR="$TEAMS_DIR" _OCTOPUS_AGENT_ID="$AGENT_ID" python3 -c "
+    HOOK_MATCH=$(_OCTOPUS_TEAMS_DIR="$TEAMS_DIR" _OCTOPUS_AGENT_ID="$AGENT_ID" python3 -I -c "
 import json, glob, os, sys
 teams = os.environ['_OCTOPUS_TEAMS_DIR']
 agent_id = os.environ.get('_OCTOPUS_AGENT_ID', '')
@@ -97,8 +97,8 @@ fi
 [[ -z "$RESULT_FILE" ]] && exit 0
 
 # Security: validate result_file resolves within WORKSPACE_DIR (prevent path traversal)
-RESOLVED_RESULT=$(_OCTO_PATH="$RESULT_FILE" python3 -c 'import os; print(os.path.realpath(os.environ["_OCTO_PATH"]))' 2>/dev/null) || exit 0
-RESOLVED_WORKSPACE=$(_OCTO_PATH="$WORKSPACE_DIR" python3 -c 'import os; print(os.path.realpath(os.environ["_OCTO_PATH"]))' 2>/dev/null) || exit 0
+RESOLVED_RESULT=$(_OCTO_PATH="$RESULT_FILE" python3 -I -c 'import os; print(os.path.realpath(os.environ["_OCTO_PATH"]))' 2>/dev/null) || exit 0
+RESOLVED_WORKSPACE=$(_OCTO_PATH="$WORKSPACE_DIR" python3 -I -c 'import os; print(os.path.realpath(os.environ["_OCTO_PATH"]))' 2>/dev/null) || exit 0
 case "$RESOLVED_RESULT" in
     "$RESOLVED_WORKSPACE"/*) ;; # OK — within workspace
     *) exit 0 ;; # Path traversal attempt — bail silently
@@ -188,7 +188,7 @@ if [[ -f "$PROGRESS_FILE" ]] && command -v python3 &>/dev/null; then
         HOOK_LOG_FILE="${WORKSPACE_DIR}/logs/hook-errors.log"
     fi
     _OCTOPUS_HOOK_CONTRACT_STATUS="$HOOK_CONTRACT_STATUS" \
-    python3 - "$PROGRESS_FILE" "$RESOLVED_RESULT" <<'PYEOF' 2>>"$HOOK_LOG_FILE" || true
+    python3 -I - "$PROGRESS_FILE" "$RESOLVED_RESULT" <<'PYEOF' 2>>"$HOOK_LOG_FILE" || true
 import datetime, json, math, os, shutil, sys, time, uuid
 path, result_file = sys.argv[1:3]
 lock_dir = path + '.lock'
@@ -356,7 +356,7 @@ fi
 # Back-fill agent_id into the instruction JSON for correlation/continuation
 if [[ -n "$AGENT_ID" && -d "$TEAMS_DIR" ]]; then
     _OCTOPUS_TEAMS_DIR="$TEAMS_DIR" _OCTOPUS_AGENT_ID="$AGENT_ID" \
-    _OCTOPUS_RESULT_FILE="$RESULT_FILE" python3 -c "
+    _OCTOPUS_RESULT_FILE="$RESULT_FILE" python3 -I -c "
 import json, glob, os
 teams = os.environ['_OCTOPUS_TEAMS_DIR']
 agent_id = os.environ['_OCTOPUS_AGENT_ID']

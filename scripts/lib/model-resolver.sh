@@ -133,7 +133,7 @@ ollama_default_model() {
     if command -v jq >/dev/null 2>&1; then
         model="$(printf '%s' "$tags" | jq -r '.models[0].name // empty' 2>/dev/null)"
     elif command -v python3 >/dev/null 2>&1; then
-        model="$(printf '%s' "$tags" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("models") or [{}])[0].get("name", ""))' 2>/dev/null)"
+        model="$(printf '%s' "$tags" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print((d.get("models") or [{}])[0].get("name", ""))' 2>/dev/null)"
     else
         model="$(printf '%s' "$tags" | sed -n 's/.*"models"[[:space:]]*:[[:space:]]*\[[[:space:]]*{[^}]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)"[^}]*}.*/\1/p' | head -1)"
     fi

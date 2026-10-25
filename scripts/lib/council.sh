@@ -2704,7 +2704,7 @@ council_response_evidence_paths_json() {
     local response_path="$1" evidence_root="$2"
     [[ -f "$response_path" && -d "$evidence_root" ]] || { printf '[]\n'; return 0; }
     command -v python3 >/dev/null 2>&1 || { printf '[]\n'; return 0; }
-    python3 - "$response_path" "$evidence_root" <<'PY'
+    python3 -I - "$response_path" "$evidence_root" <<'PY'
 import hashlib
 import json
 import re
@@ -3630,7 +3630,7 @@ council_response_quotes_fabricated() {
 council_artifact_digest() {
     local evidence_root="$1" task="${2:-${COUNCIL_TASK:-}}"
     [[ -d "$evidence_root" ]] || return 1
-    python3 - "$evidence_root" "$task" <<'PY'
+    python3 -I - "$evidence_root" "$task" <<'PY'
 import hashlib
 import os
 import stat
@@ -3744,7 +3744,7 @@ council_contribution_record_json() {
     if [[ "$evidence" != '[]' ]]; then
         # Bind cited bytes too: Git ignores and nested repositories can exclude
         # legitimate review artifacts from the initial workspace fingerprint.
-        artifact_digest="$(python3 - "$workspace_digest" "$evidence" <<'PY'
+        artifact_digest="$(python3 -I - "$workspace_digest" "$evidence" <<'PY'
 import hashlib
 import json
 import sys

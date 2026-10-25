@@ -265,7 +265,7 @@ if command -v claude >/dev/null 2>&1; then
 
             if command -v python3 >/dev/null 2>&1 && echo "$CLAUDE_HELP" | grep -q -- '--plugin-url'; then
                 PLUGIN_URL_PORT="${OCTOPUS_RELEASE_SMOKE_PORT:-48731}"
-                (cd "$PLUGIN_ZIP_DIR" && python3 -m http.server "$PLUGIN_URL_PORT" --bind 127.0.0.1 >"$PLUGIN_ZIP_DIR/http.log" 2>&1) &
+                (cd "$PLUGIN_ZIP_DIR" && python3 -I -m http.server "$PLUGIN_URL_PORT" --bind 127.0.0.1 >"$PLUGIN_ZIP_DIR/http.log" 2>&1) &
                 PLUGIN_URL_SERVER_PID=$!
                 sleep 1
                 PLUGIN_URL="http://127.0.0.1:${PLUGIN_URL_PORT}/$(basename "$PLUGIN_ZIP")"

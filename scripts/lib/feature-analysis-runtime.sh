@@ -11,7 +11,7 @@ fi
 _OCTO_FEATURE_ANALYSIS_RUNTIME_LOADED=true
 
 _feature_analysis_runtime_python() {
-    PYTHONDONTWRITEBYTECODE=1 python3 - "$_OCTO_FEATURE_ANALYSIS_RUNTIME_LIB_DIR/../helpers/feature-analysis.py" "$@" <<'PY'
+    PYTHONDONTWRITEBYTECODE=1 python3 -I - "$_OCTO_FEATURE_ANALYSIS_RUNTIME_LIB_DIR/../helpers/feature-analysis.py" "$@" <<'PY'
 import argparse
 import importlib.util
 import json
@@ -349,7 +349,7 @@ PY
 }
 
 _feature_analysis_runtime_capture() {
-    PYTHONDONTWRITEBYTECODE=1 python3 -c '
+    PYTHONDONTWRITEBYTECODE=1 python3 -I -c '
 import os, stat, sys
 root = os.path.abspath(sys.argv[1])
 flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -406,11 +406,11 @@ _feature_analysis_runtime_run() (
     done
     prepared="$(_feature_analysis_runtime_python prepare "$FEATURE_SOURCE_ROOT" "${FEATURE_SELECTED:-}" \
         "$FEATURE_RUNTIME_DIR" "$contract" "$policy" "$previous" "$authored_findings")" || return 1
-    revision="$(printf '%s' "$prepared" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')" || return 1
-    claim="$(printf '%s' "$prepared" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["claimed"]).lower())')" || return 1
-    state="$(printf '%s' "$prepared" | python3 -c 'import json,sys; print(json.load(sys.stdin)["receipt"]["status"])')" || return 1
+    revision="$(printf '%s' "$prepared" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])')" || return 1
+    claim="$(printf '%s' "$prepared" | python3 -I -c 'import json,sys; print(str(json.load(sys.stdin)["claimed"]).lower())')" || return 1
+    state="$(printf '%s' "$prepared" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["receipt"]["status"])')" || return 1
     if [[ "$claim" != true || "$state" != pending ]]; then
-        printf '%s' "$prepared" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["receipt"]))'
+        printf '%s' "$prepared" | python3 -I -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["receipt"]))'
         return 0
     fi
     for candidate in octo_provider_canonical octo_provider_readiness_result octo_provider_allowed get_agent_model run_agent_sync_consultative; do
@@ -442,7 +442,7 @@ _feature_analysis_runtime_run() (
             continue
         fi
         readiness="$(octo_provider_readiness_result "$candidate" static 2>/dev/null)" || continue
-        if ! printf '%s' "$readiness" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("status") == "available" else 1)' 2>/dev/null; then
+        if ! printf '%s' "$readiness" | python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("status") == "available" else 1)' 2>/dev/null; then
             continue
         fi
         model="$(get_agent_model "$candidate" feature-analysis reviewer 2>/dev/null)" || continue
@@ -480,7 +480,7 @@ feature_analysis_preimplement() {
         printf 'Feature artifact analysis skipped; runtime context is unavailable.\n' >&2
         result='{"schema_version":1,"status":"skipped","reason":"runtime_context_unavailable","attempts":0,"warnings":["Artifact analysis is advisory and could not be recorded."]}'
     fi
-    paths="$(printf '%s' "$result" | python3 -c 'import json,sys; value=json.load(sys.stdin); print("\t".join(value.get(k, "") for k in ("report_path", "receipt_path", "verified_summary_path")))' 2>/dev/null)" || paths=""
+    paths="$(printf '%s' "$result" | python3 -I -c 'import json,sys; value=json.load(sys.stdin); print("\t".join(value.get(k, "") for k in ("report_path", "receipt_path", "verified_summary_path")))' 2>/dev/null)" || paths=""
     IFS=$'\t' read -r FEATURE_ANALYSIS_REPORT FEATURE_ANALYSIS_RECEIPT FEATURE_ANALYSIS_VERIFIED_SUMMARY <<< "$paths" || true
     export FEATURE_ANALYSIS_REPORT FEATURE_ANALYSIS_RECEIPT FEATURE_ANALYSIS_VERIFIED_SUMMARY
     printf '%s\n' "$result"

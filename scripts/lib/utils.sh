@@ -46,7 +46,7 @@ json_extract() {
     # Strategy 2: python3 one-liner (available on macOS and most Linux)
     if command -v python3 &>/dev/null; then
         local py_out
-        py_out=$(python3 -c "
+        py_out=$(python3 -I -c "
 import json,sys
 try:
     d=json.loads(sys.stdin.read())

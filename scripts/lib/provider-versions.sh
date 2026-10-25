@@ -93,7 +93,7 @@ _octo_parse_iso8601() {
 
   if command -v python3 &>/dev/null; then
     # Use python3 stdin script mode (avoids Windows .cmd wrapper mangling of -c args).
-    epoch=$(python3 - "$ts" <<'PYEOF' 2>/dev/null
+    epoch=$(python3 -I - "$ts" <<'PYEOF' 2>/dev/null
 import sys, datetime
 try:
     t = sys.argv[1].replace('Z', '+00:00')

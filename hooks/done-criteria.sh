@@ -53,7 +53,7 @@ fi
 # Extract user prompt text from JSON
 prompt=""
 if command -v python3 &>/dev/null; then
-    prompt=$(printf '%s' "$input" | python3 -c "
+    prompt=$(printf '%s' "$input" | python3 -I -c "
 import sys, json
 d = json.load(sys.stdin)
 print(d.get('prompt', d.get('message', d.get('content', ''))))" 2>/dev/null) || true

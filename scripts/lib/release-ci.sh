@@ -5,7 +5,7 @@ octo_pr_check_state() {
     local checks_json="$1"
     local check_name="$2"
 
-    python3 - "$check_name" "$checks_json" <<'PY'
+    python3 -I - "$check_name" "$checks_json" <<'PY'
 import json
 import sys
 
@@ -122,7 +122,7 @@ octo_release_run_with_timeout() {
     local timeout_seconds="$1"
     shift
 
-    python3 - "$timeout_seconds" "$@" <<'PY'
+    python3 -I - "$timeout_seconds" "$@" <<'PY'
 import subprocess
 import sys
 

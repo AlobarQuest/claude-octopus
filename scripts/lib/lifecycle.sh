@@ -102,7 +102,7 @@ octo_lifecycle_state_valid() {
 # Receipt transactions require kernel mkdir admission; utility statuses can race.
 _octo_lifecycle_mkdir() {
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$1" <<'PYCODE'
+    python3 -I - "$1" <<'PYCODE'
 import os
 import stat
 import sys
@@ -126,7 +126,7 @@ PYCODE
 
 _octo_lifecycle_reclaim() {
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$1" "$2" <<'PYCODE'
+    python3 -I - "$1" "$2" <<'PYCODE'
 import os
 import stat
 import sys

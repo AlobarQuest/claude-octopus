@@ -115,7 +115,7 @@ octo_oauth_token_valid() {
     if command -v jq &>/dev/null; then
         expiry_ms=$(jq -r 'if (.expiry_date | type) == "number" and (.expiry_date == (.expiry_date | floor)) then (.expiry_date | tostring) else empty end' "$creds_file" 2>/dev/null || true)
     elif command -v python3 &>/dev/null; then
-        expiry_ms=$(python3 - "$creds_file" <<'PY' 2>/dev/null || true
+        expiry_ms=$(python3 -I - "$creds_file" <<'PY' 2>/dev/null || true
 import json
 import sys
 
