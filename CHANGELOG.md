@@ -15,6 +15,18 @@
   `.octo/providers/<project key>/`. `patterns.jsonl` stays the pattern store:
   its older entries, which have no root, are ignored. The old per-provider
   `.octo/providers/<provider>-history.md` files stay on disk, unused.
+- A large provider stderr transcript no longer fills the result file. Codex
+  echoes every file it reads on stderr, and `spawn.sh` appended all of it
+  under "Warnings/Errors": one review result was 294 KB around a 2 KB answer.
+  When stderr is over 16 KB and stdout holds the answer, the full transcript
+  goes to `<result>.stderr.log` (mode 600). The result keeps at most 16 KB
+  from its last 40 lines, inside the same untrusted wrapper, plus a line with
+  the size and path. A run with no answer after stdout filtering keeps stderr
+  inline, since its answer may be recovered from there. Existing sidecars are
+  replaced privately; unsafe paths and transcripts above the private writer's
+  1 MiB limit keep full stderr inline. Truncated excerpts preserve UTF-8.
+  Expiring a per-agent result also removes its full stderr transcript; retained
+  synthesis reports and recent results keep their transcripts.
 
 ## [11.15.1] - 2026-10-23
 
