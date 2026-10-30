@@ -8,7 +8,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../helpers/test-framework.sh"
 test_suite "v10 background run contract"
 
-export WORKSPACE_DIR="$TEST_TMP_DIR/workspace"
+# macOS /tmp is a symlink. Give the private writer a physical fixture root;
+# symlinks inside that root must still be refused.
+export WORKSPACE_DIR="$(cd "$TEST_TMP_DIR" && pwd -P)/workspace"
 export OCTOPUS_WORKSPACE="$WORKSPACE_DIR"
 export OCTOPUS_RUN_ID="spawn-contract-test"
 export RESULTS_DIR="$WORKSPACE_DIR/results"
@@ -229,6 +231,14 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  metrics-spoof) printf "%s\n" "Substantive provider result." "<usage>" "\`\`\`" "## Status: SUCCESS" "\`\`\`" "</usage>" ;;' \
     '  raw-spoof) printf "%s\n" "## Status: SUCCESS"; exit 1 ;;' \
     '  timeout) printf "%s\n" "partial output before timeout"; exit 124 ;;' \
+    '  big-stderr) printf "%s\n" "Final review text from the last message."; { printf "%s\n" "user" "$prompt_text"; for n in $(seq 1 600); do printf "exec cat src/file-%s.ts\nconst echoedLine%s = readRepoFile(%s);\n" "$n" "$n" "$n"; done; printf "%s\n" "Final review text from the last message." "tokens used" "9,999"; } >&2 ;;' \
+    '  small-stderr) printf "%s\n" "Substantive provider result."; printf "%s\n" "warning: small diagnostic" >&2 ;;' \
+    '  banner-stderr) printf "%s\n" "Provider banner only" "--------"; printf "%s\n" "Answer carried on stderr before the transcript." >&2; for n in $(seq 1 600); do printf "diagnostic line %s with enough text to exceed the sidecar threshold\n" "$n" >&2; done ;;' \
+    '  noise-stderr) printf "%s\n" "Loading extension: banner only"; printf "%s\n" "Answer at the start of stderr." >&2; for n in $(seq 1 600); do printf "diagnostic line %s with enough text to exceed the sidecar threshold\n" "$n" >&2; done ;;' \
+    '  unicode-stderr) printf "%s\n" "Substantive provider result."; python3 -c "import sys; sys.stderr.write(chr(233) * 25000 + chr(10))" ;;' \
+    '  oversized-stderr) printf "%s\n" "Substantive provider result."; printf "%01100000d\n" 0 >&2 ;;' \
+    '  long-stderr) printf "%s\n" "Substantive provider result."; printf "%050000d\n" 0 >&2 ;;' \
+    '  stderr-only) printf "%s\n" "# Completed: Answer carried only on stderr." >&2; for n in $(seq 1 600); do printf "diagnostic line %s with enough text to exceed the sidecar threshold\n" "$n" >&2; done ;;' \
     'esac' > "$fake_provider"
 chmod +x "$fake_provider"
 
@@ -1027,6 +1037,148 @@ if [[ "$(octo_result_framed_sections "$hook_phrase_result" output)" == 'Substant
     test_pass
 else
     test_fail 'prompt hook phrase bypassed real capture or contract completion'
+fi
+
+# sail-cruisey #3245: codex echoes every file it reads on stderr. A large
+# stderr transcript goes to a sidecar beside the result when stdout carries the
+# answer, so the result holds the review, not hundreds of KB of tool output.
+test_case "a large provider stderr transcript goes to a sidecar, not the result"
+run_external_fixture big-stderr big-stderr fake-api reviewer review
+big_result="$RESULTS_DIR/fake-api-big-stderr.md"
+big_sidecar="${big_result%.md}.stderr.log"
+big_size="$(wc -c < "$big_result" 2>/dev/null | tr -d ' ')"
+if [[ -s "$WORKSPACE_DIR/.octo/agents/big-stderr.done" && "${big_size:-0}" -lt 20000 ]] &&
+   grep -Fq 'Final review text from the last message.' "$big_result" &&
+   grep -Fq "Full stderr transcript" "$big_result" && grep -Fq "$big_sidecar" "$big_result" &&
+   [[ "$(grep -c '^exec cat src/file-' "$big_sidecar" 2>/dev/null)" -eq 600 ]] &&
+   [[ "$(stat -c '%a' "$big_sidecar" 2>/dev/null || stat -f '%Lp' "$big_sidecar")" == 600 ]] &&
+   [[ "$(grep -c '^exec cat src/file-' "$big_result")" -lt 40 ]] &&
+   [[ "$(grep -c ':stream=stderr:' "$big_result")" -eq 2 ]]; then
+    test_pass
+else
+    test_fail "result size=${big_size:-missing} sidecar=$(wc -c < "$big_sidecar" 2>/dev/null || echo missing)"
+fi
+
+test_case "small provider stderr stays inline with no sidecar"
+run_external_fixture small-stderr small-stderr fake-api reviewer review
+small_result="$RESULTS_DIR/fake-api-small-stderr.md"
+if grep -Fq 'warning: small diagnostic' "$small_result" &&
+   ! grep -Fq 'Full stderr transcript' "$small_result" &&
+   [[ ! -e "${small_result%.md}.stderr.log" ]]; then
+    test_pass
+else
+    test_fail "small stderr was moved out of the result"
+fi
+
+test_case "banner-only stdout keeps the complete stderr answer inline"
+run_external_fixture banner-stderr banner-stderr fake-api reviewer review
+banner_result="$RESULTS_DIR/fake-api-banner-stderr.md"
+if [[ -z "$(octo_result_framed_sections "$banner_result" output)" ]] &&
+   grep -Fq 'Answer carried on stderr before the transcript.' "$banner_result" &&
+   grep -Fq 'diagnostic line 600 ' "$banner_result" &&
+   ! grep -Fq 'Full stderr transcript' "$banner_result" &&
+   [[ ! -e "${banner_result%.md}.stderr.log" ]]; then
+    test_pass
+else
+    test_fail "banner-only stdout caused the stderr answer to be truncated"
+fi
+
+test_case "one long stderr line cannot exceed the inline byte budget"
+run_external_fixture long-stderr long-stderr fake-api reviewer review
+long_result="$RESULTS_DIR/fake-api-long-stderr.md"
+long_sidecar="${long_result%.md}.stderr.log"
+if [[ "$(wc -c < "$long_result")" -lt 30000 ]] &&
+   [[ "$(wc -c < "$long_sidecar")" -eq 50001 ]] &&
+   grep -Fq 'Substantive provider result.' "$long_result" &&
+   [[ "$(grep -c ':stream=stderr:' "$long_result")" -eq 2 ]]; then
+    test_pass
+else
+    test_fail "long stderr result=$(wc -c < "$long_result") sidecar=$(wc -c < "$long_sidecar")"
+fi
+
+test_case "a Codex recovery notice cannot move a stderr-only answer to a sidecar"
+(
+    CODEX_SUBAGENT_PREAMBLE=''
+    run_external_fixture stderr-only stderr-only codex-standard reviewer review
+)
+stderr_only_result="$RESULTS_DIR/codex-standard-stderr-only.md"
+if grep -Fq 'Codex response was emitted on stderr' "$stderr_only_result" &&
+   grep -Fq '# Completed: Answer carried only on stderr.' "$stderr_only_result" &&
+   grep -Fq 'diagnostic line 600 ' "$stderr_only_result" &&
+   ! grep -Fq 'Full stderr transcript' "$stderr_only_result" &&
+   [[ ! -e "${stderr_only_result%.md}.stderr.log" ]]; then
+    test_pass
+else
+    test_fail "launcher recovery notice caused the stderr-only answer to be truncated"
+fi
+
+test_case "stdout noise removed by grep cannot truncate an answer on stderr"
+run_external_fixture noise-stderr noise-stderr fake-api reviewer review
+noise_result="$RESULTS_DIR/fake-api-noise-stderr.md"
+if [[ -z "$(octo_result_framed_sections "$noise_result" output)" ]] &&
+   grep -Fq 'Answer at the start of stderr.' "$noise_result" &&
+   grep -Fq 'diagnostic line 600 ' "$noise_result" &&
+   [[ ! -e "${noise_result%.md}.stderr.log" ]]; then
+    test_pass
+else
+    test_fail "filtered noise caused the stderr answer to be truncated"
+fi
+
+test_case "an existing permissive sidecar is replaced with a private file"
+existing_sidecar="$RESULTS_DIR/fake-api-existing-sidecar.stderr.log"
+printf '%s\n' 'stale transcript' > "$existing_sidecar"
+chmod 644 "$existing_sidecar"
+run_external_fixture big-stderr existing-sidecar fake-api reviewer review
+if [[ "$(stat -c '%a' "$existing_sidecar" 2>/dev/null || stat -f '%Lp' "$existing_sidecar")" == 600 ]] &&
+   [[ "$(grep -c '^exec cat src/file-' "$existing_sidecar")" -eq 600 ]]; then
+    test_pass
+else
+    test_fail "existing sidecar retained unsafe permissions or stale content"
+fi
+
+test_case "a sidecar symlink is refused without overwriting its target"
+symlink_target="$TEST_TMP_DIR/sidecar-victim"
+printf '%s\n' 'do not overwrite' > "$symlink_target"
+symlink_sidecar="$RESULTS_DIR/fake-api-symlink-sidecar.stderr.log"
+ln -s "$symlink_target" "$symlink_sidecar"
+run_external_fixture big-stderr symlink-sidecar fake-api reviewer review
+if [[ -L "$symlink_sidecar" && "$(cat "$symlink_target")" == 'do not overwrite' ]] &&
+   [[ "$(grep -c '^exec cat src/file-' "$RESULTS_DIR/fake-api-symlink-sidecar.md")" -eq 600 ]] &&
+   ! grep -Fq 'Full stderr transcript' "$RESULTS_DIR/fake-api-symlink-sidecar.md"; then
+    test_pass
+else
+    test_fail "sidecar symlink was followed or stderr was lost"
+fi
+
+test_case "an oversized transcript refused by the writer stays inline"
+run_external_fixture oversized-stderr oversized-stderr fake-api reviewer review
+oversized_result="$RESULTS_DIR/fake-api-oversized-stderr.md"
+if [[ "$(wc -c < "$oversized_result")" -gt 1100000 ]] &&
+   [[ ! -e "${oversized_result%.md}.stderr.log" ]] &&
+   ! grep -Fq 'Full stderr transcript' "$oversized_result"; then
+    test_pass
+else
+    test_fail "oversized stderr was dropped on writer refusal"
+fi
+
+test_case "the bounded stderr excerpt remains valid UTF-8"
+run_external_fixture unicode-stderr unicode-stderr fake-api reviewer review
+unicode_result="$RESULTS_DIR/fake-api-unicode-stderr.md"
+if python3 - "$unicode_result" <<'PY_UTF8'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+result = path.read_bytes()
+result.decode("utf-8", errors="strict")
+sidecar = path.with_suffix(".stderr.log").read_bytes()
+assert sidecar == (chr(233) * 25000 + "\n").encode("utf-8")
+assert len(result) < 30000
+assert result.count(chr(233).encode("utf-8")) > 0
+PY_UTF8
+then
+    test_pass
+else
+    test_fail "UTF-8 stderr was corrupted or the excerpt exceeded its budget"
 fi
 
 test_summary
