@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [11.15.2] - 2026-10-28
+
+### Fixed
+
+- Learned file hints and provider history stay within the current project or
+  Git worktree. Hints record and suggest only existing relative paths inside
+  that root. Older patterns without a root and unscoped provider histories
+  remain on disk but are ignored. Provider history now uses
+  `.octo/providers/<project-key>/` under the Octopus workspace.
+  [#1228](https://github.com/nyldn/claude-octopus/pull/1228),
+  commit [ee7bcb4](https://github.com/nyldn/claude-octopus/commit/ee7bcb42e47ba6740100482e5be4155c3e6ebc46).
+- Provider answers stay readable when stderr contains a large transcript.
+  With a usable stdout answer and stderr over 16 KB, the full transcript goes
+  to a private `.stderr.log` sidecar. The result keeps at most 16 KB from its
+  last 40 lines, preserving UTF-8 and the untrusted-content wrapper. Runs
+  without an answer, unsafe sidecar paths, and transcripts over the private
+  writer's 1 MiB limit keep stderr inline. Result expiry removes the matching
+  transcript while preserving transcripts for retained reports.
+  [#1232](https://github.com/nyldn/claude-octopus/pull/1232),
+  commit [931b13e](https://github.com/nyldn/claude-octopus/commit/931b13e20393e7bb3d4b178e6d6ac97c959e8df0).
+- Smoke-test failures no longer mark a healthy provider quota-dead for later
+  runs unless they are explicit authentication or rate-limit rejections
+  observed outside coding sandboxes. Other failures exclude the provider only
+  for the current run. Unknown failures prevent caching a successful overall
+  check, while timeouts retain the existing slow-provider pass-cache policy.
+  Preflight distinguishes cached quota/auth failures, with their individual
+  timestamps, from current-run failures. Sandbox denials identify the check's
+  restriction and advise retrying outside the sandbox.
+  [#1233](https://github.com/nyldn/claude-octopus/pull/1233),
+  commit [16dd9e6](https://github.com/nyldn/claude-octopus/commit/16dd9e67d4be42e1bed11c89fed251b3cea4d7b5).
+
 ## [11.15.1] - 2026-10-23
 
 ### Fixed

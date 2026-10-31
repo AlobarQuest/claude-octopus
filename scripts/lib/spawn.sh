@@ -1732,7 +1732,13 @@ ${heuristic_ctx}"
                     -e '^Using FileKeychain' \
                     -e '^Loaded cached credentials' \
                     -e '^Run /mcp' \
-                    "$temp_output" >> "$result_file" 2>/dev/null || cat "$temp_output" >> "$result_file"
+                    "$temp_output" >> "$result_file" 2>/dev/null || {
+                    local _filter_status=$?
+                    # grep returns 1 when every line was intentionally removed.
+                    if [[ "$_filter_status" -gt 1 ]]; then
+                        cat "$temp_output" >> "$result_file"
+                    fi
+                }
             fi
             if [[ "$agent_type" == codex* ]] \
                 && ! grep -q '[[:alnum:]]' "$temp_output" 2>/dev/null \
@@ -1779,18 +1785,47 @@ ${heuristic_ctx}"
                 fi
             fi
 
-            # Append stderr if it contains useful content (not just warnings)
+            # Append stderr if it contains useful content (not just warnings).
+            # Codex echoes every file it reads on stderr; a large transcript
+            # beside a real stdout answer goes to <result>.stderr.log with only
+            # its tail inline, so the result holds the review (sail-cruisey
+            # #3245: 294 KB of echoed files around a 2 KB review). A stdout-less
+            # run keeps it inline: its answer was recovered from stderr.
             if [[ -s "$temp_errors" ]] && ! grep -q "^mcp startup:" "$temp_errors"; then
+                local _stderr_bytes _stderr_sidecar=""
+                _stderr_bytes="$(wc -c < "$temp_errors" | tr -d '[:space:]')"
+                if [[ "${_stderr_bytes:-0}" -gt 16384 ]] &&
+                   grep -q '[[:alnum:]]' "$temp_output" 2>/dev/null &&
+                   octo_result_framed_sections "$result_file" output | grep '[[:alnum:]]' >/dev/null; then
+                    _stderr_sidecar="${result_file%.md}.stderr.log"
+                    # Reuse the path-safe writer. Refused paths or transcripts
+                    # above its 1 MiB input limit retain the full inline copy.
+                    if ! python3 "${_octopus_spawn_lib_dir}/../helpers/private-atomic-write.py" \
+                        "$_stderr_sidecar" < "$temp_errors" 2>/dev/null; then
+                        _stderr_sidecar=""
+                    fi
+                fi
                 echo "" >> "$result_file"
                 echo "## Warnings/Errors" >> "$result_file"
                 if [[ -n "$_untrusted_nonce" ]]; then
                     echo "<!-- BEGIN-UNTRUSTED:provider=${agent_type}:stream=stderr:nonce=${_untrusted_nonce} -->" >> "$result_file"
                 fi
                 echo '```' >> "$result_file"
-                cat "$temp_errors" >> "$result_file"
+                if [[ -n "$_stderr_sidecar" ]]; then
+                    tail -c 16384 "$temp_errors" | tail -n 40 | python3 -I -c '
+import sys
+sys.stdout.buffer.write(sys.stdin.buffer.read().decode("utf-8", errors="ignore").encode("utf-8"))
+' >> "$result_file"
+                    printf '\n' >> "$result_file"
+                else
+                    cat "$temp_errors" >> "$result_file"
+                fi
                 echo '```' >> "$result_file"
                 if [[ -n "$_untrusted_nonce" ]]; then
                     echo "<!-- END-UNTRUSTED:provider=${agent_type}:stream=stderr:nonce=${_untrusted_nonce} -->" >> "$result_file"
+                fi
+                if [[ -n "$_stderr_sidecar" ]]; then
+                    echo "(Last 40 lines, at most 16 KB shown. Full stderr transcript, ${_stderr_bytes} bytes: ${_stderr_sidecar})" >> "$result_file"
                 fi
             fi
 
