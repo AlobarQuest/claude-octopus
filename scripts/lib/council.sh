@@ -86,6 +86,7 @@ if ! declare -f octo_api_key_provider_is_available >/dev/null 2>&1; then
 fi
 source "${_council_lib_dir}/agent-sync.sh" 2>/dev/null || true
 source "${_council_lib_dir}/features.sh" 2>/dev/null || true
+source "${_council_lib_dir}/council-workers.sh"
 unset _council_lib_dir
 
 council_usage() {
@@ -1868,20 +1869,11 @@ _council_cancel_tree() {
     kill -KILL "$pid" 2>/dev/null || true
 }
 
+# Run one roster member with bounded detached output, or use the inline fixture
+# path; publish the seat PID so the phase scheduler can collect it later.
 council_dispatch_member_detached() {
-    # Serial-but-detached seat dispatch (sail-cruisey #2077). A council seat used to
-    # run inline in the council's own process group: a SIGHUP/SIGINT/SIGTERM to the
-    # council (a Claude Code tool timeout, a user Ctrl-C, an orchestrator-level signal)
-    # propagated to the in-flight provider child, killing it mid-write and leaving a
-    # torn response file — the council then hung or reported a false provider
-    # shortage. This wrapper runs the seat in a signal-isolated, disowned background
-    # subshell that writes to a .partial file and atomically renames it into place on
-    # completion, dropping a .done sentinel carrying the exit code. The seat's write
-    # is thus decoupled from the parent's process group: an interrupted parent can no
-    # longer kill a seat mid-write or leave a half-written file, and reaping is
-    # authoritative via the .done sentinel rather than a synchronous return that a
-    # racing signal could truncate. Seats still run one at a time (serial ordering
-    # preserved) — this is a reliability change, not a concurrency change.
+    # Signal-isolated dispatch with atomic output and completion records. The
+    # phase scheduler can launch this seat now and reap it after other seats.
     #
     # setsid is deliberately NOT used: it is absent on macOS (util-linux only). The
     # portable equivalent — `disown` plus `trap '' HUP INT TERM` inside the subshell —
@@ -1922,6 +1914,10 @@ council_dispatch_member_detached() {
     (
         trap '' HUP INT TERM
         trap 'exit 143' USR1
+        if [[ "${_COUNCIL_POOL_LAUNCH:-0}" == 1 ]] && declare -f record_agent_call >/dev/null 2>&1; then
+            # Preparation stays parallel; the scheduler owns usage reservations.
+            record_agent_call() { council_pool_request_reservation "$output_path" "$@" || exit 74; }
+        fi
         rc=0
         council_dispatch_member "$member_json" "$phase" > "$partial" || rc=$?
         # A swallowed mv failure would let the wrapper report success (rc unchanged)
@@ -1944,6 +1940,19 @@ council_dispatch_member_detached() {
     # the bare form (most-recent job) if the shell has already reaped it.
     disown "$seat_pid" 2>/dev/null || disown 2>/dev/null || true
 
+    if [[ "${_COUNCIL_POOL_LAUNCH:-0}" == 1 ]]; then
+        COUNCIL_ASYNC_PID="$seat_pid"
+        COUNCIL_ASYNC_TIMEOUT="$timeout_secs"
+        return 0
+    fi
+    council_reap_member_detached "$output_path" "$seat_pid" "$timeout_secs"
+}
+
+# Collect a detached seat's completion status within its timeout and reap grace.
+# Kill an overdue process tree before discarding output that could publish late.
+council_reap_member_detached() {
+    local output_path="$1" seat_pid="$2" timeout_secs="$3"
+    local partial="${output_path}.partial" done_file="${output_path}.done"
     # Bounded reap. run_agent_sync already enforces the per-seat provider timeout, so
     # the subshell terminates on its own; this poll is a safety net keyed to the same
     # timeout plus a grace margin for the mv+sentinel write. Poll the .done sentinel
@@ -1953,7 +1962,7 @@ council_dispatch_member_detached() {
     # shared resolver so this consumer and the aggregate-budget clamp normalize the
     # value identically (a raw "08" would break this arithmetic as invalid octal).
     local grace_secs; grace_secs="$(council_deadline_reap_grace)"
-    local max_ms=$(( (timeout_secs + grace_secs) * 1000 )) waited_ms=0
+    local max_ms=$(( (timeout_secs + grace_secs) * 1000 )) waited_ms=${4:-0}
     while (( waited_ms < max_ms )); do
         [[ -f "$done_file" ]] && break
         if ! kill -0 "$seat_pid" 2>/dev/null; then
@@ -1989,7 +1998,9 @@ council_dispatch_member_detached() {
         fi
         rm -f "$output_path"
     fi
-    rm -f "$done_file" "${done_file}.tmp" "$partial"
+    rm -f "$done_file" "${done_file}.tmp"
+    # Retain unfinished provider output for diagnosis after watchdog cancellation.
+    [[ "$rc" != 0 && -s "$partial" ]] || rm -f "$partial"
     if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; fi
     return "$rc"
 }
@@ -2810,7 +2821,7 @@ print(json.dumps(validated, separators=(",", ":")))
 PY
 }
 
-COUNCIL_EMPTY_GROUNDING_JSON='{"verification_failed":false,"citations":0,"citations_unresolved":0,"quotes_checked":0,"quotes_verified":0,"quotes_near_line":0,"quotes_attributed":0,"quotes_attributed_unverified":0,"quotes_verified_in_diff_removed":0,"quotes_verified_in_diff_added":0,"quotes_unverified":0,"quotes_unverifiable":0,"quotes_unverifiable_claimed_removed":0,"quotes_unverifiable_unresolved_citation":0,"quotes_unverifiable_command":0,"quotes_unverifiable_proposed":0,"quotes_unverifiable_prose":0,"quotes_unverifiable_diff_incomplete":0,"quotes_omitted":0,"response_oversized":false,"diff_truncated":false,"diff_unavailable":false,"diff_sources":[],"fabricated":false,"unverified_samples":[]}'
+COUNCIL_EMPTY_GROUNDING_JSON='{"verification_failed":false,"citations":0,"citations_unresolved":0,"quotes_checked":0,"quotes_verified":0,"quotes_near_line":0,"quotes_attributed":0,"quotes_attributed_unverified":0,"quotes_verified_in_diff_removed":0,"quotes_verified_in_diff_added":0,"quotes_unverified":0,"quotes_unverifiable":0,"quotes_unverifiable_claimed_removed":0,"quotes_unverifiable_unresolved_citation":0,"quotes_unverifiable_command":0,"quotes_unverifiable_proposed":0,"quotes_unverifiable_prose":0,"quotes_unverifiable_diff_incomplete":0,"quotes_omitted":0,"quotes_partial":0,"response_oversized":false,"diff_truncated":false,"diff_unavailable":false,"diff_sources":[],"fabricated":false,"unverified_samples":[]}'
 COUNCIL_FAILED_GROUNDING_JSON="${COUNCIL_EMPTY_GROUNDING_JSON/\"verification_failed\":false/\"verification_failed\":true}"
 
 council_response_quote_verification_json() {
@@ -2896,7 +2907,7 @@ result = {"verification_failed": False, "citations": 0, "citations_unresolved": 
           "quotes_unverifiable_claimed_removed": 0, "quotes_unverifiable_unresolved_citation": 0,
           "quotes_unverifiable_command": 0, "quotes_unverifiable_proposed": 0,
           "quotes_unverifiable_prose": 0, "quotes_unverifiable_diff_incomplete": 0,
-          "quotes_omitted": 0, "response_oversized": False, "diff_truncated": False, "diff_unavailable": False, "diff_sources": [],
+          "quotes_omitted": 0, "quotes_partial": 0, "response_oversized": False, "diff_truncated": False, "diff_unavailable": False, "diff_sources": [],
           # Preserve the report schema without copying provider excerpts into
           # persistent contribution records. Counts retain the rejection reason.
           "fabricated": False, "unverified_samples": []}
@@ -3270,6 +3281,7 @@ for backtick_index in range(len(backticks) - 1, -1, -1):
     next_backtick[backtick_index] = last_backtick.get(width)
     last_backtick[width] = backtick_index
 backtick_index = 0
+prose_parts, prose_cursor = [], 0
 while backtick_index < len(backticks):
     opening = backticks[backtick_index]
     closing_index = next_backtick[backtick_index]
@@ -3284,7 +3296,13 @@ while backtick_index < len(backticks):
     # Markdown code spans replace embedded line endings with spaces.
     body = re.sub(r"\r\n?|\n", " ", resp[opening.end():closing.start()])
     units.append((opening.start(), closing.end(), "inline", [body.strip()], [], ""))
+    # Reuse parsed Markdown spans for ownership prose. Preserve offsets and
+    # line boundaries while excluding code punctuation and proposal words.
+    prose_parts.extend((resp[prose_cursor:opening.start()],
+                        re.sub(r"[^\r\n]", " ", resp[opening.start():closing.end()])))
+    prose_cursor = closing.end()
     backtick_index = closing_index + 1
+prose_resp = "".join(prose_parts) + resp[prose_cursor:]
 # The "path:line" list shape: a line holding only a citation, followed by the
 # quoted source line with no markup. These can only add verified evidence; an
 # unmatched bare line may be prose, so it is never counted against the seat.
@@ -3305,6 +3323,22 @@ for c_start, c_end, _, _ in tokens:
         continue
     units.append((line_end + 1, next_end, "bare", [line], [], ""))
 units.sort(key=lambda unit: unit[0])
+
+# A seat's own arithmetic ("8 + 10 + 0.5 = 18.5 KB") is a value it computed,
+# not a quote of the payload (sail-cruisey #3246): only numbers, a known unit
+# right after a number, and operators, with at least one digit and one
+# operator. Any identifier ("base + taxes * 2") or keyword ("0 if n else 1")
+# keeps it a code quote. Only a whole inline span is exempt, and only when no
+# citation claims it: fence lines and diff removals assert source content.
+COMPUTED_UNIT = (r"%|(?:[kmgtp]i?)?b|bytes?|bits?|(?:kilo|mega|giga|tera)(?:bytes?|bits?)"
+                 r"|[kmgt]|ns|us|µs|ms|s|secs?|seconds?|mins?|minutes?|h|hrs?|hours?|days?|weeks?"
+                 r"|x|tokens?|chars?|characters?|words?|lines?|files?|calls?|requests?|rows?|items?")
+COMPUTED_NUMBER = re.compile(r"\d+(?:_\d+)*(?:[.,]\d+(?:_\d+)*)*(?:e[+-]?\d+)?(?:\s*(?:" + COMPUTED_UNIT + r")(?![A-Za-z0-9_]))?", re.I)
+def computed(text):
+    text = norm(text)
+    if not re.search(r"\d", text) or not re.search(r"[-+*/×÷=≈<>%]", text):
+        return False
+    return re.sub(r"[\s\-+*/×÷=≈~<>%()\[\],.]+", "", COMPUTED_NUMBER.sub("", text)) == ""
 
 def checkable(text):
     # A quoted citation or a bare path is not a code quote.
@@ -3439,6 +3473,19 @@ def specific_lines(block, table=False):
             out.append(variants)
     return out
 
+def short_lines(block):
+    # Nonempty lines too short to check on their own. They never count toward
+    # the two-thirds threshold, but an invented one still makes a fence partial.
+    out = []
+    for line in block:
+        variants = [line.strip(), GUTTER.sub("", line).strip()]
+        # An elision marker stands for omitted source; it is never a miss.
+        if not variants[-1] or ELLIPSIS.fullmatch(variants[-1]) or ELLIPSIS.fullmatch(variants[0]):
+            continue
+        if line.strip() and not any(checkable(v) for v in variants):
+            out.append([norm(v) for v in dict.fromkeys(variants) if norm(v)])
+    return [v for v in out if v]
+
 def unit_wholes(block):
     whole = " ".join(l.strip() for l in block)
     out = [whole] if whole else []
@@ -3495,26 +3542,166 @@ def match_variant(text, entry):
         return find_lines(hay, starts, line_numbers, pieces[0], following=pieces[1:])
     return []
 
-def match_unit(wholes, line_variants, entry):
+# Batch small literal-line queries across all quotes. A failure-link trie scans
+# each source once instead of searching a megabyte file for every short line.
+# Long lines and ordered elisions retain their existing matching path.
+plain_needles = {norm(v) for unit in units for line in unit[3] + unit[4]
+                 for v in unescaped([line.strip(), GUTTER.sub("", line).strip()], True)
+                 if 0 < len(norm(v)) <= 64 and not ELLIPSIS.search(norm(v))}
+plain_automaton = None
+plain_batches = None
+plain_batch_ids = {}
+plain_hits = {}
+plain_queries = {}
+def plain_line_present(needle, hay):
+    global plain_automaton, plain_batches
+    if len(plain_needles) < 64 or needle not in plain_needles:
+        return None
+    # Most files supply only a few lines from the response-wide pattern set.
+    # Use native substring searches for sparse queries; amortize a Python trie
+    # scan only after this evidence actually receives many distinct queries.
+    queried = plain_queries.setdefault(hay, set())
+    if len(queried) <= 1024:
+        queried.add(needle)
+        if len(queried) <= 1024:
+            return needle in hay
+    if plain_batches is None:
+        # A response can contain many unrelated 64-character lines. Limit the
+        # active trie to 65,537 nodes, and build only batches actually queried.
+        plain_batches = [[]]
+        budget = 0
+        for word in sorted(plain_needles):
+            if budget + len(word) > 65536:
+                plain_batches.append([])
+                budget = 0
+            plain_batch_ids[word] = len(plain_batches) - 1
+            plain_batches[-1].append(word)
+            budget += len(word)
+    batch = plain_batch_ids[needle]
+    cache_key = (hay, batch)
+    if cache_key in plain_hits:
+        return needle in plain_hits[cache_key]
+    if plain_automaton is None or plain_automaton[0] != batch:
+        edges, failure, output, words = [{}], [0], [0], {}
+        for word in plain_batches[batch]:
+            state = 0
+            for char in word:
+                if char not in edges[state]:
+                    edges[state][char] = len(edges)
+                    edges.append({}); failure.append(0); output.append(0)
+                state = edges[state][char]
+            words[state] = word
+        queue = list(edges[0].values())
+        for state in queue:
+            output[state] = state if state in words else output[failure[state]]
+            for char, child in edges[state].items():
+                fallback = failure[state]
+                while fallback and char not in edges[fallback]:
+                    fallback = failure[fallback]
+                failure[child] = edges[fallback].get(char, 0)
+                queue.append(child)
+        # Retain only the active batch's arrays, rather than every trie.
+        plain_automaton = batch, edges, failure, output, words
+    if cache_key not in plain_hits:
+        _, edges, failure, output, words = plain_automaton
+        parent = list(range(len(edges)))
+        def unseen(state):
+            while parent[state] != state:
+                parent[state] = parent[parent[state]]
+                state = parent[state]
+            return state
+        hits, state = set(), 0
+        for char in hay:
+            while state and char not in edges[state]:
+                state = failure[state]
+            state = edges[state].get(char, 0)
+            terminal = unseen(output[state])
+            while terminal:
+                hits.add(words[terminal])
+                # Retire each matched pattern, including suffix patterns, once.
+                # Repeated source text cannot multiply output-processing work.
+                parent[terminal] = unseen(output[failure[terminal]])
+                terminal = parent[terminal]
+            if len(hits) == len(plain_batches[batch]):
+                break
+        plain_hits[cache_key] = hits
+    return needle in plain_hits[cache_key]
+
+# Presence is independent of source line numbers. Reuse it across quote units
+# without changing which source supplies the near-line report.
+partial_presence = {}
+def match_unit(wholes, line_variants, entry, misses=None, short=()):
     # A multi-line block verifies as a whole or when at least two thirds of its
     # specific lines are in the file. One generic real line (a signature, an
-    # "if (flag) {") can no longer carry an otherwise invented block.
+    # "if (flag) {") can no longer carry an otherwise invented block. When the
+    # threshold or elision carries it, report whether any retained line,
+    # short ones included, is missing.
+    hay = entry[0]
+    variant_matches = {}
+    def match(variant):
+        if variant not in variant_matches:
+            variant_matches[variant] = match_variant(variant, entry)
+        return variant_matches[variant]
+    def missing():
+        for variants in line_variants + list(short):
+            key = (hay, tuple(variants))
+            if key not in partial_presence:
+                partial_presence[key] = True
+                for variant in variants:
+                    # Partial accounting checks every retained fragment, even
+                    # below the specificity floor used by the verdict.
+                    pieces = [p for p in ELLIPSIS.split(norm(variant)) if p]
+                    # Reuse an exact literal match already computed for the
+                    # verdict before indexing every report-only short line.
+                    # Elisions still need their lower-specificity presence check.
+                    present = (bool(variant_matches[variant])
+                               if variant in variant_matches and not ELLIPSIS.search(norm(variant))
+                               else plain_line_present(norm(variant), hay))
+                    if present is None:
+                        if ELLIPSIS.search(norm(variant)):
+                            if not reserve_optional_scan((len(hay) + len(variant)) * max(1, len(pieces))):
+                                return 1
+                            present = pieces and find_lines(hay, [], [], pieces[0], following=pieces[1:])
+                        else:
+                            present = match(variant)
+                    if present:
+                        partial_presence[key] = False
+                        break
+            # Callers only need a boolean. A first miss establishes partial
+            # status without scanning every other distinct short line.
+            if partial_presence[key]:
+                return 1
+        return 0
     for variant in wholes:
-        lines = match_variant(variant, entry)
+        lines = match(variant)
         if lines:
+            if misses is not None and norm(variant) not in hay:
+                # Elided fragments matched; a line between them may be invented.
+                misses.append(missing())
             return lines
     if not line_variants:
         return []
     found = []
     for variants in line_variants:
         for variant in variants:
-            lines = match_variant(variant, entry)
+            lines = match(variant)
             if lines:
                 found.append(lines)
                 break
     if found and len(found) * 3 >= len(line_variants) * 2:
+        if misses is not None:
+            misses.append(missing())
         return found[0]
     return []
+
+# Exhaustion keeps partial reporting conservative without changing a verified quote.
+optional_scan_work = 8 * 1024 * 1024
+def reserve_optional_scan(work):
+    global optional_scan_work
+    if work > optional_scan_work:
+        return False
+    optional_scan_work -= work
+    return True
 
 all_cited = []
 for _, _, path, _ in citations:
@@ -3526,6 +3713,7 @@ for _, _, path, _ in citations:
 # is checked here instead of being reported as fabricated. Loaded lazily, only
 # when a quote fails against the cited files.
 diff_sides = None
+optional_diff_sides = None
 def split_diff(text):
     removed, added = [], []
     remaining = None
@@ -3555,10 +3743,10 @@ def split_diff(text):
                 added.append(piece)
     return removed, added
 
-def read_git_diff(command, env, limit=MAX_DIFF_BYTES):
+def read_git_diff(command, env, limit=MAX_DIFF_BYTES, timeout=10):
     # Read one byte past the cap to detect truncation without buffering the
-    # remaining diff. Keep the original ten-second deadline, including exit.
-    deadline = time.monotonic() + 10
+    # remaining diff. Include process exit in the caller's deadline.
+    deadline = time.monotonic() + timeout
     with subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL) as proc:
         try:
@@ -3568,7 +3756,7 @@ def read_git_diff(command, env, limit=MAX_DIFF_BYTES):
                 while len(raw) <= limit:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not selector.select(remaining):
-                        raise subprocess.TimeoutExpired(command, 10)
+                        raise subprocess.TimeoutExpired(command, timeout)
                     chunk = os.read(proc.stdout.fileno(), min(65536, limit + 1 - len(raw)))
                     if not chunk:
                         break
@@ -3581,7 +3769,7 @@ def read_git_diff(command, env, limit=MAX_DIFF_BYTES):
             if proc.poll() is None:
                 proc.kill()
 
-def load_diff_sides():
+def load_diff_sides(git_timeout=10):
     removed, added = [], []
     for path in context_files:
         try:
@@ -3608,7 +3796,7 @@ def load_diff_sides():
             # Attributes can select clean/process commands even with textconv
             # disabled. Override every configured driver, including those used by
             # .git/info/attributes and core.attributesFile. Read names, not values.
-            config = read_git_diff(git_command + ["config", "--null", "--name-only", "--list"], env, 65_536)
+            config = read_git_diff(git_command + ["config", "--null", "--name-only", "--list"], env, 65_536, git_timeout)
             if config is None or len(config) > 65_536:
                 raise subprocess.SubprocessError("filter configuration unavailable")
             drivers = {key.rsplit(b".", 1)[0] for key in bytes(config).split(b"\0")
@@ -3621,7 +3809,7 @@ def load_diff_sides():
                 git_command += ["-c", name + ".clean=", "-c", name + ".process=",
                                 "-c", name + ".required=false"]
             raw_diff = read_git_diff(git_command + ["diff", "--no-color", "--no-ext-diff",
-                                                   "--no-textconv", "--unified=0", base, "--"], env)
+                                                   "--no-textconv", "--unified=0", base, "--"], env, timeout=git_timeout)
             if raw_diff is None:
                 # A plain evidence directory has no default Git diff. In a
                 # worktree, or with a requested base, failure is missing evidence.
@@ -3641,9 +3829,14 @@ def load_diff_sides():
     # Joined so a multi-line quote of consecutive diff lines still matches.
     return (" ".join(removed), " ".join(added))
 
-def in_diff_side(wholes, line_variants, side):
+def in_diff_side(wholes, line_variants, side, misses=None, short=(), report_only=False):
     # Reuse the source-file threshold, including elision and gutter handling.
-    return bool(side and match_unit(wholes, line_variants, (side, [0], [1])))
+    if report_only:
+        patterns = list(wholes) + [v for variants in line_variants + list(short) for v in variants]
+        work = (len(side) + sum(len(v) for v in patterns)) * max(1, len(patterns))
+        if not reserve_optional_scan(work):
+            return False
+    return bool(side and match_unit(wholes, line_variants, (side, [0], [1]), misses, short))
 
 REMOVAL_WORDS = re.compile(r"\b(remov(?:e|ed|es|ing|al)|delet(?:e|ed|es|ing|ion)|drop(?:ped|s)?|no longer|was gone|got rid of)\b", re.I)
 # A command the seat ran ("`npm ci --dry-run`") is not a claim about file
@@ -3660,11 +3853,81 @@ GAP_WORDS = {"reads", "read", "shows", "show", "contains", "contain", "has", "sa
              "defines", "define", "defined", "declares", "declare", "declared",
              "line", "lines", "source", "code", "verbatim", "quote", "quoted", "excerpt",
              "current", "currently", "actual", "l"}
-SOURCE_VERB = re.compile(r"\b(?:reads?|shows?|contains?|has|says?|is|defines?|defined|declares?|declared)\b", re.I)
+SOURCE_VERB = re.compile(r"\b(?:reads?|shows?|contains?|has|says?|is|defines?|defined|declares?|declared|computes?)\b", re.I)
+# A content verb before "built as" keeps the citation's claim ("x.ts:2 contains
+# the code built as `...`"); a first-person subject after it marks the seat's
+# own input ("x.ts:2 reads a row I constructed as `...`").
+OWN_INPUT = re.compile(r"(?:constructed|built|crafted) as", re.I)
+CONTENT_VERB = SOURCE_VERB
+FIRST_PERSON_SUBJECT = re.compile(
+    r"\b(?:I|we)(?:['’](?:ve|d))?\s+(?:(?:have|had|just|recently|already|carefully|deliberately|"
+    r"explicitly|locally|manually|originally|previously)\s+)*$", re.I)
+# An explicit source subject restarts attribution even in the same sentence,
+# after a reviewer describes a proposed input or replacement.
+SOURCE_SUBJECT = re.compile(
+    r"\b(?:(?:the|this|that|current|actual|cited)\s+)+"
+    r"(?:file|source|code)\s+(?:itself\s+)?"
+    r"(?:(?:now|currently|actually)\s+)?" + SOURCE_VERB.pattern, re.I)
+EXPLICIT_SOURCE_CLAIM = re.compile(
+    r"\b(?:but|however|whereas|and)\s+" + SOURCE_SUBJECT.pattern, re.I)
+DOTTED_ABBREVIATION = re.compile(r"\b(?:[A-Za-z]\.){2,}")
+CLAUSE_BOUNDARY = re.compile(r"[.!?;](?:\s|$)")
+def clause_start(text, end):
+    # Both scans advance in source order; never rescan all abbreviation ranges
+    # for each punctuation mark on a long response line.
+    abbreviations = DOTTED_ABBREVIATION.finditer(text, 0, end)
+    abbreviation = next(abbreviations, None)
+    last = 0
+    for boundary in CLAUSE_BOUNDARY.finditer(text, 0, end):
+        while abbreviation is not None and abbreviation.end() <= boundary.start():
+            abbreviation = next(abbreviations, None)
+        if abbreviation is None or boundary.start() < abbreviation.start():
+            last = boundary.end()
+    return last
+
+def proposes(text):
+    # A proposal in an earlier sentence cannot excuse a current source claim.
+    # Keep terminal punctuation on a standalone fence lead-in in its clause.
+    end = len(text.rstrip(" \t\r\n.!?;"))
+    start = clause_start(text, end)
+    if re.fullmatch(r"\s*(?:my|our)\s+(?:fixed|replacement)\s+(?:version|code)\s+is\s*:?\s*", text[start:end], re.I):
+        return True
+    # A patch-only lead-in continues the immediately preceding proposal. Do
+    # not carry it through an arbitrary later sentence or a source assertion.
+    if re.fullmatch(r"\s*(?:here is the patch|apply it as follows)\s*:\s*", text[start:], re.I):
+        previous_end = len(text[:start].rstrip(" \t\r\n.!?;"))
+        previous_start = clause_start(text, previous_end)
+        if PROPOSAL.search(text, previous_start, previous_end):
+            start = previous_start
+    for claim in EXPLICIT_SOURCE_CLAIM.finditer(text, start):
+        # A nearby proposed replacement can own this ambiguous continuation.
+        if (re.fullmatch(r"and\s+(?:the|this)\s+code\s+is", claim.group(), re.I)
+                and re.search(r"\b(?:recommend\w*|suggest\w*|propos\w*|consider)\s+"
+                              r"(?:a|the|this)\s+(?:replacement|fix|patch)\s*,?\s*$",
+                              text[max(start, claim.start() - 160):claim.start()], re.I)):
+            continue
+        start = claim.start()
+    verbs = CONTENT_VERB.finditer(text, start)
+    verb = next(verbs, None)
+    verb_end = None
+    previous_end = start
+    for match in PROPOSAL.finditer(text, start):
+        if OWN_INPUT.fullmatch(match.group(0)):
+            # Advance through verbs once. A direct I/we subject cannot contain
+            # an earlier proposal, so its search need not rescan that prefix.
+            while verb is not None and verb.end() <= match.start():
+                verb_end = verb.end()
+                verb = next(verbs, None)
+            if verb_end is not None and not FIRST_PERSON_SUBJECT.search(
+                    text, max(verb_end, previous_end), match.start()):
+                previous_end = match.end()
+                continue
+        return True
+    return False
 SOURCE_ABSENCE = re.compile(
     r"\b(?:(?:does|do|did)\s+not|(?:doesn|don|didn)['’]t)\s+"
-    r"(?:currently\s+)?(?:contain|show|read|say|define|declare|have)\b", re.I)
-PROPOSAL = re.compile(r"\b(should|propos\w*|suggest\w*|recommend\w*|replace with|instead|would|could|change (?:it |this )?to|rewrit\w*|becomes?|example|e\.g\.|such as|consider|cover|prefer\w*|expected|want)\b", re.I)
+    r"(?:currently\s+)?(?:contain|show|read|say|define|declare|have|compute)\b|\bnever\s+computes?\b", re.I)
+PROPOSAL = re.compile(r"\b(should|propos\w*|suggest\w*|recommend\w*|replace with|instead|would|could|change (?:it |this )?to|rewrit\w*|becomes?|example|e\.g\.|such as|consider|cover|prefer\w*|expected|want|(?:constructed|built|crafted) as)\b", re.I)
 # Backticks also format prose and multiword values. Sentence punctuation alone
 # is not code syntax, nor is a dotted name embedded in a sentence. Calls,
 # indexing, operators and statements returning a member expression still are.
@@ -3694,12 +3957,17 @@ def attribution(token, gap):
         return None
     # A source verb in this bounded clause still attributes the quote when
     # ordinary modifiers follow it. A new sentence or a proposal ends that claim.
-    source_clause = SOURCE_VERB.search(gap) and not re.search(r"[.!?;]", gap)
-    if PROPOSAL.search(gap) or (not source_clause and any(
+    start = clause_start(gap, len(gap))
+    source_clause = ((SOURCE_SUBJECT.search(gap, start) if start else SOURCE_VERB.search(gap))
+                     and not re.search(r"(?:^|[,;:]|\b(?:and|but|so|while)\b)\s*(?:I|we)\s+(?:estimate|compute|calculate)\b", gap, re.I))
+    if proposes(gap) or (not source_clause and any(
             word.lower() not in GAP_WORDS for word in re.findall(r"[A-Za-z]+", gap))):
         return None
     line_start = resp.rfind("\n", 0, token[0]) + 1
-    if PROPOSAL.search(CITATION.sub("", LINK_TARGET.sub("", resp[line_start:token[0]]))):
+    prefix = CITATION.sub("", LINK_TARGET.sub("", prose_resp[line_start:token[0]]))
+    # Here terminal punctuation closes an earlier sentence; it is not the
+    # standalone proposed fence lead-in that proposes() otherwise preserves.
+    if proposes(prefix[clause_start(prefix, len(prefix)) :]):
         return None
     return token
 
@@ -3708,31 +3976,58 @@ def proposed(start):
     # suggestion, not a claim about what a file contains today. Blank lines do
     # not sever that lead-in; other nonempty lines still end its scope.
     line_start = resp.rfind("\n", 0, start) + 1
-    prose = resp[line_start:start]
+    prose = prose_resp[line_start:start]
     if prose.strip(" \t>`") == "":
-        preceding = resp[:line_start].rstrip()
+        preceding = prose_resp[:line_start].rstrip()
         prose = preceding[preceding.rfind("\n") + 1:]
     # A source filename such as example.ts is not proposal language.
     prose = CITATION.sub("", LINK_TARGET.sub("", prose))
-    return bool(PROPOSAL.search(prose))
+    return proposes(prose)
+
+token_starts = [t[0] for t in tokens]
+CITED_AFTER = re.compile(r"(?:[(\[]|[:,\u2013\u2014-]|in|at|from)?[ \t]*`?", re.I)
+HORIZONTAL_SPACE = re.compile(r"[ \t]*")
+def cited_after(end):
+    """Recognize an adjacent citation without copying the remaining response."""
+    index = bisect_left(token_starts, end)
+    if index >= len(tokens):
+        return False
+    limit = tokens[index][0]
+    start = HORIZONTAL_SPACE.match(resp, end, limit).end()
+    return CITED_AFTER.fullmatch(resp, start, limit) is not None
 
 checkable_units = 0
 for start, end, kind, block, removed_block, info in units:
     wholes = unit_wholes(block) if len(block) > 1 else []
     # Only an inline code span can sit in a table cell.
     line_variants = specific_lines(block, kind == "inline" and in_table(start, end))
+    short = short_lines(block)
     removed_variants = [v for v in [" ".join(l.strip() for l in removed_block)] + [l.strip() for l in removed_block]
                         if v and checkable(v)]
     if not wholes and not line_variants and not removed_variants and not (
             removed_block and checkable(" ".join(block + removed_block))):
         continue
+    associated, gap = association(start)
+    attributed = attribution(associated, gap)
+    # A seat's own arithmetic in an inline span is a value it computed, unless a
+    # citation claims it: then it is a claim about the cited file to verify.
+    if kind == "inline" and attributed is None and computed(block[0]) and not cited_after(end):
+        # A removal claim asserts old source content. Keep that span for the
+        # existing diff matcher only when removal wording directly introduces
+        # or follows this expression, rather than describing another subject.
+        before = re.split(r"(?<=[.!?])\s+|\n", resp[max(0, start - REMOVAL_WINDOW):start])[-1]
+        after = re.split(r"(?<=[.!?])\s+|\n", resp[end:end + REMOVAL_WINDOW], maxsplit=1)[0]
+        removal_before = re.search(REMOVAL_WORDS.pattern +
+                                   r"(?:\s+(?:the|this|old|code|expression|line|calculation))*\s*:?\s*$", before, re.I)
+        removal_after = re.match(r"\s*(?:(?:was|is|were|are|has been|had been)\s+)?" +
+                                 REMOVAL_WORDS.pattern, after, re.I)
+        if not (removal_before or removal_after):
+            continue
     # Specificity selects the entire quote. A short nonempty side of a mixed
     # quote still needs an exact whole-side match; it is not an absent side.
     if removed_block and block and not (wholes or line_variants):
         wholes = [norm(" ".join(block))]
     flat_variants = wholes + [v for variants in line_variants for v in variants]
-    associated, gap = association(start)
-    attributed = attribution(associated, gap)
     if associated is not None and associated[2] is None:
         # Written about a citation that names a file outside the evidence root
         # (an upstream repo, a symlinked dependency tree): unverifiable, and never
@@ -3772,20 +4067,58 @@ for start, end, kind, block, removed_block, info in units:
     # A miss is only checkable when every file the quote is bound to loaded; a
     # readable neighbor cannot stand in for an oversized or unreadable bound file.
     readable = True
-    verified = near = False
+    verified = near = partial = False
+    near_budget = 65536
+    partial_budget = 65536
     for path in bound_paths + [p for p in all_cited if p not in bound_paths]:
+        # Once complete, only later bound files can improve near-line reporting.
+        if verified and not partial and path not in bound_paths:
+            break
         entry = load(path)
         if entry is None:
             if path in bound_paths:
                 readable = False
             continue
-        lines = match_unit(wholes, line_variants, entry)
+        if verified and partial and path not in bound_paths:
+            # Unbound files only refine an already verified fence's report.
+            # Keep the partial result if a complete entry exceeds this budget;
+            # slicing it could mistake a truncated source for complete evidence.
+            entry_bytes = len(entry[0].encode("utf-8"))
+            if entry_bytes > partial_budget:
+                break
+            partial_budget -= entry_bytes
+        cited_lines = [line for p, line in bound if p == path]
+        if verified and not partial:
+            # Near-line counts are supplemental: cap refinement after complete
+            # verification so large later files cannot exhaust the verdict's
+            # deadline. Search actual source windows, never concatenate gaps.
+            if not near_budget:
+                break
+            hay, starts, numbers = entry
+            first = bisect_left(numbers, max(1, min(cited_lines) - NEAR_LINES))
+            last = bisect_right(numbers, max(cited_lines) + NEAR_LINES)
+            if first == last:
+                continue
+            offset = starts[first]
+            stop = min(starts[last] if last < len(starts) else len(hay), offset + near_budget)
+            near_budget -= stop - offset
+            window_end = min(last, bisect_left(starts, stop))
+            entry = (hay[offset:stop], [at - offset for at in starts[first:window_end]],
+                     numbers[first:window_end])
+        misses = []
+        # Partial reporting applies only to fences. Non-fence threshold and
+        # elision matches need no short-line presence scans.
+        lines = match_unit(wholes, line_variants, entry,
+                           misses if kind == "fence" else None, short)
         if not lines:
             continue
+        near = near or any(abs(found - cited) <= NEAR_LINES for found in lines for cited in cited_lines)
+        # A partial match may be complete in a later cited file; keep looking
+        # for the report. The first match already decides the verdict.
+        partial = bool(misses and misses[0]) and (partial or not verified)
         verified = True
-        cited_lines = [line for p, line in bound if p == path]
-        near = any(abs(found - cited) <= NEAR_LINES for found in lines for cited in cited_lines)
-        break
+        if not partial and near:
+            break
     if kind == "bare":
         # Positive evidence only: a matched bare line is a verified quote; an
         # unmatched one may be the seat's own prose and is not counted.
@@ -3800,6 +4133,26 @@ for start, end, kind, block, removed_block, info in units:
     if attributed is not None:
         result["quotes_attributed"] += 1
     diff_side_hit = None
+    diff_partial = False
+    if kind == "fence" and verified and partial and not removed_block:
+        # A complete diff match clears partial reporting while the source-file
+        # match retains its verification count and attribution.
+        if diff_sides is None and optional_diff_sides is None:
+            # This lookup only refines partial reporting. Bound both Git calls
+            # within two seconds. A failed optional lookup cannot populate the
+            # required cache or mark later claims uncertain without a retry.
+            previous_diff_state = {key: result[key] for key in ("diff_truncated", "diff_unavailable")}
+            previous_diff_state["diff_sources"] = list(result["diff_sources"])
+            optional_diff_sides = load_diff_sides(git_timeout=1)
+            if result["diff_unavailable"]:
+                result.update(previous_diff_state)
+            else:
+                diff_sides = optional_diff_sides
+        for side in diff_sides if diff_sides is not None else optional_diff_sides:
+            side_misses = []
+            if in_diff_side(wholes, line_variants, side, side_misses, short, report_only=True) and not any(side_misses):
+                partial = False
+                break
     if not verified or removed_block:
         if diff_sides is None:
             diff_sides = load_diff_sides()
@@ -3808,23 +4161,50 @@ for start, end, kind, block, removed_block, info in units:
             # A mixed fence makes claims about both versions. A genuine
             # addition cannot excuse invented removals, or the reverse.
             removed_wholes = unit_wholes(removed_block) or [norm(" ".join(removed_block))]
-            removed_hit = in_diff_side(removed_wholes, specific_lines(removed_block), removed_side)
-            kept_hit = verified or not block or in_diff_side(wholes, line_variants, added_side)
+            removed_misses, kept_misses = [], []
+            removed_hit = in_diff_side(removed_wholes, specific_lines(removed_block), removed_side,
+                                       removed_misses, short_lines(removed_block))
+            # Each portion is partial on its own side. A kept portion partial in
+            # the cited file but exact on the added side is not partial.
+            kept_on_added = (bool(block) and (not verified or partial)
+                             and in_diff_side(wholes, line_variants, added_side, kept_misses, short,
+                                              report_only=verified))
+            kept_hit = verified or not block or kept_on_added
+            if kept_on_added:
+                kept_partial = any(kept_misses) and (partial or not verified)
+            else:
+                kept_partial = verified and partial
             verified = False
             if removed_hit and kept_hit:
                 diff_side_hit = "removed"
-        elif in_diff_side(wholes, line_variants, removed_side):
-            diff_side_hit = "removed"
-        elif in_diff_side(wholes, line_variants, added_side):
-            diff_side_hit = "added"
+                diff_partial = any(removed_misses) or kept_partial
+        else:
+            # The removed side keeps precedence. Once a side matches completely,
+            # further searches cannot improve verification or partial reporting.
+            removed_misses, added_misses = [], []
+            hits = []
+            for side_name, side, side_misses in (
+                    ("removed", removed_side, removed_misses), ("added", added_side, added_misses)):
+                if in_diff_side(wholes, line_variants, side,
+                                side_misses if kind == "fence" else None, short, report_only=bool(hits)):
+                    hits.append((side_name, side_misses))
+                    if not any(side_misses):
+                        break
+            if hits:
+                diff_side_hit = hits[0][0]
+                diff_partial = all(any(side_misses) for _, side_misses in hits)
     sample = (flat_variants or removed_variants)[0]
     if verified:
         result["quotes_verified"] += 1
         if near:
             result["quotes_near_line"] += 1
+        # sail-cruisey #3247: a mostly real fence can carry an invented line.
+        # Report it; the two-thirds threshold still decides the verdict.
+        result["quotes_partial"] += int(kind == "fence" and partial)
     elif diff_side_hit:
         result["quotes_verified"] += 1
         result["quotes_verified_in_diff_" + diff_side_hit] += 1
+        result["quotes_partial"] += int(kind == "fence" and diff_partial)
     elif not diff_sides[0] and not diff_sides[1] and (
             removed_block or REMOVAL_WORDS.search(resp[max(0, start - REMOVAL_WINDOW):end + REMOVAL_WINDOW])):
         # No diff to check a claimed removal against: unverifiable, not fabricated.
@@ -4330,6 +4710,8 @@ council_chair_is_host_native() {
     [[ "$status" == "host-native" ]]
 }
 
+# Collect independent advice and build seat, quorum and dissent records from
+# completed outputs, retaining failures and deadline omissions in the evidence.
 council_run_advice_phase() {
     COUNCIL_RESPONSES_RECEIVED="0"
     COUNCIL_CHAIR_RESPONSE_RECEIVED="false"
@@ -4349,14 +4731,10 @@ council_run_advice_phase() {
     artifact_digest="$(council_artifact_digest "$evidence_root" "${COUNCIL_TASK:-}")" || artifact_digest="unavailable"
     COUNCIL_ARTIFACT_DIGEST="$artifact_digest"
     COUNCIL_DEADLINE_HIT="false"; COUNCIL_SEATS_DISPATCHED=0; COUNCIL_SEATS_SKIPPED=0
+    council_run_seat_pool independent-advice responses || return $?
     while IFS= read -r member; do
-        persona="$(jq -r '.persona' <<< "$member")"
-        seat="$(jq -r '.seat' <<< "$member")"
-        mprovider_spec="$(jq -r '.agent_spec // .provider' <<< "$member")"
+        council_read_seat_fields "$member"
         mprovider="$(octo_agent_spec_provider "$mprovider_spec")"
-        seat_org="$(jq -r '.provider_org // ""' <<< "$member")"
-        seat_model="$(jq -r '.model // ""' <<< "$member")"
-        seat_model_family="$(jq -r '.model_family // ""' <<< "$member")"
         [[ -n "$seat_model_family" ]] || seat_model_family="$(council_model_family "$mprovider" "$seat_model")"
         slug="$(council_slug "$persona")"
         output_path="${COUNCIL_RUN_DIR}/responses/$(printf '%02d' "$index")-${slug}.md"
@@ -4368,7 +4746,7 @@ council_run_advice_phase() {
         # remaining seat as skipped-for-deadline (honest tally), then let quorum be
         # recomputed below from the seats that actually completed — a reported
         # quorum-fail beats being SIGTERM-reaped mid-seat with no summary.json.
-        if council_deadline_exceeded; then
+        if [[ "${COUNCIL_POOL_PHASE:-}" != independent-advice || ! -f "${output_path}.pool-result" ]] && council_deadline_exceeded; then
             COUNCIL_DEADLINE_HIT="true"
             COUNCIL_SEATS_SKIPPED=$((COUNCIL_SEATS_SKIPPED + 1))
             seat_status="skipped-deadline"
@@ -4391,9 +4769,9 @@ council_run_advice_phase() {
         # The detached seat's stderr reaches no one; a seat that exits non-zero
         # leaves its provider stderr here.
         local stderr_file="${COUNCIL_RUN_DIR}/stderr/$(basename "$output_path" .md).log" failure="" failure_rc=0
-        rm -f "$stderr_file" 2>/dev/null
+        [[ "${COUNCIL_POOL_PHASE:-}" == independent-advice && -f "${output_path}.pool-result" ]] || rm -f "$stderr_file" 2>/dev/null
         _OCTOPUS_SEAT_STDERR_FILE="$stderr_file" \
-            council_dispatch_member_detached "$member" "independent-advice" "$output_path" || dispatch_rc=$?
+            council_collect_seat "$member" "independent-advice" "$output_path" || dispatch_rc=$?
         dispatch_timeout_provenance="$COUNCIL_LAST_DISPATCH_TIMEOUT_PROVENANCE"
         # Admit the serialized contribution before changing any response or vote
         # counters. A refreshed report can reject evidence that passed earlier
@@ -4721,38 +5099,42 @@ council_run_chair_fallback() {
     return 1
 }
 
+# Collect cross-critiques after the advice barrier, except at quick depth.
+# Discard failed critique outputs while retaining completed pooled seats.
 council_run_critique_phase() {
     if [[ "$COUNCIL_DEPTH" == "quick" ]]; then
         return 0
     fi
 
     local index=0 member persona slug output_path
+    council_run_seat_pool cross-critique critiques || return $?
     while IFS= read -r member; do
         # Stop enriching once the aggregate budget is spent (#2918); the run
         # finalizes a partial before synthesis. Critiques are best-effort, so a
-        # break here simply omits the rest — no partial file is left behind.
-        if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; break; fi
+        # unlaunched seats stay absent; completed pooled seats are still collected.
         persona="$(jq -r '.persona' <<< "$member")"
         slug="$(council_slug "$persona")"
         output_path="${COUNCIL_RUN_DIR}/critiques/$(printf '%02d' "$index")-${slug}.md"
-        council_dispatch_member_detached "$member" "cross-critique" "$output_path" || rm -f "$output_path"
+        council_collect_seat "$member" "cross-critique" "$output_path" || rm -f "$output_path"
         index=$((index + 1))
     done < <(jq -c '.[]' <<< "$COUNCIL_ROSTER_JSON")
 }
 
+# At deep depth, collect each member's revision after all critiques complete.
+# Failed or unlaunched seats do not contribute a revision artifact.
 council_run_revision_phase() {
     if [[ "$COUNCIL_DEPTH" != "deep" ]]; then
         return 0
     fi
 
     local index=0 member persona slug output_path
+    council_run_seat_pool revision-after-critique revisions || return $?
     while IFS= read -r member; do
         # Stop once the aggregate budget is spent (#2918); revisions are best-effort.
-        if council_deadline_exceeded; then COUNCIL_DEADLINE_HIT="true"; break; fi
         persona="$(jq -r '.persona' <<< "$member")"
         slug="$(council_slug "$persona")"
         output_path="${COUNCIL_RUN_DIR}/revisions/$(printf '%02d' "$index")-${slug}.md"
-        if council_dispatch_member_detached "$member" "revision-after-critique" "$output_path"; then
+        if council_collect_seat "$member" "revision-after-critique" "$output_path"; then
             :
         else
             rm -f "$output_path"
@@ -5782,7 +6164,7 @@ _council_run_impl() {
 
     council_preflight_context_guard || return $?
 
-    council_run_advice_phase
+    council_run_advice_phase || return $?
 
     # Two distinct stop-before-synthesis conditions:
     #   1. The vote failed (quorum.met=false) — nothing was approved.
@@ -5822,14 +6204,14 @@ _council_run_impl() {
         [[ "$COUNCIL_ABORTED_FOR_COST" == "true" ]] && return 0
         return 1
     fi
-    council_run_critique_phase
+    council_run_critique_phase || return $?
     if council_check_cost_cap "revision" "revision"; then
         :
     else
         [[ "$COUNCIL_ABORTED_FOR_COST" == "true" ]] && return 0
         return 1
     fi
-    council_run_revision_phase
+    council_run_revision_phase || return $?
     # Critique/revision consume wall-clock too — re-check before the chair synthesis
     # dispatch so a run that crossed the deadline during those phases finalizes a
     # partial instead of launching one more (budget-overrunning) synthesis (#2918).

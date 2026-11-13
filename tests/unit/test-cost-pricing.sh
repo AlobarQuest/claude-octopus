@@ -52,4 +52,43 @@ else
   test_fail "native usage components were not parsed independently"
 fi
 
+test_case "explicit GPT-5.4 Mini usage uses its API tariff"
+mini_id="$(record_agent_start codex-api gpt-5.4-mini x pricing)"
+record_agent_call codex-api gpt-5.4-mini x pricing reviewer 0 "$mini_id"
+record_agent_complete "$mini_id" codex-api gpt-5.4-mini "" pricing 3000 0 1 1000 2000
+report="$(generate_usage_json)"
+if jq -e --arg id "$mini_id" '.calls[] | select(.call_id == $id) | .cost_usd == 0.00975' >/dev/null <<<"$report"; then
+  test_pass
+else
+  test_fail "GPT-5.4 Mini usage did not use the verified input/output tariff"
+fi
+
+test_case "GPT-5.4 Mini exposes vision and reasoning to capability selection"
+mini_candidates="$(list_models codex --tools --images --reasoning --tier budget)"
+if awk '$1 == "gpt-5.4-mini" && /\$0.75\/\$4.50 MTok/ { found=1 } END { exit !found }' <<<"$mini_candidates"; then
+  test_pass
+else
+  test_fail "GPT-5.4 Mini was excluded from vision or reasoning work"
+fi
+
+test_case "OpenCode GPT-5.4 Mini exposes vision and reasoning to capability selection"
+mini_candidates="$(list_models opencode --tools --images --reasoning --tier budget)"
+if awk '$1 == "opencode/gpt-5.4-mini" { found=1 } END { exit !found }' <<<"$mini_candidates"; then
+  test_pass
+else
+  test_fail "qualified GPT-5.4 Mini was excluded from OpenCode vision or reasoning work"
+fi
+
+test_case "UberLLM DeepSeek Flash uses the shared peak uncached fallback estimate"
+flash_id="$(record_agent_start uberllm-agent deepseek/deepseek-v4-flash x pricing)"
+record_agent_call uberllm-agent deepseek/deepseek-v4-flash x pricing reviewer 0 "$flash_id"
+record_agent_complete "$flash_id" uberllm-agent deepseek/deepseek-v4-flash "" pricing 3000 0 1 1000 2000
+report="$(generate_usage_json)"
+if [[ "$(get_model_pricing deepseek/deepseek-v4-flash uberllm-agent)" == "0.30:1.20" ]] &&
+   jq -e --arg id "$flash_id" '.calls[] | select(.call_id == $id) | .cost_usd == 0.0027' >/dev/null <<< "$report"; then
+    test_pass
+else
+    test_fail "DeepSeek Flash retained the unrelated generic fallback rate"
+fi
+
 test_summary

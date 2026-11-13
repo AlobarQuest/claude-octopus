@@ -21,9 +21,14 @@ _model_resolver_load_error() {
     fi
 }
 source "${_model_resolver_lib_dir}/provider-registry.sh" || { _model_resolver_load_error "failed to load provider-registry.sh"; return 1 2>/dev/null || exit 1; }
+source "${_model_resolver_lib_dir}/atlascloud.sh" || return 1
 source "${_model_resolver_lib_dir}/cheaperinference.sh" || return 1
+source "${_model_resolver_lib_dir}/uberllm.sh" || return 1
 source "${_model_resolver_lib_dir}/api-route.sh" || return 1
 source "${_model_resolver_lib_dir}/litellm.sh" || return 1
+if ! declare -f octo_agent_spec_exact_model_allowed >/dev/null 2>&1; then
+    source "${_model_resolver_lib_dir}/agent-spec.sh" || return 1
+fi
 source "${_model_resolver_lib_dir}/kimi-model-name.sh" || { _model_resolver_load_error "failed to load kimi-model-name.sh"; return 1 2>/dev/null || exit 1; }
 if ! declare -f octo_model_cache_file >/dev/null 2>&1; then
     source "${_model_resolver_lib_dir}/model-cache-path.sh" 2>/dev/null || true
@@ -249,8 +254,14 @@ validate_model_name_for_provider() {
         anthropic-api)
             case "$model" in claude-sonnet-5-5|claude-opus-5-5) return 0 ;; *) return 1 ;; esac
             ;;
+        atlascloud)
+            octo_atlascloud_model "$model" >/dev/null
+            ;;
         cheaperinference)
             octo_cheaperinference_model "$model" >/dev/null
+            ;;
+        uberllm)
+            octo_uberllm_model "$model" >/dev/null
             ;;
         api-route)
             octo_api_route_model "$model" >/dev/null
@@ -378,12 +389,18 @@ _octo_eval_model_for_class() {
     esac
 }
 
-# resolve_octopus_model <provider> <agent_type> <phase> <role>
+# resolve_octopus_model <provider> <agent_type> <phase> <role> [model|tier-reasoning] [dispatch-model]
+# The optional query returns effort only when this resolution selected the tier.
+# It bypasses model caches so explicit routes cannot inherit stale tier effort.
+# A dispatch-model argument also excludes later replacements such as frontier escalation.
 resolve_octopus_model() {
     local provider="$1"
     local agent_type="$2"
     local phase="${3:-}"
     local role="${4:-}"
+    local resolution_field="${5:-model}" tier_reasoning="" tier_model=""
+    local dispatch_model="${6:-}"
+    case "$resolution_field" in model|tier-reasoning) ;; *) return 1 ;; esac
     local config_file="${OCTOPUS_PROVIDERS_CONFIG:-${HOME}/.claude-octopus/config/providers.json}"
     local resolved_model=""
     local cost_mode routing_policy
@@ -406,6 +423,10 @@ resolve_octopus_model() {
         octo_cheaperinference_model
         return $?
     fi
+    if [[ "$canonical_provider" == uberllm ]]; then
+        octo_uberllm_effective_model
+        return $?
+    fi
     if [[ "$canonical_provider" == api-route ]]; then
         octo_api_route_model
         return $?
@@ -421,6 +442,7 @@ resolve_octopus_model() {
         env_var="OCTOPUS_$(echo "$canonical_provider" | tr '[:lower:]' '[:upper:]' | tr '-' '_')_MODEL"
     fi
     local env_model="${!env_var:-}"
+    [[ "$canonical_provider" != atlascloud ]] || env_model="${ATLASCLOUD_MODEL:-$env_model}"
     if [[ -z "$env_model" && "$canonical_provider" == "claude" && -n "${CLAUDE_MODEL:-}" ]]; then
         env_var="CLAUDE_MODEL"
         env_model="$CLAUDE_MODEL"
@@ -439,7 +461,7 @@ resolve_octopus_model() {
                 return 1
             fi
         fi
-        echo "$env_model"
+        [[ "$resolution_field" != model ]] || echo "$env_model"
         return 0
     fi
 
@@ -465,7 +487,7 @@ resolve_octopus_model() {
     cache_key="MC_${safe_p}_A_${safe_a}_P_${safe_ph}_R_${safe_r}_M_${safe_cm}_RP_${safe_rp}_TC_${safe_tc}_C_${safe_cfg}"
     local cached_val
     eval "cached_val=\"\${_OCTO_MODEL_CACHE_${cache_key}:-}\""
-    if [[ -n "$cached_val" ]]; then
+    if [[ "$resolution_field" == model && -n "$cached_val" ]]; then
         if validate_model_name_for_provider "$canonical_provider" "$cached_val" &&
            _octo_automatic_model_allowed "$cached_val" "$canonical_provider"; then
             echo "$cached_val"
@@ -479,7 +501,7 @@ resolve_octopus_model() {
     # Persistent File Cache (optional, for parallel execution speed).
     # Path comes from lib/model-cache-path.sh so writers and invalidators agree.
     local persistent_cache=""
-    if [[ "${OCTOPUS_MODEL_READ_ONLY:-false}" != "true" ]]; then
+    if [[ "$resolution_field" == model && "${OCTOPUS_MODEL_READ_ONLY:-false}" != "true" ]]; then
         persistent_cache="$(octo_model_cache_file 2>/dev/null)" || persistent_cache=""
     fi
     # v8.49.0: Invalidate cache if config file changed since cache was written
@@ -766,7 +788,27 @@ resolve_octopus_model() {
         # 4. Tier Mapping
         if [[ -z "$resolved_model" || "$resolved_model" == "null" ]]; then
             if [[ -n "$cost_mode" ]]; then
-                resolved_model=$(echo "$config_data" | jq -r --arg mode "$cost_mode" --arg p "$canonical_provider" '.tiers[$mode][$p] // empty' 2>/dev/null)
+                local tier_entry
+                tier_entry=$(echo "$config_data" | jq -c --arg mode "$cost_mode" --arg p "$canonical_provider" '.tiers[$mode][$p]' 2>/dev/null)
+                if [[ "$tier_entry" == \{* ]]; then
+                    if ! echo "$tier_entry" | jq -e '
+                        (.capability | type == "string" and length > 0) and
+                        ((has("reasoning") | not) or (.reasoning | type == "string"))
+                    ' >/dev/null; then
+                        log ERROR "Invalid tier profile for $cost_mode/$canonical_provider"
+                        return 1
+                    fi
+                    resolved_model=$(jq -r '.capability' <<< "$tier_entry")
+                    tier_reasoning=$(jq -r '.reasoning // empty' <<< "$tier_entry")
+                    octopus_normalize_reasoning_level "$tier_reasoning" >/dev/null || return 1
+                elif [[ "$tier_entry" == null ]]; then
+                    resolved_model=""
+                elif jq -e 'type == "string"' <<< "$tier_entry" >/dev/null; then
+                    resolved_model=$(jq -r '.' <<< "$tier_entry")
+                else
+                    log ERROR "Invalid tier profile for $cost_mode/$canonical_provider"
+                    return 1
+                fi
                 if [[ -n "$resolved_model" && "$resolved_model" == *:* ]]; then
                     resolved_model="$(_octo_tier_target_model "$canonical_provider" "$resolved_model" 2>/dev/null || true)"
                 fi
@@ -779,14 +821,20 @@ resolve_octopus_model() {
                 if [[ -n "$resolved_model" && "$resolved_model" != "null" ]] && ! _octo_automatic_model_allowed "$resolved_model" "$canonical_provider"; then
                     [[ -n "$_trace" ]] && echo "[model-trace] Tier 5 (cost mode ${cost_mode}): REJECTED explicit-only model $resolved_model" >&2
                     resolved_model=""
+                    tier_reasoning=""
                 fi
+                tier_model="$resolved_model"
                 [[ -n "$_trace" ]] && echo "[model-trace] Tier 5 (cost mode ${cost_mode}): ${resolved_model:-—}" >&2
             fi
         fi
 
         # 5. Global Defaults
         if [[ -z "$resolved_model" || "$resolved_model" == "null" ]]; then
-            resolved_model=$(echo "$config_data" | jq -r --arg p "$canonical_provider" '.providers[$p].default // .providers[$p].model // empty' 2>/dev/null)
+            if [[ "$canonical_provider" == atlascloud ]]; then
+                resolved_model="$(octo_atlascloud_model)" || return 1
+            else
+                resolved_model=$(echo "$config_data" | jq -r --arg p "$canonical_provider" '.providers[$p].default // .providers[$p].model // empty' 2>/dev/null)
+            fi
             if [[ -n "$resolved_model" && "$resolved_model" != "null" ]] && ! _octo_automatic_model_allowed "$resolved_model" "$canonical_provider"; then
                 [[ -n "$_trace" ]] && echo "[model-trace] Tier 6 (config default): REJECTED explicit-only model $resolved_model" >&2
                 resolved_model=""
@@ -854,6 +902,7 @@ resolve_octopus_model() {
             vibe*)           resolved_model="default" ;; # Mistral Vibe's own default from ~/.vibe/config.toml; never wired to --model (#797)
             atlascloud*)     resolved_model="" ;; # No safe universal default; atlascloud-agent dispatch already requires an explicit model pin (#797)
             cheaperinference*) resolved_model="" ;; # Like atlascloud: cheaperinference-agent dispatch requires an explicit model pin
+            uberllm*) resolved_model="" ;; # Like atlascloud: uberllm-agent dispatch requires an explicit model pin
             api-route*) resolved_model="" ;; # Like atlascloud: api-route-agent dispatch requires an explicit model pin
             litellm*) resolved_model="" ;; # A proxy model name is operator-defined, so litellm-agent dispatch requires an explicit model pin
             *)              resolved_model="$(codex_default_model)" ;; # Safest universal fallback
@@ -876,6 +925,17 @@ resolve_octopus_model() {
     if ! validate_model_name_for_provider "$canonical_provider" "$resolved_model"; then
         log ERROR "Invalid resolved model name for $provider/$agent_type"
         return 1
+    fi
+
+    if [[ "$resolution_field" == tier-reasoning ]]; then
+        [[ -z "$dispatch_model" || "$resolved_model" == "$dispatch_model" ]] || return 0
+        if declare -F validate_model_allowed >/dev/null &&
+           ! validate_model_allowed "$canonical_provider" "$resolved_model" >/dev/null; then
+            return 0
+        fi
+        # A policy reroute must not borrow the original tier's effort.
+        [[ "$resolved_model" != "$tier_model" ]] || printf '%s\n' "$tier_reasoning"
+        return 0
     fi
 
     # Update memory and persistent cache
@@ -1005,8 +1065,13 @@ is_agent_available_v2() {
             if [[ -z "${ATLASCLOUD_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
                 resolve_provider_env "ATLASCLOUD_API_KEY" 2>/dev/null || true
             fi
-            [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && \
-                { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }
+            [[ "${ATLASCLOUD_API_KEY:-}" =~ [^[:space:]] ]] || return 1
+            if [[ "$agent" == *:* ]]; then
+                octo_agent_spec_exact_model_allowed "$agent" || return 1
+                octo_atlascloud_model "${agent#*:}" >/dev/null
+            else
+                octo_atlascloud_model >/dev/null
+            fi
             ;;
         cheaperinference|cheaperinference-*)
             if [[ -z "${CHEAPER_INFERENCE_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
@@ -1017,6 +1082,18 @@ is_agent_available_v2() {
                 octo_cheaperinference_model "${agent#*:}" >/dev/null
             else
                 octo_cheaperinference_model >/dev/null
+            fi
+            ;;
+        uberllm|uberllm-*)
+            if [[ -z "${UBERLLM_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                resolve_provider_env "UBERLLM_API_KEY" 2>/dev/null || true
+            fi
+            [[ "${UBERLLM_API_KEY:-}" =~ [^[:space:]] ]] || return 1
+            if [[ "$agent" == *:* ]]; then
+                octo_agent_spec_exact_model_allowed "$agent" || return 1
+                octo_uberllm_model "${agent#*:}" >/dev/null
+            else
+                octo_uberllm_effective_model >/dev/null
             fi
             ;;
         api-route|api-route-*)

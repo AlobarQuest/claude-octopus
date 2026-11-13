@@ -578,8 +578,15 @@ run_with_timeout() {
         return "$_octo_portable_supervisor_interrupted_status"
     fi
 
+    if [[ $exit_code -eq 143 ]]; then
+        if declare -f octo_event_emit >/dev/null 2>&1; then
+            octo_event_emit "dispatch.end" command="$_octo_cmd_label" exit_code="$exit_code" outcome="error" || true
+        fi
+        return 143
+    fi
+
     # Enhanced timeout error messaging (v7.16.0 Feature 3)
-    if [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
+    if [[ $exit_code -eq 124 ]]; then
         local timeout_mins=$((timeout_secs / 60))
         local recommended_timeout=$((timeout_secs * 2))
         local recommended_mins=$((recommended_timeout / 60))
@@ -619,6 +626,8 @@ run_with_timeout() {
     return $exit_code
 }
 
+# Print size and second-resolution mtime in the existing signature format;
+# retain size through wc when neither platform's stat command succeeds.
 _octo_capture_file_signature() {
     local path="$1"
     [[ -e "$path" ]] || { printf '%s\n' missing; return 0; }
@@ -631,6 +640,10 @@ _octo_capture_file_signature() {
     fi
 }
 
+_OCTO_WORKTREE_METADATA_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worktree-metadata.py"
+
+# Hash changed and untracked paths with metadata, without reading file contents.
+# Use the batch sampler when available and preserve the shell fallback format.
 _octo_capture_worktree_fingerprint() {
     local worktree="${1:-}"
     [[ -n "$worktree" && -d "$worktree" ]] || { printf '%s\n' none; return 0; }
@@ -646,12 +659,21 @@ _octo_capture_worktree_fingerprint() {
             git -C "$worktree" diff --name-only -z 2>/dev/null || true
             git -C "$worktree" diff --cached --name-only -z 2>/dev/null || true
             git -C "$worktree" ls-files --others --exclude-standard -z 2>/dev/null || true
-        } | while IFS= read -r -d '' rel; do
-            [[ -n "$rel" ]] || continue
-            case "$rel" in .octo|.octo/*) continue ;; esac
-            printf 'path=%s;' "$rel"
-            _octo_capture_file_signature "$worktree/$rel"
-        done
+        } | {
+            local first_rel
+            IFS= read -r -d '' first_rel || return 0
+            if command -v python3 >/dev/null 2>&1; then
+                { printf '%s\0' "$first_rel"; cat; } |
+                    python3 "$_OCTO_WORKTREE_METADATA_HELPER" "$worktree"
+            else
+                { printf '%s\0' "$first_rel"; cat; } | while IFS= read -r -d '' rel; do
+                    [[ -n "$rel" ]] || continue
+                    case "$rel" in .octo|.octo/*) continue ;; esac
+                    printf 'path=%s;' "$rel"
+                    _octo_capture_file_signature "$worktree/$rel"
+                done
+            fi
+        }
     }
 
     if command -v sha256sum >/dev/null 2>&1; then

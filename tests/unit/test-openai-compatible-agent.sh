@@ -159,6 +159,53 @@ else
     test_pass
 fi
 
+test_case "UberLLM review dispatch disables model tools"
+cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="ull-review-no-tools" PWD="/tmp/octo-cwd" UBERLLM_MODEL="deepseek/deepseek-v4-flash" get_agent_command uberllm-agent review code-reviewer 2>/dev/null)
+if assert_contains "$cmd" "--provider uberllm" "UberLLM provider" &&
+   assert_contains "$cmd" "--model deepseek/deepseek-v4-flash" "UberLLM model" &&
+   assert_contains "$cmd" "--tool-policy none" "UberLLM review tool policy"; then
+    test_pass
+fi
+
+test_case "UberLLM dispatch fails closed without a model"
+if HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="ull-no-model" PWD="/tmp/octo-cwd" UBERLLM_MODEL="" OCTOPUS_UBERLLM_MODEL="" OPENAI_COMPAT_MODEL="" get_agent_command uberllm-agent implementation implementer >/dev/null 2>&1; then
+    test_fail "expected uberllm-agent without a model to be rejected"
+else
+    test_pass
+fi
+
+test_case "UberLLM dispatch binds endpoint and credential despite generic overrides"
+cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="ull-bound-endpoint" \
+    PWD="$TEST_HOME" UBERLLM_MODEL="vendor/model" OCTOPUS_SECURITY_V870=false \
+    get_agent_command uberllm-agent review code-reviewer 2>/dev/null)
+if python3 - "$HELPER" "$cmd" <<'PY'
+import importlib.util
+import os
+import shlex
+import sys
+
+spec = importlib.util.spec_from_file_location("compat_agent", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+command = shlex.split(sys.argv[2])
+os.environ.update(OPENAI_COMPAT_BASE_URL="https://other-service.invalid/v1",
+                  OPENAI_COMPAT_API_KEY_ENV="OTHER_SERVICE_KEY",
+                  OTHER_SERVICE_KEY="other-fixture", UBERLLM_API_KEY="uberllm-fixture")
+seen = []
+def transport(url, key, model, headers, messages, **kwargs):
+    seen.append((url, key, model, kwargs["tool_policy"]))
+    return {"choices": [{"message": {"content": "fixture complete"}}]}
+module.api_call = transport
+sys.argv = command + ["--prompt", "inert fixture"]
+assert module.main() == 0
+assert seen == [("https://api.uberllm.dev/v1", "uberllm-fixture", "vendor/model", "none")], seen
+PY
+then
+    test_pass
+else
+    test_fail "generic endpoint or credential selector redirected named-provider dispatch"
+fi
+
 test_case "write-capable tool-loop roles retain tools"
 generic_cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="compat-write-tools" PWD="/tmp/octo-cwd" OPENAI_COMPAT_MODEL="vendor/model-fast" get_agent_command openai-compatible-agent implementation implementer 2>/dev/null)
 atlas_cmd=$(HOME="$TEST_HOME" USER="octo-test-$$" CLAUDE_CODE_SESSION="atlas-write-tools" PWD="/tmp/octo-cwd" ATLASCLOUD_MODEL="qwen/model" get_agent_command atlascloud-agent implementation implementer 2>/dev/null)
@@ -352,6 +399,21 @@ for model in ("gpt-6-sol", "gpt-6-luna"):
         assert seen[-1]["temperature"] == 0, seen[-1]
         call(transport, None, "none")
         assert "temperature" not in seen[-1] and "reasoning_effort" not in seen[-1], seen[-1]
+for transport in ("gpt-6.1-terra", "openai/gpt-6.1-terra", "openrouter:openai/gpt-6.1-terra:floor", "gpt-6.1-terra:nitro"):
+    for effort in (None, "none", "low", "medium", "high", "xhigh", "max"):
+        before = len(seen)
+        try: call(transport, effort, "auto")
+        except ValueError: pass
+        else: raise AssertionError((transport, effort, "Terra tools admitted"))
+        assert len(seen) == before
+        call(transport, effort, "none")
+        assert "tools" not in seen[-1], seen[-1]
+        assert ("temperature" in seen[-1]) == (effort == "none"), seen[-1]
+    before = len(seen)
+    try: call(transport, "minimal", "none")
+    except ValueError: pass
+    else: raise AssertionError((transport, "minimal effort admitted"))
+    assert len(seen) == before
 call("gpt-6.1-sol-preview", None, "auto")
 assert seen[-1]["temperature"] == 0 and seen[-1]["tools"], seen[-1]
 PYTEST

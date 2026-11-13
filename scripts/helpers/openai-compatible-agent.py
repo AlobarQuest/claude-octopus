@@ -25,6 +25,12 @@ PROVIDERS = {
         "model": "",
         "headers": {},
     },
+    "uberllm": {
+        "base_url": "https://api.uberllm.dev/v1",
+        "api_key_env": "UBERLLM_API_KEY",
+        "model": "",
+        "headers": {},
+    },
     "api-route": {
         "base_url": "https://global.api-route.com/v1",
         "api_key_env": "API_ROUTE_API_KEY",
@@ -206,16 +212,18 @@ def canonical_model_id(model):
     colon, slash = model.find(":"), model.find("/")
     if colon >= 0 and (slash < 0 or colon < slash):
         prefix, remainder = model.split(":", 1)
-        if prefix not in {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"}:
+        if prefix not in {"gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"}:
             transport_model = remainder
     return transport_model.rsplit("/", 1)[-1].split(":", 1)[0]
 
 
 def validate_chat_model(model, reasoning_effort, tool_policy):
     model_id = canonical_model_id(model)
+    if model_id in {"gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"} and tool_policy == "auto":
+        raise ValueError(f"{model_id} tools require the Responses API; use Codex CLI or --tool-policy none")
+    if model_id == "gpt-6.1-terra" and reasoning_effort == "minimal":
+        raise ValueError(f"{model_id} does not support reasoning effort minimal; use none or low or higher")
     if model_id in {"gpt-6-astra", "gpt-6.1-sol"}:
-        if tool_policy == "auto":
-            raise ValueError(f"{model_id} tools require the Responses API; use Codex CLI or --tool-policy none")
         if reasoning_effort in {"none", "minimal"}:
             raise ValueError(f"{model_id} does not support reasoning effort {reasoning_effort}; use low or higher")
     if model_id in {"gpt-6-sol", "gpt-6-luna"} and tool_policy == "auto" and reasoning_effort != "none":
@@ -267,7 +275,7 @@ def api_call(base_url, key, model, headers_extra, messages, max_tokens=0, reques
     validate_chat_model(model, reasoning_effort, tool_policy)
     payload = {"model": model, "messages": messages}
     model_id = canonical_model_id(model)
-    if model_id not in {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} or reasoning_effort == "none":
+    if model_id not in {"gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"} or reasoning_effort == "none":
         payload["temperature"] = 0
     if tool_policy == "auto":
         payload["tools"] = TOOLS
@@ -347,25 +355,32 @@ def main() -> int:
     ap.add_argument("--reasoning-policy", choices=["strict", "best_effort"], default="best_effort")
     ap.add_argument("--tool-policy", choices=["auto", "none"], default="auto")
     args = ap.parse_args(); cfg = PROVIDERS[args.provider]
-    base_url = args.base_url or os.environ.get("OPENAI_COMPAT_BASE_URL") or cfg["base_url"]
-    key_env = args.api_key_env or os.environ.get("OPENAI_COMPAT_API_KEY_ENV") or cfg["api_key_env"]
+    # Generic-slot configuration must not redirect a named preset or select
+    # another vendor's credential. Explicit command arguments still take priority.
+    generic = args.provider == "generic"
+    base_url = args.base_url or (os.environ.get("OPENAI_COMPAT_BASE_URL") if generic else None) or cfg["base_url"]
+    key_env = args.api_key_env or (os.environ.get("OPENAI_COMPAT_API_KEY_ENV") if generic else None) or cfg["api_key_env"]
     if args.provider == "atlascloud":
-        model = args.model or os.environ.get("ATLASCLOUD_MODEL") or os.environ.get("OCTOPUS_ATLASCLOUD_MODEL") or os.environ.get("OPENAI_COMPAT_MODEL") or cfg["model"]
+        model = args.model or os.environ.get("ATLASCLOUD_MODEL") or os.environ.get("OCTOPUS_ATLASCLOUD_MODEL") or cfg["model"]
     elif args.provider == "cheaperinference":
-        model = args.model or os.environ.get("CHEAPER_INFERENCE_MODEL") or os.environ.get("OCTOPUS_CHEAPERINFERENCE_MODEL") or os.environ.get("OPENAI_COMPAT_MODEL") or cfg["model"]
+        model = args.model or os.environ.get("CHEAPER_INFERENCE_MODEL") or os.environ.get("OCTOPUS_CHEAPERINFERENCE_MODEL") or cfg["model"]
+    elif args.provider == "uberllm":
+        model = args.model or os.environ.get("UBERLLM_MODEL") or os.environ.get("OCTOPUS_UBERLLM_MODEL") or cfg["model"]
     elif args.provider == "api-route":
-        model = args.model or os.environ.get("API_ROUTE_MODEL") or os.environ.get("OCTOPUS_API_ROUTE_MODEL") or os.environ.get("OPENAI_COMPAT_MODEL") or cfg["model"]
+        model = args.model or os.environ.get("API_ROUTE_MODEL") or os.environ.get("OCTOPUS_API_ROUTE_MODEL") or cfg["model"]
     elif args.provider == "litellm":
         model = args.model or os.environ.get("LITELLM_MODEL") or os.environ.get("OCTOPUS_LITELLM_MODEL") or cfg["model"]
     else:
         model = args.model or os.environ.get("OPENAI_COMPAT_MODEL") or cfg["model"]
     if not model:
         if args.provider == "atlascloud":
-            model_hint = "ATLASCLOUD_MODEL, OCTOPUS_ATLASCLOUD_MODEL, OPENAI_COMPAT_MODEL, or --model"
+            model_hint = "ATLASCLOUD_MODEL, OCTOPUS_ATLASCLOUD_MODEL, or --model"
         elif args.provider == "cheaperinference":
-            model_hint = "CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, OPENAI_COMPAT_MODEL, or --model"
+            model_hint = "CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, or --model"
+        elif args.provider == "uberllm":
+            model_hint = "UBERLLM_MODEL, OCTOPUS_UBERLLM_MODEL, or --model"
         elif args.provider == "api-route":
-            model_hint = "API_ROUTE_MODEL, OCTOPUS_API_ROUTE_MODEL, OPENAI_COMPAT_MODEL, or --model"
+            model_hint = "API_ROUTE_MODEL, OCTOPUS_API_ROUTE_MODEL, or --model"
         elif args.provider == "litellm":
             model_hint = "LITELLM_MODEL, OCTOPUS_LITELLM_MODEL, or --model"
         else:

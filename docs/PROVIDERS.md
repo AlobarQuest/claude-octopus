@@ -1,5 +1,10 @@
 # Provider Wiring Map
 
+Named OpenAI-compatible presets use their own endpoint and credential name.
+The generic slot's `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY_ENV`
+do not override them, including when the helper is invoked directly. Explicit
+`--base-url` and `--api-key-env` arguments still override a preset.
+
 Provider Registry 2.0 owns shared identity and runtime policy. Adding or
 modifying a provider starts with two parity-enforced rows in
 `scripts/lib/provider-registry.sh`; provider-specific command, model, auth, and
@@ -97,6 +102,12 @@ Plus, usually:
 - Unit test in `tests/unit/test-<provider>-provider.sh`
 - `docs/DEVELOPER.md` / README provider tables
 
+Named presets use their own model variables and configured defaults.
+`OPENAI_COMPAT_MODEL` configures only the generic OpenAI-compatible slot.
+If you previously used that variable for a preset, set the preset's model
+variable or its `providers.json` default instead. Explicit model pins keep
+their existing precedence.
+
 ## Cheaper Inference setup
 
 `cheaperinference-agent` uses the OpenAI-compatible tool-loop helper at
@@ -104,7 +115,7 @@ Plus, usually:
 choose a model supported by that gateway. No model is selected by default.
 
 Model selection uses `CHEAPER_INFERENCE_MODEL`, then
-`OCTOPUS_CHEAPERINFERENCE_MODEL`, then `OPENAI_COMPAT_MODEL`, then the string
+`OCTOPUS_CHEAPERINFERENCE_MODEL`, then the string
 `providers.cheaperinference.default` in
 `~/.claude-octopus/config/providers.json`. `OCTOPUS_PROVIDERS_CONFIG` can select
 another file. Native model resolution, dispatch, health, detection and
@@ -128,7 +139,7 @@ model available to your account (for example `deepseek-v4.1-flash`). No model
 is selected automatically.
 
 Model selection uses `API_ROUTE_MODEL`, then `OCTOPUS_API_ROUTE_MODEL`, then
-`OPENAI_COMPAT_MODEL`, then the string `providers["api-route"].default` in
+the string `providers["api-route"].default` in
 `~/.claude-octopus/config/providers.json`. `OCTOPUS_PROVIDERS_CONFIG` can select
 another file. Detection, health, readiness and dispatch share this resolution.
 An exact seat such as `api-route-agent:deepseek-v4.1-flash` uses its model pin
@@ -183,6 +194,38 @@ Read-only roles disable local tools. The isolated child receives only
 excluded from Council, and gateway identity does not establish independent
 model-family diversity: a proxy model name can resolve to any upstream. Local
 readiness does not prove entitlement, quota, tool support or billed cost.
+
+## UberLLM setup
+
+`uberllm-agent` uses the same OpenAI-compatible tool-loop helper at
+`https://api.uberllm.dev/v1`. Get a key from
+[UberLLM](https://uberllm.dev/signup), set `UBERLLM_API_KEY`, and choose a
+`vendor/model` id from `GET https://api.uberllm.dev/v1/models` (for example
+`deepseek/deepseek-v4-flash`). No model is selected automatically. Per-model
+prices are listed at [uberllm.dev/models](https://uberllm.dev/models).
+
+Model selection uses `UBERLLM_MODEL`, then `OCTOPUS_UBERLLM_MODEL`, then
+the string `providers.uberllm.default` in
+`~/.claude-octopus/config/providers.json`. `OCTOPUS_PROVIDERS_CONFIG` can select
+another file. Detection, health, readiness and dispatch share this resolution.
+An exact seat such as `uberllm-agent:deepseek/deepseek-v4-flash` uses its model
+pin without requiring a default. `UBERLLM_ALLOWED_MODELS` restricts dispatch
+models; missing models, unsafe pins and invalid fallbacks fail closed.
+Bare selections may use the first allowed model when their configured model is
+excluded. Exact seat pins are never replaced. Fleet diversity uses the family
+of the model that will run, including any permitted fallback.
+Configured defaults and automatic fallbacks reject explicit-only models. Select
+those models with an environment override or a qualified seat pin.
+
+Read-only roles disable local tools. The isolated child receives only
+`UBERLLM_API_KEY` and the helper's approved runtime settings. This provider is
+excluded from Council, and gateway identity does not establish independent
+model-family diversity. Local readiness does not prove entitlement, quota,
+tool support or billed cost.
+
+Cost reports use shared model estimates. DeepSeek Flash uses its published
+[peak, uncached input and output rates](https://api-docs.deepseek.com/quick_start/pricing/)
+as a fallback; UberLLM's live price can differ.
 
 ## Perplexity Agent API
 
@@ -370,7 +413,7 @@ Use `VERTEXAI_API_KEY` or `GOOGLE_API_KEY` inside the selected provider's
 
 codex, commandcode, claude, claude-sdk (Agent SDK seat), anthropic-api (text-only Messages seat), agy (Antigravity,
 Google seat), perplexity, opencode, openrouter, orcarouter, atlascloud,
-cheaperinference, api-route, litellm, openai-compatible, openai-tools, openai-compatible-agent, cursor-agent, grok,
+cheaperinference, api-route, litellm, uberllm, openai-compatible, openai-tools, openai-compatible-agent, cursor-agent, grok,
 qwen, ollama, copilot, vibe, and kimi.
 
 An explicit `vibe` readiness or health check accepts `MISTRAL_API_KEY`,
@@ -458,7 +501,9 @@ anthropic-api`. Set `ANTHROPIC_API_KEY` in the caller environment before use.
 
 Its default model is `claude-sonnet-5-5` with high effort. API `auto` thinking
 selects `between_tools` at low, medium, or high effort, and adaptive thinking
-at xhigh or max. `claude-opus-5-5` uses adaptive thinking. Explicit model and
+at xhigh or max. Explicit automatic effort uses adaptive thinking and omits the
+API effort parameter; omitting effort retains the high fallback.
+`claude-opus-5-5` uses adaptive thinking. Explicit model and
 effort pins reach the request unchanged. Unsupported models and incompatible
 thinking modes fail before transport. Set `OCTOPUS_ANTHROPIC_API_TIMEOUT` to
 change the 120-second request timeout, up to 600 seconds, and

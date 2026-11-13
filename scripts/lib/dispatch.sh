@@ -2,9 +2,12 @@
 _profile_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_profile_lib_dir}/agent-spec.sh" 2>/dev/null || true
 source "${_profile_lib_dir}/provider-registry.sh" || { echo "dispatch: failed to load provider-registry.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "${_profile_lib_dir}/atlascloud.sh" || return 1
 source "${_profile_lib_dir}/cheaperinference.sh" || return 1
+source "${_profile_lib_dir}/uberllm.sh" || return 1
 source "${_profile_lib_dir}/api-route.sh" || return 1
 source "${_profile_lib_dir}/litellm.sh" || return 1
+source "${_profile_lib_dir}/claude-native.sh" || return 1
 if ! declare -f get_model_capability >/dev/null 2>&1; then
     source "${_profile_lib_dir}/models.sh" 2>/dev/null || true
 fi
@@ -223,6 +226,12 @@ _build_codex_exec_command() {
     local model="$1" sandbox_flag="$2" reasoning_fragment="${3:-}"
     _octopus_require_codex_model_version "$model" || return 1
     local base="codex exec --skip-git-repo-check --model ${model}"
+    if [[ "${OCTOPUS_REFINEMENT_JUDGE:-false}" == true ]]; then
+        local judge_policy
+        # The policy helper emits only fixed flags and restricted server names.
+        judge_policy="$(python3 "${PLUGIN_DIR}/scripts/helpers/refinement-codex-policy.py")" || return 1
+        base+=" ${judge_policy}"
+    fi
     [[ -n "$reasoning_fragment" ]] && base+=" ${reasoning_fragment}"
     base+=" ${sandbox_flag} -"
     if _codex_dispatch_is_oss_model "$model"; then
@@ -311,6 +320,10 @@ octo_kimi_role_is_write_capable() {
     esac
 }
 
+# Build the provider launch command for a seat without starting its worker.
+# Arguments: agent type, optional phase, optional role, optional prompt bytes.
+# Print the command for the caller's argv parser. Return nonzero when model,
+# provider, reasoning, advisor, or other launch-policy validation rejects it.
 get_agent_command() {
     local agent_type="$1"
     local phase="${2:-}"
@@ -363,6 +376,14 @@ get_agent_command() {
     esac
 
     case "$agent_executor" in
+        claude|claude-sonnet|claude-opus|claude-opus-fast|claude-opus-legacy)
+            local advisor_fragment
+            advisor_fragment="$(octo_claude_advisor_fragment "$agent_type")" || return 1
+            claude_perm="${claude_perm}${advisor_fragment:+ ${advisor_fragment}}"
+            ;;
+    esac
+
+    case "$agent_executor" in
         # v8.9.0: Spark, reasoning, and large-context variants share the
         # same command shape; only model resolution differs by agent type.
         codex|codex-standard|codex-max|codex-mini|codex-general|codex-spark|codex-reasoning|codex-large-context)
@@ -373,7 +394,7 @@ get_agent_command() {
                 model="$(octo_frontier_maybe_escalate codex "$model" "$role" "$agent_type" "$phase" "$prompt_bytes")"
             fi
             local reasoning_level reasoning_policy reasoning_fragment
-            reasoning_level="$(octopus_resolve_reasoning_level codex "$phase" "$role")" || return 1
+            reasoning_level="$(octopus_resolve_reasoning_level codex "$phase" "$role" "$agent_type" "$model")" || return 1
             reasoning_policy="$(octopus_resolve_reasoning_policy codex "$phase" "$role")" || return 1
             reasoning_fragment="$(octopus_reasoning_cli_fragment codex "$reasoning_level" "$reasoning_policy")" || return 1
             _build_codex_exec_command "$model" "$sandbox_flag" "$reasoning_fragment"
@@ -410,26 +431,26 @@ get_agent_command() {
             ;;
         claude)
             local reasoning_level reasoning_policy reasoning_fragment
-            reasoning_level="$(octopus_resolve_reasoning_level claude "$phase" "$role")" || return 1
-            reasoning_policy="$(octopus_resolve_reasoning_policy claude "$phase" "$role")" || return 1
-            reasoning_fragment="$(_octopus_claude_reasoning_fragment "$reasoning_level" "$reasoning_policy")" || return 1
             if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
                 return 1
             fi
             _octopus_validate_exact_claude_dispatch_model "$model" "$role" "$agent_type" "$phase" "$prompt_bytes" || return 1
             model="$(_octopus_apply_nonexact_fable_input_gate "$model" "$agent_type" "$prompt_bytes")" || return 1
+            reasoning_level="$(octopus_resolve_reasoning_level claude "$phase" "$role" "$agent_type" "$model")" || return 1
+            reasoning_policy="$(octopus_resolve_reasoning_policy claude "$phase" "$role")" || return 1
+            reasoning_fragment="$(_octopus_claude_reasoning_fragment "$reasoning_level" "$reasoning_policy")" || return 1
             [[ "$agent_type" == *:* ]] || model="${model//./-}"
             echo "${_claude_bin}${_BARE_OPT} --print --model ${model} ${reasoning_fragment} ${claude_perm}" ;;
         claude-sonnet)
             local reasoning_level reasoning_policy reasoning_fragment
-            reasoning_level="$(octopus_resolve_reasoning_level claude "$phase" "$role")" || return 1
-            reasoning_policy="$(octopus_resolve_reasoning_policy claude "$phase" "$role")" || return 1
-            reasoning_fragment="$(_octopus_claude_reasoning_fragment "$reasoning_level" "$reasoning_policy")" || return 1
             if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
                 return 1
             fi
             _octopus_validate_exact_claude_dispatch_model "$model" "$role" "$agent_type" "$phase" "$prompt_bytes" || return 1
             model="$(_octopus_apply_nonexact_fable_input_gate "$model" "$agent_type" "$prompt_bytes")" || return 1
+            reasoning_level="$(octopus_resolve_reasoning_level claude "$phase" "$role" "$agent_type" "$model")" || return 1
+            reasoning_policy="$(octopus_resolve_reasoning_policy claude "$phase" "$role")" || return 1
+            reasoning_fragment="$(_octopus_claude_reasoning_fragment "$reasoning_level" "$reasoning_policy")" || return 1
             [[ "$agent_type" == *:* ]] || model="${model//./-}"
             echo "${_claude_bin}${_BARE_OPT} --print --model ${model} ${reasoning_fragment} ${claude_perm}" ;;
         claude-opus|claude-opus-fast)
@@ -548,7 +569,7 @@ get_agent_command() {
                 return 1
             fi
             local reasoning_level reasoning_policy reasoning_fragment runtime_config base_url api_key_env tool_fragment=""
-            reasoning_level="$(octopus_resolve_reasoning_level openai-compatible-agent "$phase" "$role")" || return 1
+            reasoning_level="$(octopus_resolve_reasoning_level openai-compatible-agent "$phase" "$role" "$agent_type" "$model" "$(octo_provider_canonical "$agent_executor")")" || return 1
             reasoning_policy="$(octopus_resolve_reasoning_policy openai-compatible-agent "$phase" "$role")" || return 1
             reasoning_fragment="$(octopus_reasoning_cli_fragment openai-compatible-agent "$reasoning_level" "$reasoning_policy")" || return 1
             runtime_config="$(_octopus_openai_compatible_runtime_config "$agent_type")" || return 1
@@ -563,16 +584,12 @@ get_agent_command() {
             if [[ "$agent_type" == *:* ]]; then
                 model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
             else
-                model="${ATLASCLOUD_MODEL:-${OCTOPUS_ATLASCLOUD_MODEL:-${OPENAI_COMPAT_MODEL:-}}}"
-                if [[ -z "$model" && -f "${HOME}/.claude-octopus/config/providers.json" ]] && command -v jq &>/dev/null; then
-                    model="$(jq -r '.providers.atlascloud.default // empty' "${HOME}/.claude-octopus/config/providers.json" 2>/dev/null || true)"
-                fi
-                if [[ -z "$model" ]]; then
-                    log ERROR "ATLASCLOUD_MODEL, OCTOPUS_ATLASCLOUD_MODEL, OPENAI_COMPAT_MODEL, or providers.json atlascloud.default is required"
+                model="$(octo_atlascloud_model)" || {
+                    log ERROR "Set ATLASCLOUD_MODEL, OCTOPUS_ATLASCLOUD_MODEL, or providers.json atlascloud.default"
                     return 1
-                fi
+                }
             fi
-            if ! validate_model_name "$model"; then
+            if ! octo_atlascloud_model "$model" >/dev/null; then
                 log ERROR "Invalid Atlas Cloud model name: ${model}"
                 return 1
             fi
@@ -580,7 +597,8 @@ get_agent_command() {
             fallback=$(validate_model_allowed "atlascloud" "$model")
             if [[ $? -ne 0 ]]; then
                 if [[ -n "$fallback" ]]; then
-                    if ! validate_model_name "$fallback"; then
+                    if ! octo_atlascloud_model "$fallback" >/dev/null ||
+                       ! octo_model_automatic_target_allowed "$fallback" atlascloud; then
                         log ERROR "Invalid Atlas Cloud fallback model name"
                         return 1
                     fi
@@ -602,7 +620,7 @@ get_agent_command() {
                 model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
             else
                 if ! model="$(octo_cheaperinference_model)"; then
-                    log ERROR "CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, OPENAI_COMPAT_MODEL, or providers.json cheaperinference.default is required"
+                    log ERROR "CHEAPER_INFERENCE_MODEL, OCTOPUS_CHEAPERINFERENCE_MODEL, or providers.json cheaperinference.default is required"
                     return 1
                 fi
             fi
@@ -635,12 +653,32 @@ get_agent_command() {
             octo_tool_loop_requires_no_tools "$phase" "$role" && ci_tool_fragment="--tool-policy none"
             echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider cheaperinference --model ${model} ${ci_tool_fragment} --cwd ${PWD}"
             ;;
+        uberllm-agent)  # UberLLM via the OpenAI-compatible tool-loop agent
+            if [[ "$agent_type" == *:* ]]; then
+                model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
+                local ull_exact_model="$model"
+                model="$(octo_uberllm_effective_model "$ull_exact_model")" || return 1
+                [[ "$model" == "$ull_exact_model" ]] || return 1
+            else
+                if ! model="$(octo_uberllm_effective_model)"; then
+                    log ERROR "UBERLLM_MODEL, OCTOPUS_UBERLLM_MODEL, or providers.json uberllm.default is required"
+                    return 1
+                fi
+            fi
+            if ! _octopus_is_safe_openai_compatible_dispatch_value "${PWD}"; then
+                log ERROR "Invalid UberLLM cwd: ${PWD}"
+                return 1
+            fi
+            local ull_tool_fragment=""
+            octo_tool_loop_requires_no_tools "$phase" "$role" && ull_tool_fragment="--tool-policy none"
+            echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider uberllm --base-url https://api.uberllm.dev/v1 --api-key-env UBERLLM_API_KEY --model ${model} ${ull_tool_fragment} --cwd ${PWD}"
+            ;;
         api-route-agent)  # API Route via the OpenAI-compatible tool-loop agent
             if [[ "$agent_type" == *:* ]]; then
                 model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
             else
                 if ! model="$(octo_api_route_model)"; then
-                    log ERROR "API_ROUTE_MODEL, OCTOPUS_API_ROUTE_MODEL, OPENAI_COMPAT_MODEL, or providers.json api-route.default is required"
+                    log ERROR "API_ROUTE_MODEL, OCTOPUS_API_ROUTE_MODEL, or providers.json api-route.default is required"
                     return 1
                 fi
             fi
@@ -796,13 +834,13 @@ get_agent_command() {
             esac
             model="$(get_agent_model "$agent_type" "$phase" "$role")" || return 1
             local api_effort api_thinking
-            api_effort="$(octopus_resolve_reasoning_level anthropic-api "$phase" "$role")" || return 1
-            api_effort="${api_effort:-high}"
+            api_effort="$(octopus_resolve_reasoning_level anthropic-api "$phase" "$role" "$agent_type" "$model" anthropic-api high)" || return 1
+            api_effort="${api_effort:-auto}"
             api_thinking="${OCTOPUS_ANTHROPIC_API_THINKING:-auto}"
             case "$model" in claude-sonnet-5-5|claude-opus-5-5) ;; *) log ERROR "anthropic-api requires Sonnet 5.5 or Opus 5.5"; return 1 ;; esac
-            case "$api_effort" in low|medium|high|xhigh|max) ;; *) log ERROR "anthropic-api requires low, medium, high, xhigh, or max effort"; return 1 ;; esac
+            case "$api_effort" in auto|low|medium|high|xhigh|max) ;; *) log ERROR "anthropic-api requires auto, low, medium, high, xhigh, or max effort"; return 1 ;; esac
             case "$api_thinking" in auto|adaptive|between_tools) ;; *) log ERROR "Invalid anthropic-api thinking mode"; return 1 ;; esac
-            if [[ "$api_thinking" == between_tools && ( "$model" != claude-sonnet-5-5 || "$api_effort" == xhigh || "$api_effort" == max ) ]]; then
+            if [[ "$api_thinking" == between_tools && ( "$model" != claude-sonnet-5-5 || "$api_effort" == auto || "$api_effort" == xhigh || "$api_effort" == max ) ]]; then
                 log ERROR "between_tools requires Sonnet 5.5 at low, medium, or high effort"
                 return 1
             fi
@@ -1455,6 +1493,7 @@ enforce_context_budget() {
     local role="${2:-}"
     local agent_type="${3:-}"
     local phase="${4:-}"
+    local seat_id="${5:-}"
     # Authenticate the envelope before budget fitting or lossy summarization.
     # An echoed duplicate must never replace the controller's real contract.
     if ! octo_json_contract_block "$prompt" >/dev/null; then
@@ -1521,7 +1560,7 @@ enforce_context_budget() {
             fail)
                 log "ERROR" "Context budget: prompt for $target is ${original_chars} chars; limit is $char_budget chars (~$budget tokens)"
                 type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$original_chars" "failed" "$role" "$phase" "$budget" || true
-                type write_agent_status >/dev/null 2>&1 && write_agent_status "$target" "failed" "$((original_chars / 4))" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$target" "failed" "$((original_chars / 4))" 0 "Prompt exceeded context budget" 0 "" "$role" "$seat_id" || true
                 return 78
                 ;;
             summarize)
@@ -1616,9 +1655,19 @@ get_agent_model() {
                 log ERROR "Invalid fallback model name for $provider"
                 return 1
             fi
+            if [[ "$provider" == atlascloud ]] &&
+               ! octo_atlascloud_model "$fallback" >/dev/null; then
+                log ERROR "Invalid Atlas Cloud fallback model name"
+                return 1
+            fi
             if [[ "$provider" == cheaperinference ]] &&
                ! octo_cheaperinference_model "$fallback" >/dev/null; then
                 log ERROR "Invalid Cheaper Inference fallback model name"
+                return 1
+            fi
+            if [[ "$provider" == uberllm ]] &&
+               ! octo_uberllm_model "$fallback" >/dev/null; then
+                log ERROR "Invalid UberLLM fallback model name"
                 return 1
             fi
             if [[ "$provider" == api-route ]] &&
@@ -1691,7 +1740,7 @@ apply_tool_policy() {
 
     # Disabled by env var
     if [[ "${OCTOPUS_TOOL_POLICIES}" != "true" ]]; then
-        echo "$prompt"
+        printf '%s\n' "$prompt"
         return
     fi
 
@@ -1700,7 +1749,7 @@ apply_tool_policy() {
         local is_readonly
         is_readonly=$(get_agent_readonly "$agent_name")
         if [[ "$is_readonly" == "true" ]]; then
-            echo "TOOL POLICY (readonly: true): You MUST NOT use Write, Edit, or Bash for modifications. Only Read, Glob, Grep, WebSearch, and WebFetch are permitted.
+            printf '%s\n' "TOOL POLICY (readonly: true): You MUST NOT use Write, Edit, or Bash for modifications. Only Read, Glob, Grep, WebSearch, and WebFetch are permitted.
 
 ${prompt}"
             return
@@ -1723,17 +1772,17 @@ ${prompt}"
             ;;
         full)
             # No restrictions
-            echo "$prompt"
+            printf '%s\n' "$prompt"
             return
             ;;
     esac
 
     if [[ -n "$restriction" ]]; then
-        echo "${restriction}
+        printf '%s\n' "${restriction}
 
 ${prompt}"
     else
-        echo "$prompt"
+        printf '%s\n' "$prompt"
     fi
 }
 
@@ -1767,7 +1816,7 @@ apply_persona() {
 
     # Allow opt-out for backward compatibility
     if [[ "$skip_persona" == "true" || "$DISABLE_PERSONAS" == "true" ]]; then
-        echo "$prompt"
+        printf '%s\n' "$prompt"
         return
     fi
 
@@ -1776,7 +1825,7 @@ apply_persona() {
     persona=$(get_persona_instruction "$persona_role")
 
     if [[ -z "$persona" ]]; then
-        echo "$prompt"
+        printf '%s\n' "$prompt"
         return
     fi
 
@@ -1795,7 +1844,7 @@ EOF
     # v8.19.0: Apply tool policy RBAC (v8.53.0: pass agent_name for readonly check)
     combined=$(apply_tool_policy "$persona_role" "$combined" "$agent_name")
 
-    echo "$combined"
+    printf '%s\n' "$combined"
 }
 
 # v8.53.0: Get readonly flag from agent persona frontmatter
