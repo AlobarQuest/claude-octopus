@@ -1,3 +1,7 @@
+> **ARCHIVED**: This fork has been retired and is no longer maintained.
+> Reason: Devon no longer uses the octo plugin; it was removed from the devon-plugins marketplace.
+> Retired: 2026-11-19
+
 # 🐙 Claude Octopus
 
 Every AI model has blind spots. Claude Octopus supports twelve external provider integrations — Codex, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OrcaRouter, OpenCode, Cursor CLI, Grok, and Kimi Code — alongside the built-in Claude Code host, with consensus gates that flag disagreements before you ship.
